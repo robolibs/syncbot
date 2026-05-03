@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "timenav"
+version = "0.0.1"
+description = "Multi-robot navigation, claims, and scheduling on top of zoneout"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+[tool.maturin]
+features = ["python-extension"]

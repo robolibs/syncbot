@@ -1,0 +1,36 @@
+[package]
+name = "timenav"
+version = "0.0.1"
+edition = "2024"
+description = "Rust multi-robot navigation, claims, and scheduling library on top of zoneout"
+license = "MIT"
+readme = "README.md"
+publish = false
+include = [
+    "Cargo.toml",
+    "pyproject.toml",
+    "README.md",
+    "src/**/*.rs",
+    "examples/**/*.rs",
+    "tests/**/*.rs",
+]
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:pyo3", "pyo3/abi3-py39", "pyo3/auto-initialize"]
+python-extension = ["python", "pyo3/extension-module"]
+
+[dependencies]
+zoneout = { path = "../zoneout" }
+concord = { git = "https://codeberg.org/robolibs/concord.git" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git" }
+graphix = { git = "https://codeberg.org/robolibs/graphix.git" }
+pyo3 = { version = "0.23", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
