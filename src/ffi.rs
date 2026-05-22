@@ -169,7 +169,7 @@ pub unsafe extern "C" fn tn_parse_traffic_f64(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tn_parse_zone_policy(properties_json: *const c_char) -> *mut c_char {
     clear_last_error();
-    let Some(props) = (unsafe { json_in::<datapod::OMap<String, String>>(properties_json) })
+    let Some(props) = (unsafe { json_in::<std::collections::BTreeMap<String, String>>(properties_json) })
     else { return ptr::null_mut(); };
     let policy = parse_zone_policy(&props);
     json_out(&policy)
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn tn_parse_zone_policy(properties_json: *const c_char) ->
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tn_validate_zone_traffic(properties_json: *const c_char) -> *mut c_char {
     clear_last_error();
-    let Some(props) = (unsafe { json_in::<datapod::OMap<String, String>>(properties_json) })
+    let Some(props) = (unsafe { json_in::<std::collections::BTreeMap<String, String>>(properties_json) })
     else { return ptr::null_mut(); };
     json_out(&validate_zone_traffic_properties(&props))
 }
@@ -186,7 +186,7 @@ pub unsafe extern "C" fn tn_validate_zone_traffic(properties_json: *const c_char
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tn_validate_edge_traffic(properties_json: *const c_char) -> *mut c_char {
     clear_last_error();
-    let Some(props) = (unsafe { json_in::<datapod::OMap<String, String>>(properties_json) })
+    let Some(props) = (unsafe { json_in::<std::collections::BTreeMap<String, String>>(properties_json) })
     else { return ptr::null_mut(); };
     json_out(&validate_edge_traffic_properties(&props))
 }

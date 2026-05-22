@@ -1,6 +1,7 @@
 //! VDA adapter integration tests.
 
-use datapod::{Geo, OMap, Point, Polygon};
+use datapod::{Geo, Point, Polygon};
+use std::collections::BTreeMap as OMap;
 use graphix::vertex::EdgeType;
 use timenav::{
     RobotProgressState, RobotState, WorkspaceIndex, plan_route, vda,

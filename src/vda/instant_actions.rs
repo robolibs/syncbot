@@ -1,4 +1,4 @@
-use datapod::OMap;
+use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,7 +14,7 @@ pub struct InstantAction {
     pub action_type: String,
     pub blocking_type: ActionBlockingType,
     pub description: Option<String>,
-    pub parameters: OMap<String, String>,
+    pub parameters: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

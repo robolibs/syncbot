@@ -4,7 +4,7 @@
 //! derives traffic-typed views over the `traffic.*` string properties on
 //! zones and edges.
 
-use datapod::OMap;
+use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::core::error::{Error, Result};
@@ -65,7 +65,7 @@ pub struct ZonePolicy {
     pub robot_class: Option<String>,
     pub schedule_window: Option<String>,
     pub access_group: Option<String>,
-    pub properties: OMap<String, String>,
+    pub properties: BTreeMap<String, String>,
 }
 
 impl ZonePolicy {
@@ -98,7 +98,7 @@ pub struct EdgeTrafficSemantics {
     pub preferred_direction: Option<String>,
     pub schedule_window: Option<String>,
     pub access_group: Option<String>,
-    pub properties: OMap<String, String>,
+    pub properties: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +297,7 @@ pub fn parse_traffic_string(value: &str) -> Result<String> {
 /// Parse supported `zone.properties` traffic keys into a typed policy model.
 ///
 /// Mirrors `parse_zone_policy(...)` in `zone_policy.hpp`.
-pub fn parse_zone_policy(properties: &OMap<String, String>) -> ZonePolicy {
+pub fn parse_zone_policy(properties: &BTreeMap<String, String>) -> ZonePolicy {
     let mut policy = ZonePolicy::empty();
 
     for (key, value) in properties {
@@ -415,7 +415,7 @@ pub fn parse_zone_policy(properties: &OMap<String, String>) -> ZonePolicy {
 /// semantics. The `directed` argument is structural and wins over property
 /// hints. Mirrors `parse_edge_traffic_semantics(...)` in `zone_policy.hpp`.
 pub fn parse_edge_traffic_semantics(
-    properties: &OMap<String, String>,
+    properties: &BTreeMap<String, String>,
     directed: bool,
 ) -> EdgeTrafficSemantics {
     let mut semantics = EdgeTrafficSemantics { directed, ..Default::default() };
@@ -516,7 +516,7 @@ fn sort_traffic_issues(issues: &mut [TrafficParseIssue]) {
 }
 
 pub fn validate_zone_traffic_properties(
-    properties: &OMap<String, String>,
+    properties: &BTreeMap<String, String>,
 ) -> Vec<TrafficParseIssue> {
     let mut issues: Vec<TrafficParseIssue> = Vec::new();
 
@@ -610,7 +610,7 @@ pub fn validate_zone_traffic_properties(
 }
 
 pub fn validate_edge_traffic_properties(
-    properties: &OMap<String, String>,
+    properties: &BTreeMap<String, String>,
 ) -> Vec<TrafficParseIssue> {
     let mut issues: Vec<TrafficParseIssue> = Vec::new();
 
@@ -800,7 +800,7 @@ pub fn merge_zone_policy(parent: &ZonePolicy, child: &ZonePolicy) -> ZonePolicy 
 /// Combine structural edge facts, parsed edge properties, and containing-zone
 /// restrictions. Mirrors `derive_effective_edge_semantics(...)`.
 pub fn derive_effective_edge_semantics(
-    properties: &OMap<String, String>,
+    properties: &BTreeMap<String, String>,
     directed: bool,
     zone_policies: &[ZonePolicy],
 ) -> EdgeTrafficSemantics {
@@ -874,8 +874,8 @@ pub fn derive_effective_edge_semantics(
 mod tests {
     use super::*;
 
-    fn props(pairs: &[(&str, &str)]) -> OMap<String, String> {
-        let mut m = OMap::new();
+    fn props(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        let mut m = BTreeMap::new();
         for (k, v) in pairs {
             m.insert((*k).to_string(), (*v).to_string());
         }

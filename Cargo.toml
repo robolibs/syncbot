@@ -25,10 +25,10 @@ python = ["dep:pyo3", "pyo3/abi3-py39", "pyo3/auto-initialize"]
 python-extension = ["python", "pyo3/extension-module"]
 
 [dependencies]
-zoneout = { path = "../zoneout" }
-concord = { git = "https://codeberg.org/robolibs/concord.git" }
-datapod = { git = "https://codeberg.org/robolibs/datapod.git" }
-graphix = { git = "https://codeberg.org/robolibs/graphix.git" }
+zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", rev = "541b3c4fd521568c94e7cf23848bf0360056e3f0" }
+concord = { git = "https://codeberg.org/robolibs/concord.git", rev = "34062145237c2f2e19cb62e50eba127b4bc848b5" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", rev = "4547e328826fb4fd788b7acac29c2f70efc62746" }
+graphix = { git = "https://codeberg.org/robolibs/graphix.git", rev = "63b38d1b71b621cddf6d6a3070d9646bea83e7c4" }
 pyo3 = { version = "0.23", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

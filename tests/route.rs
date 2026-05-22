@@ -1,7 +1,8 @@
 //! Route planning integration tests — port of fixtures from
 //! `test/route_module_test.cpp`.
 
-use datapod::{Geo, OMap, Point, Polygon};
+use datapod::{Geo, Point, Polygon};
+use std::collections::BTreeMap as OMap;
 use graphix::vertex::EdgeType;
 use timenav::{
     RouteCostModel, RouteFailureKind, WorkspaceIndex, accumulate_route_cost,

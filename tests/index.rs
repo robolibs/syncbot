@@ -1,7 +1,8 @@
 //! WorkspaceIndex integration tests — mirrors the C++
 //! `test/workspace_index_module_test.cpp` fixtures.
 
-use datapod::{Geo, OMap, Point, Polygon};
+use datapod::{Geo, Point, Polygon};
+use std::collections::BTreeMap as OMap;
 use graphix::vertex::EdgeType;
 use timenav::WorkspaceIndex;
 use zoneout::{Workspace, ZoneBuilder};
