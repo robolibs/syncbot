@@ -14,7 +14,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t check fmt bench clean help h test-python c-demo
+.PHONY: build b compile c run r test t check check-rest check-robo check-transports fmt bench clean help h test-python c-demo
 
 build:
 	@$(CARGO) build --lib --examples
@@ -46,6 +46,15 @@ c-demo:
 check:
 	@$(CARGO) check --all-targets
 
+check-rest:
+	@$(CARGO) check --features rest
+
+check-robo:
+	@$(CARGO) check --features robo
+
+check-transports:
+	@$(CARGO) check --features "rest robo"
+
 fmt:
 	@$(CARGO) fmt --all
 
@@ -66,6 +75,9 @@ help:
 	@echo "  test         Run all tests"
 	@echo "  test-python  Run tests with Python bindings enabled"
 	@echo "  check        Run cargo check on all targets"
+	@echo "  check-rest   Check the optional Axum REST adapter"
+	@echo "  check-robo   Check the optional Zenoh robotics adapter"
+	@echo "  check-transports Check REST and Zenoh adapters together"
 	@echo "  fmt          Format the workspace"
 	@echo "  bench        Run benchmarks"
 	@echo "  c-demo       Build and run the C ABI example"

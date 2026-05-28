@@ -18,7 +18,9 @@ pub enum RobotProgressState {
 }
 
 impl Default for RobotProgressState {
-    fn default() -> Self { Self::Idle }
+    fn default() -> Self {
+        Self::Idle
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -27,6 +27,7 @@
             pkgs.clang
             pkgs.mold
             pkgs.pkg-config
+            (pkgs.python3.withPackages (ps: [ ps.weasyprint ]))
           ];
 
           LIBCLANG_PATH = "${pkgs.clang.cc.lib}/lib";

@@ -17,18 +17,15 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use crate::claim::{
-    ClaimAccessMode, ClaimManager, ClaimRequest, Lease,
-};
+use crate::claim::{ClaimAccessMode, ClaimManager, ClaimRequest, Lease};
 use crate::coordinator::{
-    ArbitrationContext, ArbitrationDecision, Coordinator,
-    arbitrate_right_of_way,
+    ArbitrationContext, ArbitrationDecision, Coordinator, arbitrate_right_of_way,
 };
 use crate::core::ids::{ClaimId, LeaseId, RobotId};
 use crate::index::WorkspaceIndex;
 use crate::policy::{
-    self, ZonePolicyKind, parse_traffic_bool, parse_traffic_f64,
-    parse_traffic_string, parse_traffic_u64,
+    self, ZonePolicyKind, parse_traffic_bool, parse_traffic_f64, parse_traffic_string,
+    parse_traffic_u64,
 };
 use crate::robot::{RobotProgressState, RobotState};
 use crate::route::{RoutePlan, plan_route};
@@ -37,8 +34,12 @@ use crate::route::{RoutePlan, plan_route};
 // helpers
 // ---------------------------------------------------------------------------
 
-fn err_value(e: impl ToString) -> PyErr { PyValueError::new_err(e.to_string()) }
-fn err_runtime(e: impl ToString) -> PyErr { PyRuntimeError::new_err(e.to_string()) }
+fn err_value(e: impl ToString) -> PyErr {
+    PyValueError::new_err(e.to_string())
+}
+fn err_runtime(e: impl ToString) -> PyErr {
+    PyRuntimeError::new_err(e.to_string())
+}
 
 /// Convert a `serde_json::Value` to a Python object.
 fn json_to_py<'py>(py: Python<'py>, v: &serde_json::Value) -> PyResult<Bound<'py, PyAny>> {
@@ -46,19 +47,27 @@ fn json_to_py<'py>(py: Python<'py>, v: &serde_json::Value) -> PyResult<Bound<'py
         serde_json::Value::Null => py.None().into_bound(py),
         serde_json::Value::Bool(b) => b.into_pyobject(py)?.to_owned().into_any(),
         serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { i.into_pyobject(py)?.into_any() }
-            else if let Some(u) = n.as_u64() { u.into_pyobject(py)?.into_any() }
-            else { n.as_f64().unwrap().into_pyobject(py)?.to_owned().into_any() }
+            if let Some(i) = n.as_i64() {
+                i.into_pyobject(py)?.into_any()
+            } else if let Some(u) = n.as_u64() {
+                u.into_pyobject(py)?.into_any()
+            } else {
+                n.as_f64().unwrap().into_pyobject(py)?.to_owned().into_any()
+            }
         }
         serde_json::Value::String(s) => s.into_pyobject(py)?.to_owned().into_any(),
         serde_json::Value::Array(arr) => {
             let list = PyList::empty(py);
-            for item in arr { list.append(json_to_py(py, item)?)?; }
+            for item in arr {
+                list.append(json_to_py(py, item)?)?;
+            }
             list.into_any()
         }
         serde_json::Value::Object(map) => {
             let dict = PyDict::new(py);
-            for (k, v) in map { dict.set_item(k, json_to_py(py, v)?)?; }
+            for (k, v) in map {
+                dict.set_item(k, json_to_py(py, v)?)?;
+            }
             dict.into_any()
         }
     })
@@ -66,19 +75,31 @@ fn json_to_py<'py>(py: Python<'py>, v: &serde_json::Value) -> PyResult<Bound<'py
 
 /// Convert a Python object to a `serde_json::Value`.
 fn py_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
-    if value.is_none() { return Ok(serde_json::Value::Null); }
-    if let Ok(b) = value.extract::<bool>() { return Ok(serde_json::Value::Bool(b)); }
-    if let Ok(i) = value.extract::<i64>() { return Ok(serde_json::Value::Number(i.into())); }
-    if let Ok(u) = value.extract::<u64>() { return Ok(serde_json::Value::Number(u.into())); }
+    if value.is_none() {
+        return Ok(serde_json::Value::Null);
+    }
+    if let Ok(b) = value.extract::<bool>() {
+        return Ok(serde_json::Value::Bool(b));
+    }
+    if let Ok(i) = value.extract::<i64>() {
+        return Ok(serde_json::Value::Number(i.into()));
+    }
+    if let Ok(u) = value.extract::<u64>() {
+        return Ok(serde_json::Value::Number(u.into()));
+    }
     if let Ok(f) = value.extract::<f64>() {
         return Ok(serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null));
     }
-    if let Ok(s) = value.extract::<String>() { return Ok(serde_json::Value::String(s)); }
+    if let Ok(s) = value.extract::<String>() {
+        return Ok(serde_json::Value::String(s));
+    }
     if let Ok(list) = value.downcast::<PyList>() {
         let mut arr = Vec::with_capacity(list.len());
-        for item in list.iter() { arr.push(py_to_json(&item)?); }
+        for item in list.iter() {
+            arr.push(py_to_json(&item)?);
+        }
         return Ok(serde_json::Value::Array(arr));
     }
     if let Ok(dict) = value.downcast::<PyDict>() {
@@ -128,7 +149,9 @@ fn parse_access_mode(s: &str) -> ClaimAccessMode {
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
-fn version() -> &'static str { crate::version() }
+fn version() -> &'static str {
+    crate::version()
+}
 
 #[pyfunction(name = "parse_traffic_bool")]
 fn py_parse_traffic_bool(value: &str) -> PyResult<bool> {
@@ -165,7 +188,10 @@ fn py_parse_edge_traffic_semantics<'py>(
     properties: std::collections::BTreeMap<String, String>,
     directed: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    obj_from(py, &policy::parse_edge_traffic_semantics(&properties, directed))
+    obj_from(
+        py,
+        &policy::parse_edge_traffic_semantics(&properties, directed),
+    )
 }
 
 #[pyfunction(name = "validate_zone_traffic_properties")]
@@ -213,7 +239,9 @@ impl PyWorkspace {
     #[staticmethod]
     fn load(path: &str) -> PyResult<Self> {
         let ws = zoneout::Workspace::load(Path::new(path)).map_err(err_runtime)?;
-        Ok(Self { inner: Arc::new(ws) })
+        Ok(Self {
+            inner: Arc::new(ws),
+        })
     }
 
     /// Returns the root zone UUID.
@@ -248,11 +276,16 @@ impl PyWorkspaceIndex {
         obj_from(py, &self.inner.validation_issues())
     }
 
-    fn is_valid(&self) -> bool { self.inner.is_valid() }
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
+    }
 
     fn refresh(&mut self) -> PyResult<()> {
         match Arc::get_mut(&mut self.inner) {
-            Some(i) => { i.refresh(); Ok(()) }
+            Some(i) => {
+                i.refresh();
+                Ok(())
+            }
             None => Err(err_runtime("workspace index has outstanding shared owners")),
         }
     }
@@ -260,8 +293,12 @@ impl PyWorkspaceIndex {
     /// Returns the JSON-style dict of zones the given node belongs to.
     fn zones_of_node<'py>(&self, py: Python<'py>, node_id: &str) -> PyResult<Bound<'py, PyAny>> {
         let id = uuid::Uuid::parse_str(node_id).map_err(err_value)?;
-        let names: Vec<String> = self.inner.zones_of_node(id).into_iter()
-            .map(|z| z.id().to_string()).collect();
+        let names: Vec<String> = self
+            .inner
+            .zones_of_node(id)
+            .into_iter()
+            .map(|z| z.id().to_string())
+            .collect();
         obj_from(py, &names)
     }
 }
@@ -281,14 +318,24 @@ impl PyClaimManager {
     #[pyo3(signature = (index=None))]
     fn new(index: Option<&PyWorkspaceIndex>) -> Self {
         match index {
-            None => Self { inner: ClaimManager::new() },
-            Some(idx) => Self { inner: ClaimManager::with_index(idx.inner.clone()) },
+            None => Self {
+                inner: ClaimManager::new(),
+            },
+            Some(idx) => Self {
+                inner: ClaimManager::with_index(idx.inner.clone()),
+            },
         }
     }
 
-    fn request_count(&self) -> usize { self.inner.request_count() }
-    fn lease_count(&self) -> usize { self.inner.lease_count() }
-    fn empty(&self) -> bool { self.inner.empty() }
+    fn request_count(&self) -> usize {
+        self.inner.request_count()
+    }
+    fn lease_count(&self) -> usize {
+        self.inner.lease_count()
+    }
+    fn empty(&self) -> bool {
+        self.inner.empty()
+    }
 
     fn add_request(&mut self, request: &Bound<'_, PyAny>) -> PyResult<()> {
         let req: ClaimRequest = obj_to(request)?;
@@ -324,7 +371,8 @@ impl PyClaimManager {
 
     #[pyo3(signature = (lease_id, released_at_tick=None))]
     fn release_lease(&mut self, lease_id: u64, released_at_tick: Option<u64>) -> bool {
-        self.inner.release_lease(LeaseId::new(lease_id), released_at_tick)
+        self.inner
+            .release_lease(LeaseId::new(lease_id), released_at_tick)
     }
 
     fn expire_leases(&mut self, current_tick: u64) -> u64 {
@@ -333,18 +381,24 @@ impl PyClaimManager {
 
     #[pyo3(signature = (lease_id, refreshed_at_tick, expires_at_tick=None))]
     fn refresh_lease(
-        &mut self, lease_id: u64, refreshed_at_tick: u64,
+        &mut self,
+        lease_id: u64,
+        refreshed_at_tick: u64,
         expires_at_tick: Option<u64>,
     ) -> bool {
-        self.inner.refresh_lease(LeaseId::new(lease_id), refreshed_at_tick, expires_at_tick)
+        self.inner
+            .refresh_lease(LeaseId::new(lease_id), refreshed_at_tick, expires_at_tick)
     }
 
     fn revoke_lease(&mut self, lease_id: u64, reason: String, revoked_at_tick: u64) -> bool {
-        self.inner.revoke_lease(LeaseId::new(lease_id), reason, revoked_at_tick)
+        self.inner
+            .revoke_lease(LeaseId::new(lease_id), reason, revoked_at_tick)
     }
 
     fn evaluate_request<'py>(
-        &self, py: Python<'py>, request: &Bound<'_, PyAny>,
+        &self,
+        py: Python<'py>,
+        request: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let req: ClaimRequest = obj_to(request)?;
         obj_from(py, &self.inner.evaluate_request(&req))
@@ -360,7 +414,9 @@ impl PyClaimManager {
         obj_from(py, &self.inner.released_leases())
     }
 
-    fn clear(&mut self) { self.inner.clear(); }
+    fn clear(&mut self) {
+        self.inner.clear();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -378,13 +434,21 @@ impl PyCoordinator {
     #[pyo3(signature = (index=None))]
     fn new(index: Option<&PyWorkspaceIndex>) -> Self {
         match index {
-            None => Self { inner: Coordinator::new() },
-            Some(idx) => Self { inner: Coordinator::with_index(idx.inner.clone()) },
+            None => Self {
+                inner: Coordinator::new(),
+            },
+            Some(idx) => Self {
+                inner: Coordinator::with_index(idx.inner.clone()),
+            },
         }
     }
 
-    fn robot_count(&self) -> usize { self.inner.robot_count() }
-    fn empty(&self) -> bool { self.inner.empty() }
+    fn robot_count(&self) -> usize {
+        self.inner.robot_count()
+    }
+    fn empty(&self) -> bool {
+        self.inner.empty()
+    }
 
     fn register_robot(&mut self, state: &Bound<'_, PyAny>) -> PyResult<()> {
         let s: RobotState = obj_to(state)?;
@@ -397,7 +461,9 @@ impl PyCoordinator {
     }
 
     fn robot_state<'py>(
-        &self, py: Python<'py>, robot_id: u64,
+        &self,
+        py: Python<'py>,
+        robot_id: u64,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         match self.inner.find_robot_state(RobotId::new(robot_id)) {
             None => Ok(None),
@@ -410,20 +476,26 @@ impl PyCoordinator {
     }
 
     fn assign_route_plan(
-        &mut self, robot_id: u64,
+        &mut self,
+        robot_id: u64,
         route_plan: &Bound<'_, PyAny>,
-        horizon: u64, updated_at_tick: u64,
+        horizon: u64,
+        updated_at_tick: u64,
     ) -> PyResult<bool> {
         let plan: RoutePlan = obj_to(route_plan)?;
-        Ok(self.inner.assign_route_plan(RobotId::new(robot_id), plan, horizon, updated_at_tick))
+        Ok(self
+            .inner
+            .assign_route_plan(RobotId::new(robot_id), plan, horizon, updated_at_tick))
     }
 
     #[pyo3(signature = (
         robot_id, current_node_id=None, current_edge_id=None, updated_at_tick=0
     ))]
     fn update_robot_progress(
-        &mut self, robot_id: u64,
-        current_node_id: Option<&str>, current_edge_id: Option<&str>,
+        &mut self,
+        robot_id: u64,
+        current_node_id: Option<&str>,
+        current_edge_id: Option<&str>,
         updated_at_tick: u64,
     ) -> PyResult<bool> {
         let cn = match current_node_id {
@@ -434,41 +506,57 @@ impl PyCoordinator {
             None => None,
             Some(s) => Some(uuid::Uuid::parse_str(s).map_err(err_value)?),
         };
-        Ok(self.inner.update_robot_progress(RobotId::new(robot_id), cn, ce, updated_at_tick))
+        Ok(self
+            .inner
+            .update_robot_progress(RobotId::new(robot_id), cn, ce, updated_at_tick))
     }
 
     #[pyo3(signature = (
         robot_id, claim_id, start_tick=0, ticks_per_cost_unit=1.0, access_mode="exclusive"
     ))]
     fn schedule_robot_route<'py>(
-        &mut self, py: Python<'py>,
-        robot_id: u64, claim_id: u64,
-        start_tick: u64, ticks_per_cost_unit: f64, access_mode: &str,
+        &mut self,
+        py: Python<'py>,
+        robot_id: u64,
+        claim_id: u64,
+        start_tick: u64,
+        ticks_per_cost_unit: f64,
+        access_mode: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let mode = parse_access_mode(access_mode);
         let decision = self.inner.schedule_robot_route(
-            RobotId::new(robot_id), ClaimId::new(claim_id),
-            start_tick, ticks_per_cost_unit, mode,
+            RobotId::new(robot_id),
+            ClaimId::new(claim_id),
+            start_tick,
+            ticks_per_cost_unit,
+            mode,
         );
         obj_from(py, &decision)
     }
 
     fn refresh_robot_leases(
-        &mut self, robot_id: u64, refreshed_at_tick: u64, extension_ticks: u64,
+        &mut self,
+        robot_id: u64,
+        refreshed_at_tick: u64,
+        extension_ticks: u64,
     ) -> u64 {
-        self.inner.refresh_robot_leases(RobotId::new(robot_id), refreshed_at_tick, extension_ticks)
+        self.inner
+            .refresh_robot_leases(RobotId::new(robot_id), refreshed_at_tick, extension_ticks)
     }
 
-    fn revoke_robot_leases(
-        &mut self, robot_id: u64, reason: String, revoked_at_tick: u64,
-    ) -> u64 {
-        self.inner.revoke_robot_leases(RobotId::new(robot_id), reason, revoked_at_tick)
+    fn revoke_robot_leases(&mut self, robot_id: u64, reason: String, revoked_at_tick: u64) -> u64 {
+        self.inner
+            .revoke_robot_leases(RobotId::new(robot_id), reason, revoked_at_tick)
     }
 
     fn handle_missed_schedule_slot(
-        &mut self, robot_id: u64, current_tick: u64, grace_ticks: u64,
+        &mut self,
+        robot_id: u64,
+        current_tick: u64,
+        grace_ticks: u64,
     ) -> bool {
-        self.inner.handle_missed_schedule_slot(RobotId::new(robot_id), current_tick, grace_ticks)
+        self.inner
+            .handle_missed_schedule_slot(RobotId::new(robot_id), current_tick, grace_ticks)
     }
 
     fn release_behind_progress(&mut self, robot_id: u64) -> u64 {
@@ -482,7 +570,9 @@ impl PyCoordinator {
         obj_from(py, &self.inner.claim_manager().leases())
     }
 
-    fn clear(&mut self) { self.inner.clear(); }
+    fn clear(&mut self) {
+        self.inner.clear();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -508,12 +598,15 @@ fn py_plan_route<'py>(
         failure: &'a Option<crate::route::RouteFailure>,
         distance: f64,
     }
-    obj_from(py, &Out {
-        found: result.search.found,
-        plan: &result.plan,
-        failure: &result.failure,
-        distance: result.search.distance,
-    })
+    obj_from(
+        py,
+        &Out {
+            found: result.search.found,
+            plan: &result.plan,
+            failure: &result.failure,
+            distance: result.search.distance,
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +615,8 @@ fn py_plan_route<'py>(
 
 #[pyfunction(name = "vda_order_from_route")]
 fn py_vda_order_from_route<'py>(
-    py: Python<'py>, route_plan: &Bound<'_, PyAny>,
+    py: Python<'py>,
+    route_plan: &Bound<'_, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let plan: RoutePlan = obj_to(route_plan)?;
     let order = crate::vda::map_route_plan(&plan);
@@ -531,7 +625,8 @@ fn py_vda_order_from_route<'py>(
 
 #[pyfunction(name = "vda_state_from_robot")]
 fn py_vda_state_from_robot<'py>(
-    py: Python<'py>, robot_state: &Bound<'_, PyAny>,
+    py: Python<'py>,
+    robot_state: &Bound<'_, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let state: RobotState = obj_to(robot_state)?;
     let s = crate::vda::map_robot_state(&state);
@@ -553,21 +648,32 @@ fn py_vda_state_from_robot<'py>(
     self_remaining_steps = 0u64, other_remaining_steps = 0u64,
 ))]
 fn py_arbitrate_right_of_way(
-    self_priority: f64, other_priority: f64,
-    self_holds_lease: bool, other_holds_lease: bool,
-    self_is_emergency: bool, other_is_emergency: bool,
-    self_state: &str, other_state: &str,
-    self_wait_ticks: u64, other_wait_ticks: u64,
-    self_remaining_steps: u64, other_remaining_steps: u64,
+    self_priority: f64,
+    other_priority: f64,
+    self_holds_lease: bool,
+    other_holds_lease: bool,
+    self_is_emergency: bool,
+    other_is_emergency: bool,
+    self_state: &str,
+    other_state: &str,
+    self_wait_ticks: u64,
+    other_wait_ticks: u64,
+    self_remaining_steps: u64,
+    other_remaining_steps: u64,
 ) -> &'static str {
     let ctx = ArbitrationContext {
-        self_priority, other_priority,
-        self_holds_lease, other_holds_lease,
-        self_is_emergency, other_is_emergency,
+        self_priority,
+        other_priority,
+        self_holds_lease,
+        other_holds_lease,
+        self_is_emergency,
+        other_is_emergency,
         self_state: parse_progress_state(self_state),
         other_state: parse_progress_state(other_state),
-        self_wait_ticks, other_wait_ticks,
-        self_remaining_steps, other_remaining_steps,
+        self_wait_ticks,
+        other_wait_ticks,
+        self_remaining_steps,
+        other_remaining_steps,
     };
     match arbitrate_right_of_way(&ctx) {
         ArbitrationDecision::Proceed => "proceed",
@@ -603,23 +709,37 @@ pub fn register_python_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCoordinator>()?;
 
     // Enum string values for discoverability
-    m.add("ZONE_POLICY_KINDS", vec![
-        zone_policy_kind_str(ZonePolicyKind::Informational),
-        zone_policy_kind_str(ZonePolicyKind::ExclusiveAccess),
-        zone_policy_kind_str(ZonePolicyKind::SharedAccess),
-        zone_policy_kind_str(ZonePolicyKind::CapacityLimited),
-        zone_policy_kind_str(ZonePolicyKind::Corridor),
-        zone_policy_kind_str(ZonePolicyKind::Replanning),
-        zone_policy_kind_str(ZonePolicyKind::Restricted),
-        zone_policy_kind_str(ZonePolicyKind::NoStop),
-        zone_policy_kind_str(ZonePolicyKind::Slowdown),
-    ])?;
-    m.add("ROBOT_PROGRESS_STATES", vec![
-        "idle", "following_route", "waiting", "queued", "blocked", "replanning",
-    ])?;
+    m.add(
+        "ZONE_POLICY_KINDS",
+        vec![
+            zone_policy_kind_str(ZonePolicyKind::Informational),
+            zone_policy_kind_str(ZonePolicyKind::ExclusiveAccess),
+            zone_policy_kind_str(ZonePolicyKind::SharedAccess),
+            zone_policy_kind_str(ZonePolicyKind::CapacityLimited),
+            zone_policy_kind_str(ZonePolicyKind::Corridor),
+            zone_policy_kind_str(ZonePolicyKind::Replanning),
+            zone_policy_kind_str(ZonePolicyKind::Restricted),
+            zone_policy_kind_str(ZonePolicyKind::NoStop),
+            zone_policy_kind_str(ZonePolicyKind::Slowdown),
+        ],
+    )?;
+    m.add(
+        "ROBOT_PROGRESS_STATES",
+        vec![
+            "idle",
+            "following_route",
+            "waiting",
+            "queued",
+            "blocked",
+            "replanning",
+        ],
+    )?;
     m.add("CLAIM_ACCESS_MODES", vec!["shared", "exclusive"])?;
     m.add("CLAIM_DECISIONS", vec!["grant", "deny"])?;
-    m.add("SCHEDULE_DECISION_KINDS", vec!["proceed", "queue", "replan"])?;
+    m.add(
+        "SCHEDULE_DECISION_KINDS",
+        vec!["proceed", "queue", "replan"],
+    )?;
     Ok(())
 }
 

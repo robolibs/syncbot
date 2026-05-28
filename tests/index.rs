@@ -2,18 +2,21 @@
 //! `test/workspace_index_module_test.cpp` fixtures.
 
 use datapod::{Geo, Point, Polygon};
-use std::collections::BTreeMap as OMap;
 use graphix::vertex::EdgeType;
+use std::collections::BTreeMap as OMap;
 use timenav::WorkspaceIndex;
 use zoneout::{Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
-    Polygon { vertices: vec![
-        Point::new(min_x, min_y, 0.0),
-        Point::new(max_x, min_y, 0.0),
-        Point::new(max_x, max_y, 0.0),
-        Point::new(min_x, max_y, 0.0),
-    ].into() }
+    Polygon {
+        vertices: vec![
+            Point::new(min_x, min_y, 0.0),
+            Point::new(max_x, min_y, 0.0),
+            Point::new(max_x, max_y, 0.0),
+            Point::new(min_x, max_y, 0.0),
+        ]
+        .into(),
+    }
 }
 
 fn make_workspace() -> Workspace {
@@ -91,6 +94,61 @@ fn edge_between_finds_undirected_edge() {
 }
 
 #[test]
+fn numeric_id_property_resolves_to_uuid() {
+    use timenav::{NUMERIC_ID_PROPERTY, ResourceRef};
+
+    let mut root = ZoneBuilder::new()
+        .with_name("root")
+        .with_kind("workspace")
+        .with_boundary(rectangle(0.0, 0.0, 100.0, 100.0))
+        .with_datum(Geo::new(52.0, 5.0, 0.0))
+        .build()
+        .expect("root zone");
+    let zone = ZoneBuilder::new()
+        .with_name("dock")
+        .with_kind("zone")
+        .with_boundary(rectangle(10.0, 10.0, 50.0, 50.0))
+        .with_datum(Geo::new(52.0, 5.0, 0.0))
+        .with_property(NUMERIC_ID_PROPERTY, "205")
+        .build()
+        .expect("dock zone");
+    let zone_uuid = zone.id();
+    root.add_child(zone).expect("add dock");
+
+    let mut ws = Workspace::new(root);
+    let mut node_props = OMap::new();
+    node_props.insert(NUMERIC_ID_PROPERTY.into(), "139".into());
+    let a = ws.add_node(Point::new(15.0, 15.0, 0.0), node_props);
+    let b = ws.add_node(Point::new(25.0, 25.0, 0.0), OMap::new());
+    let node_a_uuid = ws.graph().get_vertex(a).unwrap().id;
+
+    let mut edge_props = OMap::new();
+    edge_props.insert(NUMERIC_ID_PROPERTY.into(), "203".into());
+    let edge_vid = ws.add_edge(a, b, 1.0, EdgeType::Undirected, edge_props);
+    let edge_uuid = ws.graph().edge_property(edge_vid).unwrap().id;
+
+    let idx = WorkspaceIndex::new(std::sync::Arc::new(ws));
+
+    assert_eq!(idx.zone_uuid_by_numeric_id(205), Some(zone_uuid));
+    assert_eq!(idx.node_uuid_by_numeric_id(139), Some(node_a_uuid));
+    assert_eq!(idx.edge_uuid_by_numeric_id(203), Some(edge_uuid));
+
+    assert_eq!(ResourceRef::Numeric(205).resolve_zone(&idx), Some(zone_uuid));
+    assert_eq!(
+        ResourceRef::Uuid(zone_uuid).resolve_zone(&idx),
+        Some(zone_uuid)
+    );
+    assert_eq!(ResourceRef::Numeric(9999).resolve_zone(&idx), None);
+
+    // Wire form is text in both JSON and XML: quoted UUID or quoted integer.
+    let from_uuid: ResourceRef =
+        serde_json::from_str(&format!("\"{zone_uuid}\"")).expect("uuid form");
+    let from_num: ResourceRef = serde_json::from_str("\"205\"").expect("num form");
+    assert_eq!(from_uuid, ResourceRef::Uuid(zone_uuid));
+    assert_eq!(from_num, ResourceRef::Numeric(205));
+}
+
+#[test]
 fn coord_conversion_local_local_roundtrip() {
     let ws = make_workspace();
     let idx = WorkspaceIndex::new(std::sync::Arc::new(ws));
@@ -100,6 +158,8 @@ fn coord_conversion_local_local_roundtrip() {
     let dx = (p2.x - p.x).abs();
     let dy = (p2.y - p.y).abs();
     let dz = (p2.z - p.z).abs();
-    assert!(dx < 1e-3 && dy < 1e-3 && dz < 1e-3,
-            "round-trip drift {dx}, {dy}, {dz}");
+    assert!(
+        dx < 1e-3 && dy < 1e-3 && dz < 1e-3,
+        "round-trip drift {dx}, {dy}, {dz}"
+    );
 }

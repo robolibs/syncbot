@@ -17,12 +17,124 @@ use zoneout::{CoordMode, EdgeData, NodeData, Workspace, Zone};
 
 use crate::core::error::{Error, Result};
 use crate::policy::{
-    TrafficIssueSeverity, validate_edge_traffic_properties,
-    validate_zone_traffic_properties,
+    TrafficIssueSeverity, validate_edge_traffic_properties, validate_zone_traffic_properties,
 };
 
+/// Property key for an optional numeric ID alias on zones / nodes / edges.
+///
+/// When a resource carries this property (parsed as `u64`), the index
+/// builds a reverse lookup so legacy adapters can address it by integer
+/// instead of UUID. The UUID remains the canonical identifier.
+pub const NUMERIC_ID_PROPERTY: &str = "external.numeric_id";
+
+/// Wire-level reference to a workspace resource — either a UUID or an
+/// integer alias resolved against `WorkspaceIndex` via [`NUMERIC_ID_PROPERTY`].
+///
+/// On the wire, both variants are encoded as a text token to keep the form
+/// consistent across JSON and XML transports. JSON output therefore quotes
+/// numeric IDs (`"resource_id": "205"`). Deserialisation is tolerant: the
+/// token is parsed first as a UUID, then as an unsigned integer.
+///
+/// `Serialize`/`Deserialize` are hand-written because `#[serde(untagged)]`
+/// over a `(Uuid, u64)` does not work in XML, where every leaf is text and
+/// the format cannot distinguish a string from a number at parse time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceRef {
+    Uuid(Uuid),
+    Numeric(u64),
+}
+
+impl Serialize for ResourceRef {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Uuid(u) => serializer.serialize_str(&u.to_string()),
+            Self::Numeric(n) => serializer.collect_str(n),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ResourceRef {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = ResourceRef;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a UUID string or an unsigned integer (as text or number)")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, n: u64) -> std::result::Result<Self::Value, E> {
+                Ok(ResourceRef::Numeric(n))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, n: i64) -> std::result::Result<Self::Value, E> {
+                u64::try_from(n)
+                    .map(ResourceRef::Numeric)
+                    .map_err(|_| E::custom(format!("negative resource id {n}")))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> std::result::Result<Self::Value, E> {
+                let s = s.trim();
+                if let Ok(u) = Uuid::parse_str(s) {
+                    return Ok(ResourceRef::Uuid(u));
+                }
+                if let Ok(n) = s.parse::<u64>() {
+                    return Ok(ResourceRef::Numeric(n));
+                }
+                Err(E::custom(format!(
+                    "resource id {s:?} is neither a UUID nor an unsigned integer"
+                )))
+            }
+
+            fn visit_string<E: serde::de::Error>(
+                self,
+                s: String,
+            ) -> std::result::Result<Self::Value, E> {
+                self.visit_str(&s)
+            }
+        }
+        // deserialize_string asks the format for a text token. quick-xml
+        // returns the leaf element body; serde_json returns the JSON string.
+        // JSON inputs that present a bare number would fail here; clients
+        // should quote numeric resource IDs to keep cross-transport parity.
+        deserializer.deserialize_string(V)
+    }
+}
+
+impl ResourceRef {
+    pub fn resolve_zone(self, idx: &WorkspaceIndex) -> Option<Uuid> {
+        match self {
+            Self::Uuid(u) => idx.zone(u).map(|_| u),
+            Self::Numeric(n) => idx.zone_uuid_by_numeric_id(n),
+        }
+    }
+
+    pub fn resolve_node(self, idx: &WorkspaceIndex) -> Option<Uuid> {
+        match self {
+            Self::Uuid(u) => idx.node(u).map(|_| u),
+            Self::Numeric(n) => idx.node_uuid_by_numeric_id(n),
+        }
+    }
+
+    pub fn resolve_edge(self, idx: &WorkspaceIndex) -> Option<Uuid> {
+        match self {
+            Self::Uuid(u) => idx.edge(u).map(|_| u),
+            Self::Numeric(n) => idx.edge_uuid_by_numeric_id(n),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ValidationSeverity { Warning, Error }
+pub enum ValidationSeverity {
+    Warning,
+    Error,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidationIssue {
@@ -41,9 +153,15 @@ pub struct WorkspaceIndex {
     parents: HashMap<Uuid, Uuid>,
     children: HashMap<Uuid, Vec<Uuid>>,
     nodes_by_zone: HashMap<Uuid, Vec<VertexId<NodeData>>>,
+    zones_by_numeric_id: HashMap<u64, Uuid>,
+    nodes_by_numeric_id: HashMap<u64, Uuid>,
+    edges_by_numeric_id: HashMap<u64, Uuid>,
     duplicate_zone_ids: Vec<Uuid>,
     duplicate_node_ids: Vec<Uuid>,
     duplicate_edge_ids: Vec<Uuid>,
+    duplicate_zone_numeric_ids: Vec<u64>,
+    duplicate_node_numeric_ids: Vec<u64>,
+    duplicate_edge_numeric_ids: Vec<u64>,
 }
 
 impl WorkspaceIndex {
@@ -57,9 +175,15 @@ impl WorkspaceIndex {
             parents: HashMap::new(),
             children: HashMap::new(),
             nodes_by_zone: HashMap::new(),
+            zones_by_numeric_id: HashMap::new(),
+            nodes_by_numeric_id: HashMap::new(),
+            edges_by_numeric_id: HashMap::new(),
             duplicate_zone_ids: Vec::new(),
             duplicate_node_ids: Vec::new(),
             duplicate_edge_ids: Vec::new(),
+            duplicate_zone_numeric_ids: Vec::new(),
+            duplicate_node_numeric_ids: Vec::new(),
+            duplicate_edge_numeric_ids: Vec::new(),
         };
         idx.rebuild();
         idx
@@ -71,22 +195,34 @@ impl WorkspaceIndex {
         Self::new(Arc::new(workspace))
     }
 
-    pub fn workspace(&self) -> &Workspace { &self.workspace }
-    pub fn workspace_arc(&self) -> Arc<Workspace> { Arc::clone(&self.workspace) }
+    pub fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+    pub fn workspace_arc(&self) -> Arc<Workspace> {
+        Arc::clone(&self.workspace)
+    }
 
-    pub fn refresh(&mut self) { self.rebuild(); }
+    pub fn refresh(&mut self) {
+        self.rebuild();
+    }
 
     pub fn rebind(&mut self, workspace: Arc<Workspace>) {
         self.workspace = workspace;
         self.rebuild();
     }
 
-    pub fn root_zone(&self) -> &Zone { self.workspace.root_zone() }
+    pub fn root_zone(&self) -> &Zone {
+        self.workspace.root_zone()
+    }
 
-    pub fn root_zone_id(&self) -> Option<Uuid> { Some(self.root_zone().id()) }
+    pub fn root_zone_id(&self) -> Option<Uuid> {
+        Some(self.root_zone().id())
+    }
 
     pub fn zone(&self, zone_id: Uuid) -> Option<&Zone> {
-        if !self.zone_ids.contains(&zone_id) { return None; }
+        if !self.zone_ids.contains(&zone_id) {
+            return None;
+        }
         self.workspace.find_zone(zone_id)
     }
 
@@ -116,7 +252,8 @@ impl WorkspaceIndex {
     pub fn child_zones(&self, zone_id: Uuid) -> Vec<&Zone> {
         match self.children.get(&zone_id) {
             None => Vec::new(),
-            Some(ids) => ids.iter()
+            Some(ids) => ids
+                .iter()
                 .filter_map(|id| self.workspace.find_zone(*id))
                 .collect(),
         }
@@ -148,7 +285,9 @@ impl WorkspaceIndex {
     }
 
     pub fn nodes_in_zone(&self, zone_id: Uuid) -> Vec<&NodeData> {
-        let Some(vids) = self.nodes_by_zone.get(&zone_id) else { return Vec::new(); };
+        let Some(vids) = self.nodes_by_zone.get(&zone_id) else {
+            return Vec::new();
+        };
         vids.iter()
             .filter_map(|vid| self.workspace.graph().get_vertex(*vid))
             .collect()
@@ -157,7 +296,9 @@ impl WorkspaceIndex {
     pub fn zones_of_node(&self, node_id: Uuid) -> Vec<&Zone> {
         match self.node(node_id) {
             None => Vec::new(),
-            Some(node) => node.zone_ids.iter()
+            Some(node) => node
+                .zone_ids
+                .iter()
                 .filter_map(|zid| self.workspace.find_zone(*zid))
                 .collect(),
         }
@@ -166,28 +307,34 @@ impl WorkspaceIndex {
     pub fn zones_of_edge(&self, edge_id: Uuid) -> Vec<&Zone> {
         match self.edge(edge_id) {
             None => Vec::new(),
-            Some(edge) => edge.zone_ids.iter()
+            Some(edge) => edge
+                .zone_ids
+                .iter()
                 .filter_map(|zid| self.workspace.find_zone(*zid))
                 .collect(),
         }
     }
 
-    pub fn edge_between(
-        &self,
-        node_a_id: Uuid,
-        node_b_id: Uuid,
-    ) -> Option<&EdgeData> {
+    pub fn edge_between(&self, node_a_id: Uuid, node_b_id: Uuid) -> Option<&EdgeData> {
         let a = *self.nodes.get(&node_a_id)?;
         let b = *self.nodes.get(&node_b_id)?;
         let g = self.workspace.graph();
-        if let Some(eid) = g.get_edge(a, b) { return g.edge_property(eid); }
-        if let Some(eid) = g.get_edge(b, a) { return g.edge_property(eid); }
+        if let Some(eid) = g.get_edge(a, b) {
+            return g.edge_property(eid);
+        }
+        if let Some(eid) = g.get_edge(b, a) {
+            return g.edge_property(eid);
+        }
         None
     }
 
-    pub fn datum(&self) -> Option<Geo> { self.workspace.datum().copied() }
+    pub fn datum(&self) -> Option<Geo> {
+        self.workspace.datum().copied()
+    }
 
-    pub fn coord_mode(&self) -> CoordMode { self.workspace.coord_mode() }
+    pub fn coord_mode(&self) -> CoordMode {
+        self.workspace.coord_mode()
+    }
 
     /// Local 3D point → global Geo. Requires `CoordMode::Local` and a
     /// reference origin on the workspace.
@@ -230,6 +377,18 @@ impl WorkspaceIndex {
     pub fn edge_property(&self, edge_id: Uuid, key: &str) -> Option<String> {
         let edge = self.edge(edge_id)?;
         edge.properties.get(key).cloned()
+    }
+
+    pub fn zone_uuid_by_numeric_id(&self, n: u64) -> Option<Uuid> {
+        self.zones_by_numeric_id.get(&n).copied()
+    }
+
+    pub fn node_uuid_by_numeric_id(&self, n: u64) -> Option<Uuid> {
+        self.nodes_by_numeric_id.get(&n).copied()
+    }
+
+    pub fn edge_uuid_by_numeric_id(&self, n: u64) -> Option<Uuid> {
+        self.edges_by_numeric_id.get(&n).copied()
     }
 
     pub fn validation_issues(&self) -> Vec<ValidationIssue> {
@@ -282,9 +441,39 @@ impl WorkspaceIndex {
             });
         }
 
+        for n in &self.duplicate_zone_numeric_ids {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Error,
+                category: "duplicate_numeric_id".into(),
+                resource_kind: "zone".into(),
+                resource_id: None,
+                message: format!("multiple zones share numeric id {n}"),
+            });
+        }
+        for n in &self.duplicate_node_numeric_ids {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Error,
+                category: "duplicate_numeric_id".into(),
+                resource_kind: "node".into(),
+                resource_id: None,
+                message: format!("multiple nodes share numeric id {n}"),
+            });
+        }
+        for n in &self.duplicate_edge_numeric_ids {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Error,
+                category: "duplicate_numeric_id".into(),
+                resource_kind: "edge".into(),
+                resource_id: None,
+                message: format!("multiple edges share numeric id {n}"),
+            });
+        }
+
         // Zones — node membership consistency + traffic properties
         for &zid in &self.zone_ids {
-            let Some(zone) = self.workspace.find_zone(zid) else { continue };
+            let Some(zone) = self.workspace.find_zone(zid) else {
+                continue;
+            };
             if zone.id() == Uuid::nil() {
                 issues.push(ValidationIssue {
                     severity: ValidationSeverity::Error,
@@ -301,7 +490,9 @@ impl WorkspaceIndex {
                         category: "broken_membership".into(),
                         resource_kind: "zone".into(),
                         resource_id: Some(zid),
-                        message: "zone references node id that is not present in the workspace graph".into(),
+                        message:
+                            "zone references node id that is not present in the workspace graph"
+                                .into(),
                     });
                     continue;
                 }
@@ -312,7 +503,9 @@ impl WorkspaceIndex {
                             category: "inconsistent_membership".into(),
                             resource_kind: "zone".into(),
                             resource_id: Some(zid),
-                            message: "zone lists node membership but the node does not list the zone".into(),
+                            message:
+                                "zone lists node membership but the node does not list the zone"
+                                    .into(),
                         });
                     }
                 }
@@ -334,7 +527,9 @@ impl WorkspaceIndex {
 
         // Nodes — zone-id back-reference consistency
         for (&node_id, &vid) in &self.nodes {
-            let Some(node) = self.workspace.graph().get_vertex(vid) else { continue };
+            let Some(node) = self.workspace.graph().get_vertex(vid) else {
+                continue;
+            };
             if node_id == Uuid::nil() {
                 issues.push(ValidationIssue {
                     severity: ValidationSeverity::Error,
@@ -351,7 +546,9 @@ impl WorkspaceIndex {
                         category: "broken_membership".into(),
                         resource_kind: "node".into(),
                         resource_id: Some(node_id),
-                        message: "node references zone id that is not present in the workspace tree".into(),
+                        message:
+                            "node references zone id that is not present in the workspace tree"
+                                .into(),
                     });
                 }
             }
@@ -359,7 +556,9 @@ impl WorkspaceIndex {
 
         // Edges — zone membership + traffic properties
         for (&edge_uuid, &eid) in &self.edges {
-            let Some(edge) = self.workspace.graph().edge_property(eid) else { continue };
+            let Some(edge) = self.workspace.graph().edge_property(eid) else {
+                continue;
+            };
             if edge_uuid == Uuid::nil() {
                 issues.push(ValidationIssue {
                     severity: ValidationSeverity::Error,
@@ -380,7 +579,9 @@ impl WorkspaceIndex {
                         category: "broken_membership".into(),
                         resource_kind: "edge".into(),
                         resource_id: Some(edge_uuid),
-                        message: "edge references zone id that is not present in the workspace tree".into(),
+                        message:
+                            "edge references zone id that is not present in the workspace tree"
+                                .into(),
                     });
                     continue;
                 }
@@ -398,7 +599,8 @@ impl WorkspaceIndex {
                         category: "inconsistent_membership".into(),
                         resource_kind: "edge".into(),
                         resource_id: Some(edge_uuid),
-                        message: "edge lists a zone that is not present on either endpoint node".into(),
+                        message: "edge lists a zone that is not present on either endpoint node"
+                            .into(),
                     });
                 }
             }
@@ -420,7 +622,9 @@ impl WorkspaceIndex {
         issues
     }
 
-    pub fn is_valid(&self) -> bool { self.validation_issues().is_empty() }
+    pub fn is_valid(&self) -> bool {
+        self.validation_issues().is_empty()
+    }
 
     fn rebuild(&mut self) {
         self.zone_ids.clear();
@@ -429,9 +633,15 @@ impl WorkspaceIndex {
         self.parents.clear();
         self.children.clear();
         self.nodes_by_zone.clear();
+        self.zones_by_numeric_id.clear();
+        self.nodes_by_numeric_id.clear();
+        self.edges_by_numeric_id.clear();
         self.duplicate_zone_ids.clear();
         self.duplicate_node_ids.clear();
         self.duplicate_edge_ids.clear();
+        self.duplicate_zone_numeric_ids.clear();
+        self.duplicate_node_numeric_ids.clear();
+        self.duplicate_edge_numeric_ids.clear();
 
         Self::index_zone_tree(
             self.workspace.root_zone(),
@@ -455,6 +665,14 @@ impl WorkspaceIndex {
                 for zid in &node.zone_ids {
                     self.nodes_by_zone.entry(*zid).or_default().push(vid);
                 }
+                if let Some(n) = parse_numeric_id(node.properties.get(NUMERIC_ID_PROPERTY)) {
+                    insert_numeric_id(
+                        n,
+                        node.id,
+                        &mut self.nodes_by_numeric_id,
+                        &mut self.duplicate_node_numeric_ids,
+                    );
+                }
             }
         }
 
@@ -467,6 +685,28 @@ impl WorkspaceIndex {
                 } else {
                     self.edges.insert(prop.id, edge.id);
                 }
+                if let Some(n) = parse_numeric_id(prop.properties.get(NUMERIC_ID_PROPERTY)) {
+                    insert_numeric_id(
+                        n,
+                        prop.id,
+                        &mut self.edges_by_numeric_id,
+                        &mut self.duplicate_edge_numeric_ids,
+                    );
+                }
+            }
+        }
+
+        for &zid in &self.zone_ids {
+            let Some(zone) = self.workspace.find_zone(zid) else {
+                continue;
+            };
+            if let Some(n) = parse_numeric_id(zone.property(NUMERIC_ID_PROPERTY)) {
+                insert_numeric_id(
+                    n,
+                    zid,
+                    &mut self.zones_by_numeric_id,
+                    &mut self.duplicate_zone_numeric_ids,
+                );
             }
         }
     }
@@ -493,8 +733,32 @@ impl WorkspaceIndex {
         }
         for child in zone.children() {
             Self::index_zone_tree(
-                child, Some(zone), zone_ids, parents, children, duplicate_zone_ids,
+                child,
+                Some(zone),
+                zone_ids,
+                parents,
+                children,
+                duplicate_zone_ids,
             );
         }
+    }
+}
+
+fn parse_numeric_id(raw: Option<&String>) -> Option<u64> {
+    raw?.trim().parse::<u64>().ok()
+}
+
+fn insert_numeric_id(
+    n: u64,
+    uuid: Uuid,
+    map: &mut HashMap<u64, Uuid>,
+    duplicates: &mut Vec<u64>,
+) {
+    if let Some(existing) = map.get(&n) {
+        if *existing != uuid && !duplicates.contains(&n) {
+            duplicates.push(n);
+        }
+    } else {
+        map.insert(n, uuid);
     }
 }

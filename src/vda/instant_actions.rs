@@ -1,11 +1,17 @@
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ActionBlockingType { None, Soft, Hard }
+pub enum ActionBlockingType {
+    None,
+    Soft,
+    Hard,
+}
 
 impl Default for ActionBlockingType {
-    fn default() -> Self { Self::None }
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

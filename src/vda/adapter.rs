@@ -10,12 +10,14 @@ use crate::robot::{RobotProgressState, RobotState};
 use crate::route::{RoutePlan, validate_route_plan_shape};
 
 use super::{
-    ActionStatus, Connection, ConnectionStatus, Factsheet, InstantAction,
-    OperatingMode, Order, OrderEdge, OrderNode, ConnectionState,
-    ReservationState, ResourceReservation, Response, State,
+    ActionStatus, Connection, ConnectionState, ConnectionStatus, Factsheet, InstantAction,
+    OperatingMode, Order, OrderEdge, OrderNode, ReservationState, ResourceReservation, Response,
+    State,
 };
 
-fn uuid_string(id: Uuid) -> String { id.to_string() }
+fn uuid_string(id: Uuid) -> String {
+    id.to_string()
+}
 
 fn claim_target_kind_string(kind: ClaimTargetKind) -> &'static str {
     match kind {
@@ -83,7 +85,9 @@ pub fn try_map_route_plan_with_index(
     let mut order = try_map_route_plan(route_plan)?;
 
     for (i, &node_id) in route_plan.traversed_node_ids.iter().enumerate() {
-        if i >= order.nodes.len() { break; }
+        if i >= order.nodes.len() {
+            break;
+        }
         let zones = index.zones_of_node(node_id);
         if let Some(first) = zones.first() {
             order.nodes[i].zone_id = Some(uuid_string(first.id()));
@@ -95,19 +99,25 @@ pub fn try_map_route_plan_with_index(
     }
 
     for (i, &edge_id) in route_plan.traversed_edge_ids.iter().enumerate() {
-        if i >= order.edges.len() { break; }
+        if i >= order.edges.len() {
+            break;
+        }
         let zones = index.zones_of_edge(edge_id);
         if let Some(first) = zones.first() {
             order.edges[i].zone_id = Some(uuid_string(first.id()));
         }
         if let Some(edge) = index.edge(edge_id) {
-            let zone_policies: Vec<_> = zones.iter()
+            let zone_policies: Vec<_> = zones
+                .iter()
                 .map(|z| parse_zone_policy(z.properties()))
                 .collect();
-            let semantics = derive_effective_edge_semantics(&edge.properties, false, &zone_policies);
-            if let Some(s) = semantics.speed_limit { order.edges[i].max_speed = Some(s); }
-            order.edges[i].bidirectional = !semantics.directed
-                || semantics.reversible.unwrap_or(false);
+            let semantics =
+                derive_effective_edge_semantics(&edge.properties, false, &zone_policies);
+            if let Some(s) = semantics.speed_limit {
+                order.edges[i].max_speed = Some(s);
+            }
+            order.edges[i].bidirectional =
+                !semantics.directed || semantics.reversible.unwrap_or(false);
             if semantics.requires_claim.unwrap_or(false) {
                 order.edges[i].reservations.push(ResourceReservation {
                     target_id: uuid_string(edge.id),
@@ -131,7 +141,9 @@ pub fn try_map_route_plan_with_index(
     }
 
     for (i, &node_id) in route_plan.traversed_node_ids.iter().enumerate() {
-        if i >= order.nodes.len() { break; }
+        if i >= order.nodes.len() {
+            break;
+        }
         for zone in index.zones_of_node(node_id) {
             let policy = parse_zone_policy(zone.properties());
             if policy.requires_claim
@@ -156,10 +168,7 @@ pub fn map_route_plan(route_plan: &RoutePlan) -> Order {
     try_map_route_plan(route_plan).unwrap_or_default()
 }
 
-pub fn map_route_plan_with_index(
-    index: &WorkspaceIndex,
-    route_plan: &RoutePlan,
-) -> Order {
+pub fn map_route_plan_with_index(index: &WorkspaceIndex, route_plan: &RoutePlan) -> Order {
     try_map_route_plan_with_index(index, route_plan).unwrap_or_default()
 }
 
@@ -168,12 +177,18 @@ pub fn map_robot_state(state: &RobotState) -> State {
         agv_id: state.robot_id.raw().to_string(),
         operating_mode: if state.route_plan.is_some() {
             OperatingMode::Automatic
-        } else { OperatingMode::Manual },
+        } else {
+            OperatingMode::Manual
+        },
         connection_state: ConnectionState::Online,
         ..State::default()
     };
-    if let Some(n) = state.current_node_id { s.last_node_id = Some(uuid_string(n)); }
-    if let Some(e) = state.current_edge_id { s.last_edge_id = Some(uuid_string(e)); }
+    if let Some(n) = state.current_node_id {
+        s.last_node_id = Some(uuid_string(n));
+    }
+    if let Some(e) = state.current_edge_id {
+        s.last_edge_id = Some(uuid_string(e));
+    }
     if let Some(plan) = state.route_plan.as_ref() {
         s.order_id = Some(uuid_string(plan.goal_node_id));
         s.order_update_id = plan.traversed_edge_ids.len() as u32;
@@ -181,8 +196,10 @@ pub fn map_robot_state(state: &RobotState) -> State {
     s.driving_state = Some(
         if state.progress_state == RobotProgressState::FollowingRoute {
             "DRIVING"
-        } else { "STOPPED" }
-        .into()
+        } else {
+            "STOPPED"
+        }
+        .into(),
     );
     s.paused = state.progress_state == RobotProgressState::Waiting
         || state.progress_state == RobotProgressState::Blocked;
@@ -193,10 +210,7 @@ pub fn map_robot_state(state: &RobotState) -> State {
     s
 }
 
-pub fn map_robot_state_with_claims(
-    state: &RobotState,
-    claim_manager: &ClaimManager,
-) -> State {
+pub fn map_robot_state_with_claims(state: &RobotState, claim_manager: &ClaimManager) -> State {
     let mut s = map_robot_state(state);
     if !state.active_lease_ids.is_empty() {
         s.action_states.push("holding_leases".into());
@@ -234,14 +248,18 @@ pub fn map_robot_state_with_claims(
 pub struct Adapter;
 
 impl Adapter {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     pub fn order_from_route(&self, route_plan: &RoutePlan) -> Order {
         map_route_plan(route_plan)
     }
 
     pub fn order_from_route_with_index(
-        &self, index: &WorkspaceIndex, route_plan: &RoutePlan,
+        &self,
+        index: &WorkspaceIndex,
+        route_plan: &RoutePlan,
     ) -> Order {
         map_route_plan_with_index(index, route_plan)
     }
@@ -251,7 +269,9 @@ impl Adapter {
     }
 
     pub fn state_from_robot_with_claims(
-        &self, robot_state: &RobotState, claim_manager: &ClaimManager,
+        &self,
+        robot_state: &RobotState,
+        claim_manager: &ClaimManager,
     ) -> State {
         map_robot_state_with_claims(robot_state, claim_manager)
     }
@@ -283,5 +303,7 @@ impl Adapter {
 }
 
 impl Default for Adapter {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

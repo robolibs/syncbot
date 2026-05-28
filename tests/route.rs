@@ -2,23 +2,26 @@
 //! `test/route_module_test.cpp`.
 
 use datapod::{Geo, Point, Polygon};
-use std::collections::BTreeMap as OMap;
 use graphix::vertex::EdgeType;
+use std::collections::BTreeMap as OMap;
 use timenav::{
     RouteCostModel, RouteFailureKind, WorkspaceIndex, accumulate_route_cost,
-    diagnose_route_failure, plan_route, shortest_path_search,
-    shortest_path_search_with_blocking, validate_route_plan_shape,
+    diagnose_route_failure, plan_route, shortest_path_search, shortest_path_search_with_blocking,
+    validate_route_plan_shape,
 };
 use uuid::Uuid;
 use zoneout::{NodeData, Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
-    Polygon { vertices: vec![
-        Point::new(min_x, min_y, 0.0),
-        Point::new(max_x, min_y, 0.0),
-        Point::new(max_x, max_y, 0.0),
-        Point::new(min_x, max_y, 0.0),
-    ].into() }
+    Polygon {
+        vertices: vec![
+            Point::new(min_x, min_y, 0.0),
+            Point::new(max_x, min_y, 0.0),
+            Point::new(max_x, max_y, 0.0),
+            Point::new(min_x, max_y, 0.0),
+        ]
+        .into(),
+    }
 }
 
 struct Fixture {
@@ -82,7 +85,10 @@ fn make_fixture() -> Fixture {
     let nc = NodeData::new(Point::new(50.0, 20.0, 0.0));
     let nd = NodeData::new(Point::new(75.0, 20.0, 0.0));
 
-    let a_id = na.id; let b_id = nb.id; let c_id = nc.id; let d_id = nd.id;
+    let a_id = na.id;
+    let b_id = nb.id;
+    let c_id = nc.id;
+    let d_id = nd.id;
 
     let va = ws.add_node_data(na);
     let vb = ws.add_node_data(nb);
@@ -102,9 +108,16 @@ fn make_fixture() -> Fixture {
 
     Fixture {
         workspace: ws,
-        a: a_id, b: b_id, c: c_id, d: d_id,
-        edge_ab, edge_bd, edge_ac, edge_cd,
-        blocked_zone, slow_zone,
+        a: a_id,
+        b: b_id,
+        c: c_id,
+        d: d_id,
+        edge_ab,
+        edge_bd,
+        edge_ac,
+        edge_cd,
+        blocked_zone,
+        slow_zone,
     }
 }
 
@@ -128,7 +141,16 @@ fn blocking_skips_blocked_zone() {
     // blocked zones unless explicitly attached. Let's at least verify the
     // result is found and no panic.
     assert!(s.found);
-    let _ = (f.edge_ab, f.edge_bd, f.edge_ac, f.edge_cd, f.blocked_zone, f.slow_zone, f.b, f.c);
+    let _ = (
+        f.edge_ab,
+        f.edge_bd,
+        f.edge_ac,
+        f.edge_cd,
+        f.blocked_zone,
+        f.slow_zone,
+        f.b,
+        f.c,
+    );
 }
 
 #[test]
@@ -138,7 +160,8 @@ fn unreachable_when_no_path() {
         .with_kind("workspace")
         .with_boundary(rectangle(0.0, 0.0, 50.0, 50.0))
         .with_datum(Geo::new(52.0, 5.0, 0.0))
-        .build().unwrap();
+        .build()
+        .unwrap();
     let mut ws = Workspace::new(root);
     let n1 = ws.add_node(Point::new(5.0, 5.0, 0.0), OMap::new());
     let n2 = ws.add_node(Point::new(40.0, 40.0, 0.0), OMap::new());
@@ -174,9 +197,12 @@ fn plan_route_validates_shape() {
     assert_eq!(plan.goal_node_id, f.d);
     assert_eq!(plan.traversed_node_ids.first(), Some(&f.a));
     assert_eq!(plan.traversed_node_ids.last(), Some(&f.d));
-    assert_eq!(plan.traversed_edge_ids.len() + 1, plan.traversed_node_ids.len());
+    assert_eq!(
+        plan.traversed_edge_ids.len() + 1,
+        plan.traversed_node_ids.len()
+    );
 
-    let cost = accumulate_route_cost(&idx, &plan.traversed_node_ids,
-                                     RouteCostModel::GraphWeight).unwrap();
+    let cost =
+        accumulate_route_cost(&idx, &plan.traversed_node_ids, RouteCostModel::GraphWeight).unwrap();
     assert_eq!(cost, plan.total_cost);
 }

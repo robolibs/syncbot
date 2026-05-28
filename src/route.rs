@@ -15,8 +15,8 @@ use zoneout::EdgeData;
 use crate::core::error::{Error, Result};
 use crate::index::WorkspaceIndex;
 use crate::policy::{
-    ZonePolicy, ZonePolicyKind, derive_effective_edge_semantics,
-    parse_edge_traffic_semantics, parse_zone_policy,
+    ZonePolicy, ZonePolicyKind, derive_effective_edge_semantics, parse_edge_traffic_semantics,
+    parse_zone_policy,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -68,7 +68,9 @@ pub enum RouteFailureKind {
 }
 
 impl Default for RouteFailureKind {
-    fn default() -> Self { Self::Unreachable }
+    fn default() -> Self {
+        Self::Unreachable
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -90,7 +92,10 @@ pub struct RoutePlanningResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RouteCostModel { GraphWeight, Penalized }
+pub enum RouteCostModel {
+    GraphWeight,
+    Penalized,
+}
 
 #[derive(Debug, Clone)]
 struct TraversalNeighbor {
@@ -133,7 +138,9 @@ pub fn blocked_zones_for_edge(index: &WorkspaceIndex, edge_id: Uuid) -> Vec<Uuid
 }
 
 pub fn is_edge_hard_blocked(index: &WorkspaceIndex, edge_id: Uuid) -> bool {
-    let Some(edge) = index.edge(edge_id) else { return true; };
+    let Some(edge) = index.edge(edge_id) else {
+        return true;
+    };
     let semantics = parse_edge_traffic_semantics(&edge.properties, false);
     if semantics.blocked.unwrap_or(false) || semantics.no_stop.unwrap_or(false) {
         return true;
@@ -142,7 +149,9 @@ pub fn is_edge_hard_blocked(index: &WorkspaceIndex, edge_id: Uuid) -> bool {
 }
 
 pub fn edge_traversal_penalty(index: &WorkspaceIndex, edge_id: Uuid) -> f64 {
-    let Some(edge) = index.edge(edge_id) else { return f64::INFINITY; };
+    let Some(edge) = index.edge(edge_id) else {
+        return f64::INFINITY;
+    };
     let zone_policies: Vec<ZonePolicy> = index
         .zones_of_edge(edge_id)
         .into_iter()
@@ -152,25 +161,61 @@ pub fn edge_traversal_penalty(index: &WorkspaceIndex, edge_id: Uuid) -> f64 {
     let semantics = derive_effective_edge_semantics(&edge.properties, false, &zone_policies);
 
     let mut penalty = 0.0;
-    if let Some(b) = semantics.cost_bias { penalty += b.max(0.0); }
-    if let Some(s) = semantics.speed_limit { if s > 0.0 { penalty += 1.0 / s; } }
-    if let Some(p) = semantics.priority { penalty += (10.0 - p).max(0.0) * 0.1; }
-    if let Some(c) = semantics.capacity { if c > 0 { penalty += 1.0 / c as f64; } }
-    if semantics.lane_type.as_deref() == Some("corridor") { penalty += 0.75; }
-    if semantics.passing_allowed == Some(false) { penalty += 0.5; }
-    if semantics.directed && !semantics.reversible.unwrap_or(false) { penalty += 0.25; }
-    if semantics.no_stop.unwrap_or(false) { penalty += 2.0; }
-    if let Some(w) = semantics.clearance_width { if w > 0.0 { penalty += 1.0 / w; } }
-    if let Some(h) = semantics.clearance_height { if h > 0.0 { penalty += 1.0 / h; } }
+    if let Some(b) = semantics.cost_bias {
+        penalty += b.max(0.0);
+    }
+    if let Some(s) = semantics.speed_limit {
+        if s > 0.0 {
+            penalty += 1.0 / s;
+        }
+    }
+    if let Some(p) = semantics.priority {
+        penalty += (10.0 - p).max(0.0) * 0.1;
+    }
+    if let Some(c) = semantics.capacity {
+        if c > 0 {
+            penalty += 1.0 / c as f64;
+        }
+    }
+    if semantics.lane_type.as_deref() == Some("corridor") {
+        penalty += 0.75;
+    }
+    if semantics.passing_allowed == Some(false) {
+        penalty += 0.5;
+    }
+    if semantics.directed && !semantics.reversible.unwrap_or(false) {
+        penalty += 0.25;
+    }
+    if semantics.no_stop.unwrap_or(false) {
+        penalty += 2.0;
+    }
+    if let Some(w) = semantics.clearance_width {
+        if w > 0.0 {
+            penalty += 1.0 / w;
+        }
+    }
+    if let Some(h) = semantics.clearance_height {
+        if h > 0.0 {
+            penalty += 1.0 / h;
+        }
+    }
 
     for zp in &zone_policies {
         if zp.requires_claim || zp.blocks_entry_without_grant || zp.blocks_traversal_without_grant {
             penalty += 100.0;
         }
-        if let Some(p) = zp.priority { penalty += (10.0 - p).max(0.0) * 0.05; }
-        if zp.waiting_allowed == Some(false) { penalty += 1.5; }
-        if zp.stop_allowed == Some(false) { penalty += 2.0; }
-        if zp.kind == ZonePolicyKind::Corridor { penalty += 0.75; }
+        if let Some(p) = zp.priority {
+            penalty += (10.0 - p).max(0.0) * 0.05;
+        }
+        if zp.waiting_allowed == Some(false) {
+            penalty += 1.5;
+        }
+        if zp.stop_allowed == Some(false) {
+            penalty += 2.0;
+        }
+        if zp.kind == ZonePolicyKind::Corridor {
+            penalty += 0.75;
+        }
     }
 
     penalty
@@ -183,19 +228,31 @@ pub fn edge_traversal_penalty(index: &WorkspaceIndex, edge_id: Uuid) -> f64 {
 fn neighbors_of(index: &WorkspaceIndex, node_id: Uuid) -> Vec<TraversalNeighbor> {
     let workspace = index.workspace();
     let g = workspace.graph();
-    let Some(vid) = workspace.find_node(node_id) else { return Vec::new(); };
+    let Some(vid) = workspace.find_node(node_id) else {
+        return Vec::new();
+    };
 
     let mut out = Vec::new();
     for edge in g.edges() {
-        let (Some(src), Some(tgt)) = (g.source(edge.id), g.target(edge.id)) else { continue };
-        if src != vid && tgt != vid { continue; }
+        let (Some(src), Some(tgt)) = (g.source(edge.id), g.target(edge.id)) else {
+            continue;
+        };
+        if src != vid && tgt != vid {
+            continue;
+        }
         let from_source = src == vid;
 
-        let Some(prop) = g.edge_property(edge.id) else { continue };
-        if !allows_traversal_from_node(prop, from_source) { continue; }
+        let Some(prop) = g.edge_property(edge.id) else {
+            continue;
+        };
+        if !allows_traversal_from_node(prop, from_source) {
+            continue;
+        }
 
         let other = if from_source { tgt } else { src };
-        let Some(other_node) = g.get_vertex(other) else { continue };
+        let Some(other_node) = g.get_vertex(other) else {
+            continue;
+        };
         let weight = g.get_weight(edge.id).unwrap_or(0.0);
         out.push(TraversalNeighbor {
             node_id: other_node.id,
@@ -213,17 +270,24 @@ struct QueueEntry {
 }
 
 impl PartialEq for QueueEntry {
-    fn eq(&self, other: &Self) -> bool { self.distance.eq(&other.distance) }
+    fn eq(&self, other: &Self) -> bool {
+        self.distance.eq(&other.distance)
+    }
 }
 impl Eq for QueueEntry {}
 impl PartialOrd for QueueEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 impl Ord for QueueEntry {
     // Reverse: smaller distance is "greater" so BinaryHeap (max-heap) yields
     // smallest first.
     fn cmp(&self, other: &Self) -> Ordering {
-        other.distance.partial_cmp(&self.distance).unwrap_or(Ordering::Equal)
+        other
+            .distance
+            .partial_cmp(&self.distance)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -235,7 +299,9 @@ fn dijkstra_inner(
     extra_cost: impl Fn(Uuid) -> f64,
 ) -> RouteSearchState {
     let mut state = RouteSearchState::default();
-    if index.node(start).is_none() || index.node(goal).is_none() { return state; }
+    if index.node(start).is_none() || index.node(goal).is_none() {
+        return state;
+    }
     if start == goal {
         state.found = true;
         state.distance = 0.0;
@@ -246,18 +312,27 @@ fn dijkstra_inner(
     let mut frontier: BinaryHeap<QueueEntry> = BinaryHeap::new();
     let mut visited: HashSet<Uuid> = HashSet::new();
     state.distances.insert(start, 0.0);
-    frontier.push(QueueEntry { node_id: start, distance: 0.0 });
+    frontier.push(QueueEntry {
+        node_id: start,
+        distance: 0.0,
+    });
 
     while let Some(current) = frontier.pop() {
-        if !visited.insert(current.node_id) { continue; }
+        if !visited.insert(current.node_id) {
+            continue;
+        }
         if current.node_id == goal {
             state.found = true;
             state.distance = current.distance;
             return state;
         }
         for nb in neighbors_of(index, current.node_id) {
-            if visited.contains(&nb.node_id) { continue; }
-            if skip_edge(nb.edge_id) { continue; }
+            if visited.contains(&nb.node_id) {
+                continue;
+            }
+            if skip_edge(nb.edge_id) {
+                continue;
+            }
             let new_distance = current.distance + nb.weight + extra_cost(nb.edge_id);
             let better = match state.distances.get(&nb.node_id) {
                 None => true,
@@ -266,18 +341,17 @@ fn dijkstra_inner(
             if better {
                 state.distances.insert(nb.node_id, new_distance);
                 state.predecessors.insert(nb.node_id, current.node_id);
-                frontier.push(QueueEntry { node_id: nb.node_id, distance: new_distance });
+                frontier.push(QueueEntry {
+                    node_id: nb.node_id,
+                    distance: new_distance,
+                });
             }
         }
     }
     state
 }
 
-pub fn shortest_path_search(
-    index: &WorkspaceIndex,
-    start: Uuid,
-    goal: Uuid,
-) -> RouteSearchState {
+pub fn shortest_path_search(index: &WorkspaceIndex, start: Uuid, goal: Uuid) -> RouteSearchState {
     dijkstra_inner(index, start, goal, |_| false, |_| 0.0)
 }
 
@@ -287,7 +361,9 @@ pub fn shortest_path_search_with_blocking(
     goal: Uuid,
 ) -> RouteSearchState {
     dijkstra_inner(
-        index, start, goal,
+        index,
+        start,
+        goal,
         |edge_id| is_edge_hard_blocked(index, edge_id),
         |_| 0.0,
     )
@@ -299,7 +375,9 @@ pub fn shortest_path_search_with_penalties(
     goal: Uuid,
 ) -> RouteSearchState {
     dijkstra_inner(
-        index, start, goal,
+        index,
+        start,
+        goal,
         |edge_id| is_edge_hard_blocked(index, edge_id),
         |edge_id| edge_traversal_penalty(index, edge_id),
     )
@@ -309,18 +387,18 @@ pub fn shortest_path_search_with_penalties(
 // reconstruction & extraction
 // ---------------------------------------------------------------------------
 
-fn reconstruct_route_nodes(
-    search: &RouteSearchState,
-    start: Uuid,
-    goal: Uuid,
-) -> Vec<Uuid> {
+fn reconstruct_route_nodes(search: &RouteSearchState, start: Uuid, goal: Uuid) -> Vec<Uuid> {
     let mut nodes = Vec::new();
-    if !search.found { return nodes; }
+    if !search.found {
+        return nodes;
+    }
 
     let mut current = goal;
     nodes.push(current);
     while current != start {
-        let Some(&pred) = search.predecessors.get(&current) else { return Vec::new(); };
+        let Some(&pred) = search.predecessors.get(&current) else {
+            return Vec::new();
+        };
         current = pred;
         nodes.push(current);
     }
@@ -333,7 +411,9 @@ pub fn extract_traversed_node_ids(
     start: Uuid,
     goal: Uuid,
 ) -> Result<Vec<Uuid>> {
-    if !search.found { return Ok(Vec::new()); }
+    if !search.found {
+        return Ok(Vec::new());
+    }
     let nodes = reconstruct_route_nodes(search, start, goal);
     if nodes.is_empty() && start != goal {
         return Err(Error::not_found(
@@ -348,7 +428,9 @@ pub fn extract_traversed_edge_ids_from_nodes(
     route_nodes: &[Uuid],
 ) -> Result<Vec<Uuid>> {
     let mut out = Vec::new();
-    if route_nodes.len() < 2 { return Ok(out); }
+    if route_nodes.len() < 2 {
+        return Ok(out);
+    }
     for i in 1..route_nodes.len() {
         let Some(edge) = index.edge_between(route_nodes[i - 1], route_nodes[i]) else {
             return Err(Error::not_found(
@@ -378,13 +460,17 @@ pub fn extract_traversed_zone_ids_from_nodes(
     let mut seen: HashSet<Uuid> = HashSet::new();
     for node_id in route_nodes {
         for zone in index.zones_of_node(*node_id) {
-            if seen.insert(zone.id()) { traversed.push(zone.id()); }
+            if seen.insert(zone.id()) {
+                traversed.push(zone.id());
+            }
         }
     }
     let edges = extract_traversed_edge_ids_from_nodes(index, route_nodes)?;
     for edge_id in edges {
         for zone in index.zones_of_edge(edge_id) {
-            if seen.insert(zone.id()) { traversed.push(zone.id()); }
+            if seen.insert(zone.id()) {
+                traversed.push(zone.id());
+            }
         }
     }
     Ok(traversed)
@@ -409,7 +495,9 @@ pub fn accumulate_route_cost(
     route_nodes: &[Uuid],
     cost_model: RouteCostModel,
 ) -> Result<f64> {
-    if route_nodes.is_empty() { return Ok(0.0); }
+    if route_nodes.is_empty() {
+        return Ok(0.0);
+    }
     let workspace = index.workspace();
 
     let mut total = 0.0;
@@ -457,7 +545,10 @@ pub fn reconstruct_route_steps(
 
     let mut cumulative = 0.0;
     for (i, node_id) in nodes.iter().enumerate() {
-        let mut step = RouteStep { node_id: *node_id, ..RouteStep::default() };
+        let mut step = RouteStep {
+            node_id: *node_id,
+            ..RouteStep::default()
+        };
         if i > 0 {
             let edge = index.edge_between(nodes[i - 1], nodes[i]).ok_or_else(|| {
                 Error::not_found(
@@ -582,11 +673,19 @@ pub fn build_route_plan(
     plan.traversed_zone_ids = extract_traversed_zone_ids_from_nodes(index, route_nodes)?;
 
     for &node_id in route_nodes {
-        let zones: Vec<Uuid> = index.zones_of_node(node_id).into_iter().map(|z| z.id()).collect();
+        let zones: Vec<Uuid> = index
+            .zones_of_node(node_id)
+            .into_iter()
+            .map(|z| z.id())
+            .collect();
         plan.traversed_node_zone_ids.push(zones);
     }
     for &edge_id in &plan.traversed_edge_ids {
-        let zones: Vec<Uuid> = index.zones_of_edge(edge_id).into_iter().map(|z| z.id()).collect();
+        let zones: Vec<Uuid> = index
+            .zones_of_edge(edge_id)
+            .into_iter()
+            .map(|z| z.id())
+            .collect();
         plan.traversed_edge_zone_ids.push(zones);
     }
 
@@ -594,7 +693,10 @@ pub fn build_route_plan(
 
     let mut cumulative = 0.0;
     for (i, &node_id) in route_nodes.iter().enumerate() {
-        let mut step = RouteStep { node_id, ..RouteStep::default() };
+        let mut step = RouteStep {
+            node_id,
+            ..RouteStep::default()
+        };
         if i > 0 {
             step.incoming_edge_id = Some(plan.traversed_edge_ids[i - 1]);
             let partial = vec![route_nodes[i - 1], route_nodes[i]];
@@ -624,11 +726,7 @@ pub fn build_route_plan_from_search(
 // failure diagnosis
 // ---------------------------------------------------------------------------
 
-pub fn diagnose_route_failure(
-    index: &WorkspaceIndex,
-    start: Uuid,
-    goal: Uuid,
-) -> RouteFailure {
+pub fn diagnose_route_failure(index: &WorkspaceIndex, start: Uuid, goal: Uuid) -> RouteFailure {
     if index.node(start).is_none() {
         return RouteFailure {
             kind: RouteFailureKind::MissingStartNode,
@@ -672,14 +770,19 @@ pub fn diagnose_route_failure(
                             .map(|z| parse_zone_policy(z.properties()))
                             .collect();
                         let semantics = derive_effective_edge_semantics(
-                            &edge.properties, false, &zone_policies);
+                            &edge.properties,
+                            false,
+                            &zone_policies,
+                        );
                         if semantics.requires_claim.unwrap_or(false)
                             || semantics.access_group.is_some()
                         {
                             saw_restricted_resource = true;
                         }
                         if let Some(s) = semantics.speed_limit {
-                            if s < 1.0 { saw_slow_resource = true; }
+                            if s < 1.0 {
+                                saw_slow_resource = true;
+                            }
                         }
                     }
                     continue;
@@ -702,7 +805,9 @@ pub fn diagnose_route_failure(
                 extract_traversed_edge_ids_from_nodes(index, &unconstrained_nodes)
             {
                 for edge_id in unconstrained_edges {
-                    if !is_edge_hard_blocked(index, edge_id) { continue; }
+                    if !is_edge_hard_blocked(index, edge_id) {
+                        continue;
+                    }
                     if seen_blocked_edges.insert(edge_id) {
                         blocked_edge_ids.push(edge_id);
                     }
@@ -722,7 +827,8 @@ pub fn diagnose_route_failure(
             );
         }
         if saw_slow_resource {
-            diagnostics.push("slowdown policies affect costs but do not hard-block planning".into());
+            diagnostics
+                .push("slowdown policies affect costs but do not hard-block planning".into());
         }
         diagnostics.push(
             "blocked or restricted resources must be claimed; slowdown only increases cost".into(),
@@ -732,7 +838,8 @@ pub fn diagnose_route_failure(
         if !blocked_edge_ids.is_empty() || !blocked_zone_ids.is_empty() {
             message.push_str(&format!(
                 " ({} blocked edge(s), {} blocked zone(s))",
-                blocked_edge_ids.len(), blocked_zone_ids.len(),
+                blocked_edge_ids.len(),
+                blocked_zone_ids.len(),
             ));
         }
 
@@ -748,8 +855,7 @@ pub fn diagnose_route_failure(
     }
 
     // Unreachable
-    let mut reachable_node_ids: Vec<Uuid> =
-        unconstrained.distances.keys().copied().collect();
+    let mut reachable_node_ids: Vec<Uuid> = unconstrained.distances.keys().copied().collect();
     if reachable_node_ids.is_empty() && index.node(start).is_some() {
         reachable_node_ids.push(start);
     }
@@ -759,13 +865,23 @@ pub fn diagnose_route_failure(
     let workspace = index.workspace();
     let g = workspace.graph();
     for &node_id in &reachable_node_ids {
-        let Some(vid) = workspace.find_node(node_id) else { continue };
+        let Some(vid) = workspace.find_node(node_id) else {
+            continue;
+        };
         for edge in g.edges() {
-            let (Some(src), Some(tgt)) = (g.source(edge.id), g.target(edge.id)) else { continue };
-            if src != vid && tgt != vid { continue; }
+            let (Some(src), Some(tgt)) = (g.source(edge.id), g.target(edge.id)) else {
+                continue;
+            };
+            if src != vid && tgt != vid {
+                continue;
+            }
             let from_source = src == vid;
-            let Some(prop) = g.edge_property(edge.id) else { continue };
-            if allows_traversal_from_node(prop, from_source) { continue; }
+            let Some(prop) = g.edge_property(edge.id) else {
+                continue;
+            };
+            if allows_traversal_from_node(prop, from_source) {
+                continue;
+            }
             if seen_directional.insert(prop.id) {
                 directionally_blocked_edge_ids.push(prop.id);
             }
@@ -827,7 +943,11 @@ pub fn plan_route(
         return result;
     }
 
-    let cost_model = if use_penalties { RouteCostModel::Penalized } else { RouteCostModel::GraphWeight };
+    let cost_model = if use_penalties {
+        RouteCostModel::Penalized
+    } else {
+        RouteCostModel::GraphWeight
+    };
     match build_route_plan_from_search(index, &result.search, start, goal, cost_model) {
         Ok(plan) => result.plan = Some(plan),
         Err(err) => {

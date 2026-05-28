@@ -1,28 +1,31 @@
 //! VDA adapter integration tests.
 
 use datapod::{Geo, Point, Polygon};
-use std::collections::BTreeMap as OMap;
 use graphix::vertex::EdgeType;
-use timenav::{
-    RobotProgressState, RobotState, WorkspaceIndex, plan_route, vda,
-};
+use std::collections::BTreeMap as OMap;
+use timenav::{RobotProgressState, RobotState, WorkspaceIndex, plan_route, vda};
 use zoneout::{NodeData, Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
-    Polygon { vertices: vec![
-        Point::new(min_x, min_y, 0.0),
-        Point::new(max_x, min_y, 0.0),
-        Point::new(max_x, max_y, 0.0),
-        Point::new(min_x, max_y, 0.0),
-    ].into() }
+    Polygon {
+        vertices: vec![
+            Point::new(min_x, min_y, 0.0),
+            Point::new(max_x, min_y, 0.0),
+            Point::new(max_x, max_y, 0.0),
+            Point::new(min_x, max_y, 0.0),
+        ]
+        .into(),
+    }
 }
 
 fn three_node_workspace() -> Workspace {
     let root = ZoneBuilder::new()
-        .with_name("root").with_kind("workspace")
+        .with_name("root")
+        .with_kind("workspace")
         .with_boundary(rectangle(0.0, 0.0, 100.0, 100.0))
         .with_datum(Geo::new(52.0, 5.0, 0.0))
-        .build().unwrap();
+        .build()
+        .unwrap();
     let mut ws = Workspace::new(root);
     let n1 = ws.add_node_data(NodeData::new(Point::new(10.0, 10.0, 0.0)));
     let n2 = ws.add_node_data(NodeData::new(Point::new(50.0, 10.0, 0.0)));

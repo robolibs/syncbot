@@ -1,10 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ConnectionStatus { Online, Offline, ConnectionBroken }
+pub enum ConnectionStatus {
+    Online,
+    Offline,
+    ConnectionBroken,
+}
 
 impl Default for ConnectionStatus {
-    fn default() -> Self { Self::Offline }
+    fn default() -> Self {
+        Self::Offline
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

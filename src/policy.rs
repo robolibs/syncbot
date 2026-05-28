@@ -4,8 +4,8 @@
 //! derives traffic-typed views over the `traffic.*` string properties on
 //! zones and edges.
 
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::core::error::{Error, Result};
 
@@ -23,11 +23,16 @@ pub enum ZonePolicyKind {
 }
 
 impl Default for ZonePolicyKind {
-    fn default() -> Self { Self::Informational }
+    fn default() -> Self {
+        Self::Informational
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TrafficIssueSeverity { Warning, Error }
+pub enum TrafficIssueSeverity {
+    Warning,
+    Error,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrafficParseIssue {
@@ -70,7 +75,10 @@ pub struct ZonePolicy {
 
 impl ZonePolicy {
     pub fn empty() -> Self {
-        Self { capacity: 1, ..Self::default() }
+        Self {
+            capacity: 1,
+            ..Self::default()
+        }
     }
 }
 
@@ -106,9 +114,13 @@ pub struct EdgeTrafficSemantics {
 // ---------------------------------------------------------------------------
 
 mod parse {
-    pub fn trim(s: &str) -> &str { s.trim_matches(|c: char| c.is_whitespace()) }
+    pub fn trim(s: &str) -> &str {
+        s.trim_matches(|c: char| c.is_whitespace())
+    }
 
-    pub fn lower(s: &str) -> String { s.to_ascii_lowercase() }
+    pub fn lower(s: &str) -> String {
+        s.to_ascii_lowercase()
+    }
 
     pub fn parse_bool(value: &str) -> Option<bool> {
         match lower(trim(value)).as_str() {
@@ -143,8 +155,14 @@ mod parse {
     pub fn is_known_zone_policy_kind(value: &str) -> bool {
         matches!(
             lower(trim(value)).as_str(),
-            "informational" | "exclusive" | "shared" | "corridor" | "restricted"
-                | "slow" | "replanning" | "no_stop"
+            "informational"
+                | "exclusive"
+                | "shared"
+                | "corridor"
+                | "restricted"
+                | "slow"
+                | "replanning"
+                | "no_stop"
         )
     }
 
@@ -158,29 +176,50 @@ mod parse {
     pub fn is_known_preferred_direction(value: &str) -> bool {
         matches!(
             lower(trim(value)).as_str(),
-            "forward" | "reverse" | "bidirectional" | "source_to_target"
-                | "target_to_source" | "eastbound" | "westbound"
-                | "northbound" | "southbound"
+            "forward"
+                | "reverse"
+                | "bidirectional"
+                | "source_to_target"
+                | "target_to_source"
+                | "eastbound"
+                | "westbound"
+                | "northbound"
+                | "southbound"
         )
     }
 
     pub fn is_known_zone_traffic_key(key: &str) -> bool {
         matches!(
             key,
-            "traffic.policy" | "traffic.mode" | "traffic.capacity"
-                | "traffic.max_occupancy" | "traffic.maxOccupancy"
-                | "traffic.priority" | "traffic.claim_required"
-                | "traffic.claimRequired" | "traffic.entry_rule"
-                | "traffic.entryRule" | "traffic.exit_rule"
-                | "traffic.exitRule" | "traffic.speed_limit"
-                | "traffic.speedLimit" | "traffic.waiting_allowed"
-                | "traffic.waitingAllowed" | "traffic.stop_allowed"
-                | "traffic.stopAllowed" | "traffic.no_stop"
-                | "traffic.noStop" | "traffic.replan_trigger"
-                | "traffic.replanTrigger" | "traffic.blocked"
-                | "traffic.robot_class" | "traffic.robotClass"
-                | "traffic.schedule_window" | "traffic.scheduleWindow"
-                | "traffic.access_group" | "traffic.accessGroup"
+            "traffic.policy"
+                | "traffic.mode"
+                | "traffic.capacity"
+                | "traffic.max_occupancy"
+                | "traffic.maxOccupancy"
+                | "traffic.priority"
+                | "traffic.claim_required"
+                | "traffic.claimRequired"
+                | "traffic.entry_rule"
+                | "traffic.entryRule"
+                | "traffic.exit_rule"
+                | "traffic.exitRule"
+                | "traffic.speed_limit"
+                | "traffic.speedLimit"
+                | "traffic.waiting_allowed"
+                | "traffic.waitingAllowed"
+                | "traffic.stop_allowed"
+                | "traffic.stopAllowed"
+                | "traffic.no_stop"
+                | "traffic.noStop"
+                | "traffic.replan_trigger"
+                | "traffic.replanTrigger"
+                | "traffic.blocked"
+                | "traffic.robot_class"
+                | "traffic.robotClass"
+                | "traffic.schedule_window"
+                | "traffic.scheduleWindow"
+                | "traffic.access_group"
+                | "traffic.accessGroup"
                 | "traffic.blocks_entry_without_grant"
                 | "traffic.blocksEntryWithoutGrant"
                 | "traffic.blocks_traversal_without_grant"
@@ -191,27 +230,47 @@ mod parse {
     pub fn is_known_edge_traffic_key(key: &str) -> bool {
         matches!(
             key,
-            "traffic.speed_limit" | "traffic.speedLimit"
-                | "traffic.lane_type" | "traffic.laneType"
-                | "traffic.lane_kind" | "traffic.laneKind"
-                | "traffic.reversible" | "traffic.passing_allowed"
-                | "traffic.passingAllowed" | "traffic.blocked"
-                | "traffic.priority" | "traffic.capacity"
-                | "traffic.max_occupancy" | "traffic.maxOccupancy"
-                | "traffic.clearance_width" | "traffic.clearanceWidth"
-                | "traffic.clearance_height" | "traffic.clearanceHeight"
-                | "traffic.surface_type" | "traffic.surfaceType"
-                | "traffic.robot_class" | "traffic.robotClass"
-                | "traffic.allowed_payload" | "traffic.allowedPayload"
-                | "traffic.cost_bias" | "traffic.costBias"
-                | "traffic.no_stop" | "traffic.noStop"
+            "traffic.speed_limit"
+                | "traffic.speedLimit"
+                | "traffic.lane_type"
+                | "traffic.laneType"
+                | "traffic.lane_kind"
+                | "traffic.laneKind"
+                | "traffic.reversible"
+                | "traffic.passing_allowed"
+                | "traffic.passingAllowed"
+                | "traffic.blocked"
+                | "traffic.priority"
+                | "traffic.capacity"
+                | "traffic.max_occupancy"
+                | "traffic.maxOccupancy"
+                | "traffic.clearance_width"
+                | "traffic.clearanceWidth"
+                | "traffic.clearance_height"
+                | "traffic.clearanceHeight"
+                | "traffic.surface_type"
+                | "traffic.surfaceType"
+                | "traffic.robot_class"
+                | "traffic.robotClass"
+                | "traffic.allowed_payload"
+                | "traffic.allowedPayload"
+                | "traffic.cost_bias"
+                | "traffic.costBias"
+                | "traffic.no_stop"
+                | "traffic.noStop"
                 | "traffic.preferred_direction"
-                | "traffic.preferredDirection" | "traffic.direction"
-                | "traffic.claim_required" | "traffic.claimRequired"
-                | "traffic.waiting_allowed" | "traffic.waitingAllowed"
-                | "traffic.stop_allowed" | "traffic.stopAllowed"
-                | "traffic.schedule_window" | "traffic.scheduleWindow"
-                | "traffic.access_group" | "traffic.accessGroup"
+                | "traffic.preferredDirection"
+                | "traffic.direction"
+                | "traffic.claim_required"
+                | "traffic.claimRequired"
+                | "traffic.waiting_allowed"
+                | "traffic.waitingAllowed"
+                | "traffic.stop_allowed"
+                | "traffic.stopAllowed"
+                | "traffic.schedule_window"
+                | "traffic.scheduleWindow"
+                | "traffic.access_group"
+                | "traffic.accessGroup"
         )
     }
 
@@ -265,21 +324,18 @@ mod parse {
 // ---------------------------------------------------------------------------
 
 pub fn parse_traffic_bool(value: &str) -> Result<bool> {
-    parse::parse_bool(value).ok_or_else(|| {
-        Error::parse(format!("invalid boolean traffic value: {value}"))
-    })
+    parse::parse_bool(value)
+        .ok_or_else(|| Error::parse(format!("invalid boolean traffic value: {value}")))
 }
 
 pub fn parse_traffic_u64(value: &str) -> Result<u64> {
-    parse::parse_u64(value).ok_or_else(|| {
-        Error::parse(format!("invalid unsigned traffic value: {value}"))
-    })
+    parse::parse_u64(value)
+        .ok_or_else(|| Error::parse(format!("invalid unsigned traffic value: {value}")))
 }
 
 pub fn parse_traffic_f64(value: &str) -> Result<f64> {
-    parse::parse_f64(value).ok_or_else(|| {
-        Error::parse(format!("invalid numeric traffic value: {value}"))
-    })
+    parse::parse_f64(value)
+        .ok_or_else(|| Error::parse(format!("invalid numeric traffic value: {value}")))
 }
 
 pub fn parse_traffic_string(value: &str) -> Result<String> {
@@ -346,16 +402,24 @@ pub fn parse_zone_policy(properties: &BTreeMap<String, String>) -> ZonePolicy {
                 }
             }
             "traffic.priority" => {
-                if let Ok(v) = parse_traffic_f64(value) { policy.priority = Some(v); }
+                if let Ok(v) = parse_traffic_f64(value) {
+                    policy.priority = Some(v);
+                }
             }
             "traffic.speed_limit" => {
-                if let Ok(v) = parse_traffic_f64(value) { policy.speed_limit = Some(v); }
+                if let Ok(v) = parse_traffic_f64(value) {
+                    policy.speed_limit = Some(v);
+                }
             }
             "traffic.waiting_allowed" => {
-                if let Ok(b) = parse_traffic_bool(value) { policy.waiting_allowed = Some(b); }
+                if let Ok(b) = parse_traffic_bool(value) {
+                    policy.waiting_allowed = Some(b);
+                }
             }
             "traffic.stop_allowed" => {
-                if let Ok(b) = parse_traffic_bool(value) { policy.stop_allowed = Some(b); }
+                if let Ok(b) = parse_traffic_bool(value) {
+                    policy.stop_allowed = Some(b);
+                }
             }
             "traffic.no_stop" => {
                 if let Ok(b) = parse_traffic_bool(value) {
@@ -374,19 +438,29 @@ pub fn parse_zone_policy(properties: &BTreeMap<String, String>) -> ZonePolicy {
                 }
             }
             "traffic.entry_rule" => {
-                if let Ok(s) = parse_traffic_string(value) { policy.entry_rule = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    policy.entry_rule = Some(s);
+                }
             }
             "traffic.exit_rule" => {
-                if let Ok(s) = parse_traffic_string(value) { policy.exit_rule = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    policy.exit_rule = Some(s);
+                }
             }
             "traffic.robot_class" => {
-                if let Ok(s) = parse_traffic_string(value) { policy.robot_class = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    policy.robot_class = Some(s);
+                }
             }
             "traffic.schedule_window" => {
-                if let Ok(s) = parse_traffic_string(value) { policy.schedule_window = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    policy.schedule_window = Some(s);
+                }
             }
             "traffic.access_group" => {
-                if let Ok(s) = parse_traffic_string(value) { policy.access_group = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    policy.access_group = Some(s);
+                }
             }
             _ => {}
         }
@@ -398,9 +472,7 @@ pub fn parse_zone_policy(properties: &BTreeMap<String, String>) -> ZonePolicy {
         policy.blocks_traversal_without_grant = true;
     } else if policy.replan_trigger.unwrap_or(false) {
         policy.kind = ZonePolicyKind::Replanning;
-    } else if policy.kind != ZonePolicyKind::Restricted
-        && policy.stop_allowed == Some(false)
-    {
+    } else if policy.kind != ZonePolicyKind::Restricted && policy.stop_allowed == Some(false) {
         policy.kind = ZonePolicyKind::NoStop;
     }
 
@@ -418,7 +490,10 @@ pub fn parse_edge_traffic_semantics(
     properties: &BTreeMap<String, String>,
     directed: bool,
 ) -> EdgeTrafficSemantics {
-    let mut semantics = EdgeTrafficSemantics { directed, ..Default::default() };
+    let mut semantics = EdgeTrafficSemantics {
+        directed,
+        ..Default::default()
+    };
 
     for (key, value) in properties {
         semantics.properties.insert(key.clone(), value.clone());
@@ -426,7 +501,9 @@ pub fn parse_edge_traffic_semantics(
 
         match canonical {
             "traffic.speed_limit" => {
-                if let Ok(v) = parse_traffic_f64(value) { semantics.speed_limit = Some(v); }
+                if let Ok(v) = parse_traffic_f64(value) {
+                    semantics.speed_limit = Some(v);
+                }
             }
             "traffic.lane_type" | "traffic.lane_kind" => {
                 if let Ok(s) = parse_traffic_string(value) {
@@ -434,25 +511,39 @@ pub fn parse_edge_traffic_semantics(
                 }
             }
             "traffic.reversible" => {
-                if let Ok(b) = parse_traffic_bool(value) { semantics.reversible = Some(b); }
+                if let Ok(b) = parse_traffic_bool(value) {
+                    semantics.reversible = Some(b);
+                }
             }
             "traffic.passing_allowed" => {
-                if let Ok(b) = parse_traffic_bool(value) { semantics.passing_allowed = Some(b); }
+                if let Ok(b) = parse_traffic_bool(value) {
+                    semantics.passing_allowed = Some(b);
+                }
             }
             "traffic.claim_required" => {
-                if let Ok(b) = parse_traffic_bool(value) { semantics.requires_claim = Some(b); }
+                if let Ok(b) = parse_traffic_bool(value) {
+                    semantics.requires_claim = Some(b);
+                }
             }
             "traffic.waiting_allowed" => {
-                if let Ok(b) = parse_traffic_bool(value) { semantics.waiting_allowed = Some(b); }
+                if let Ok(b) = parse_traffic_bool(value) {
+                    semantics.waiting_allowed = Some(b);
+                }
             }
             "traffic.stop_allowed" => {
-                if let Ok(b) = parse_traffic_bool(value) { semantics.stop_allowed = Some(b); }
+                if let Ok(b) = parse_traffic_bool(value) {
+                    semantics.stop_allowed = Some(b);
+                }
             }
             "traffic.blocked" => {
-                if let Ok(b) = parse_traffic_bool(value) { semantics.blocked = Some(b); }
+                if let Ok(b) = parse_traffic_bool(value) {
+                    semantics.blocked = Some(b);
+                }
             }
             "traffic.priority" => {
-                if let Ok(v) = parse_traffic_f64(value) { semantics.priority = Some(v); }
+                if let Ok(v) = parse_traffic_f64(value) {
+                    semantics.priority = Some(v);
+                }
             }
             "traffic.capacity" | "traffic.max_occupancy" => {
                 if let Ok(n) = parse_traffic_u64(value) {
@@ -461,25 +552,39 @@ pub fn parse_edge_traffic_semantics(
                 }
             }
             "traffic.clearance_width" => {
-                if let Ok(v) = parse_traffic_f64(value) { semantics.clearance_width = Some(v); }
+                if let Ok(v) = parse_traffic_f64(value) {
+                    semantics.clearance_width = Some(v);
+                }
             }
             "traffic.clearance_height" => {
-                if let Ok(v) = parse_traffic_f64(value) { semantics.clearance_height = Some(v); }
+                if let Ok(v) = parse_traffic_f64(value) {
+                    semantics.clearance_height = Some(v);
+                }
             }
             "traffic.surface_type" => {
-                if let Ok(s) = parse_traffic_string(value) { semantics.surface_type = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    semantics.surface_type = Some(s);
+                }
             }
             "traffic.robot_class" => {
-                if let Ok(s) = parse_traffic_string(value) { semantics.robot_class = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    semantics.robot_class = Some(s);
+                }
             }
             "traffic.allowed_payload" => {
-                if let Ok(s) = parse_traffic_string(value) { semantics.allowed_payload = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    semantics.allowed_payload = Some(s);
+                }
             }
             "traffic.cost_bias" => {
-                if let Ok(v) = parse_traffic_f64(value) { semantics.cost_bias = Some(v); }
+                if let Ok(v) = parse_traffic_f64(value) {
+                    semantics.cost_bias = Some(v);
+                }
             }
             "traffic.no_stop" => {
-                if let Ok(b) = parse_traffic_bool(value) { semantics.no_stop = Some(b); }
+                if let Ok(b) = parse_traffic_bool(value) {
+                    semantics.no_stop = Some(b);
+                }
             }
             "traffic.preferred_direction" | "traffic.direction" => {
                 if let Ok(s) = parse_traffic_string(value) {
@@ -487,10 +592,14 @@ pub fn parse_edge_traffic_semantics(
                 }
             }
             "traffic.schedule_window" => {
-                if let Ok(s) = parse_traffic_string(value) { semantics.schedule_window = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    semantics.schedule_window = Some(s);
+                }
             }
             "traffic.access_group" => {
-                if let Ok(s) = parse_traffic_string(value) { semantics.access_group = Some(s); }
+                if let Ok(s) = parse_traffic_string(value) {
+                    semantics.access_group = Some(s);
+                }
             }
             _ => {}
         }
@@ -509,7 +618,8 @@ pub fn parse_edge_traffic_semantics(
 
 fn sort_traffic_issues(issues: &mut [TrafficParseIssue]) {
     issues.sort_by(|a, b| {
-        a.key.cmp(&b.key)
+        a.key
+            .cmp(&b.key)
             .then_with(|| (a.severity as u8).cmp(&(b.severity as u8)))
             .then_with(|| a.message.cmp(&b.message))
     });
@@ -564,8 +674,12 @@ pub fn validate_zone_traffic_properties(
             }
         } else if matches!(
             canonical,
-            "traffic.claim_required" | "traffic.waiting_allowed" | "traffic.stop_allowed"
-                | "traffic.blocked" | "traffic.replan_trigger" | "traffic.no_stop"
+            "traffic.claim_required"
+                | "traffic.waiting_allowed"
+                | "traffic.stop_allowed"
+                | "traffic.blocked"
+                | "traffic.replan_trigger"
+                | "traffic.no_stop"
                 | "traffic.blocks_entry_without_grant"
                 | "traffic.blocks_traversal_without_grant"
         ) {
@@ -578,8 +692,11 @@ pub fn validate_zone_traffic_properties(
             }
         } else if matches!(
             canonical,
-            "traffic.entry_rule" | "traffic.exit_rule" | "traffic.robot_class"
-                | "traffic.schedule_window" | "traffic.access_group"
+            "traffic.entry_rule"
+                | "traffic.exit_rule"
+                | "traffic.robot_class"
+                | "traffic.schedule_window"
+                | "traffic.access_group"
         ) {
             if parse_traffic_string(value).is_err() {
                 issues.push(TrafficParseIssue {
@@ -598,7 +715,8 @@ pub fn validate_zone_traffic_properties(
                     issues.push(TrafficParseIssue {
                         severity: TrafficIssueSeverity::Warning,
                         key: "traffic.stop_allowed".into(),
-                        message: "traffic.stop_allowed=true conflicts with traffic.no_stop=true".into(),
+                        message: "traffic.stop_allowed=true conflicts with traffic.no_stop=true"
+                            .into(),
                     });
                 }
             }
@@ -633,8 +751,10 @@ pub fn validate_edge_traffic_properties(
             }
         } else if matches!(
             canonical,
-            "traffic.speed_limit" | "traffic.priority"
-                | "traffic.clearance_width" | "traffic.clearance_height"
+            "traffic.speed_limit"
+                | "traffic.priority"
+                | "traffic.clearance_width"
+                | "traffic.clearance_height"
                 | "traffic.cost_bias"
         ) {
             let parsed = parse_traffic_f64(value);
@@ -647,7 +767,8 @@ pub fn validate_edge_traffic_properties(
             } else if matches!(
                 canonical,
                 "traffic.speed_limit" | "traffic.clearance_width" | "traffic.clearance_height"
-            ) && parsed.as_ref().ok().copied().unwrap_or(0.0) <= 0.0 {
+            ) && parsed.as_ref().ok().copied().unwrap_or(0.0) <= 0.0
+            {
                 issues.push(TrafficParseIssue {
                     severity: TrafficIssueSeverity::Error,
                     key: key.clone(),
@@ -656,9 +777,13 @@ pub fn validate_edge_traffic_properties(
             }
         } else if matches!(
             canonical,
-            "traffic.reversible" | "traffic.passing_allowed" | "traffic.no_stop"
-                | "traffic.blocked" | "traffic.claim_required"
-                | "traffic.waiting_allowed" | "traffic.stop_allowed"
+            "traffic.reversible"
+                | "traffic.passing_allowed"
+                | "traffic.no_stop"
+                | "traffic.blocked"
+                | "traffic.claim_required"
+                | "traffic.waiting_allowed"
+                | "traffic.stop_allowed"
         ) {
             if parse_traffic_bool(value).is_err() {
                 issues.push(TrafficParseIssue {
@@ -669,11 +794,15 @@ pub fn validate_edge_traffic_properties(
             }
         } else if matches!(
             canonical,
-            "traffic.lane_type" | "traffic.lane_kind"
-                | "traffic.surface_type" | "traffic.robot_class"
+            "traffic.lane_type"
+                | "traffic.lane_kind"
+                | "traffic.surface_type"
+                | "traffic.robot_class"
                 | "traffic.allowed_payload"
-                | "traffic.preferred_direction" | "traffic.direction"
-                | "traffic.schedule_window" | "traffic.access_group"
+                | "traffic.preferred_direction"
+                | "traffic.direction"
+                | "traffic.schedule_window"
+                | "traffic.access_group"
         ) {
             if parse_traffic_string(value).is_err() {
                 issues.push(TrafficParseIssue {
@@ -689,8 +818,10 @@ pub fn validate_edge_traffic_properties(
                     key: key.clone(),
                     message: "unknown lane type keyword".into(),
                 });
-            } else if matches!(canonical, "traffic.preferred_direction" | "traffic.direction")
-                && !parse::is_known_preferred_direction(value)
+            } else if matches!(
+                canonical,
+                "traffic.preferred_direction" | "traffic.direction"
+            ) && !parse::is_known_preferred_direction(value)
             {
                 issues.push(TrafficParseIssue {
                     severity: TrafficIssueSeverity::Warning,
@@ -708,7 +839,8 @@ pub fn validate_edge_traffic_properties(
                     issues.push(TrafficParseIssue {
                         severity: TrafficIssueSeverity::Warning,
                         key: "traffic.stop_allowed".into(),
-                        message: "traffic.stop_allowed=true conflicts with traffic.no_stop=true".into(),
+                        message: "traffic.stop_allowed=true conflicts with traffic.no_stop=true"
+                            .into(),
                     });
                 }
             }
@@ -733,19 +865,18 @@ pub fn validate_edge_traffic_properties(
 pub fn merge_zone_policy(parent: &ZonePolicy, child: &ZonePolicy) -> ZonePolicy {
     let mut merged = parent.clone();
 
-    let merged_kind = if parent.kind == ZonePolicyKind::Restricted
-        || child.kind == ZonePolicyKind::Restricted
-    {
-        ZonePolicyKind::Restricted
-    } else if parent.kind == ZonePolicyKind::ExclusiveAccess
-        || child.kind == ZonePolicyKind::ExclusiveAccess
-    {
-        ZonePolicyKind::ExclusiveAccess
-    } else if child.kind != ZonePolicyKind::Informational {
-        child.kind
-    } else {
-        parent.kind
-    };
+    let merged_kind =
+        if parent.kind == ZonePolicyKind::Restricted || child.kind == ZonePolicyKind::Restricted {
+            ZonePolicyKind::Restricted
+        } else if parent.kind == ZonePolicyKind::ExclusiveAccess
+            || child.kind == ZonePolicyKind::ExclusiveAccess
+        {
+            ZonePolicyKind::ExclusiveAccess
+        } else if child.kind != ZonePolicyKind::Informational {
+            child.kind
+        } else {
+            parent.kind
+        };
 
     merged.kind = merged_kind;
 
@@ -769,17 +900,39 @@ pub fn merge_zone_policy(parent: &ZonePolicy, child: &ZonePolicy) -> ZonePolicy 
     merged.blocks_entry_without_grant =
         parent.blocks_entry_without_grant || child.blocks_entry_without_grant;
 
-    if child.priority.is_some() { merged.priority = child.priority; }
-    if child.speed_limit.is_some() { merged.speed_limit = child.speed_limit; }
-    if child.waiting_allowed.is_some() { merged.waiting_allowed = child.waiting_allowed; }
-    if child.stop_allowed.is_some() { merged.stop_allowed = child.stop_allowed; }
-    if child.blocked.is_some() { merged.blocked = child.blocked; }
-    if child.replan_trigger.is_some() { merged.replan_trigger = child.replan_trigger; }
-    if child.entry_rule.is_some() { merged.entry_rule = child.entry_rule.clone(); }
-    if child.exit_rule.is_some() { merged.exit_rule = child.exit_rule.clone(); }
-    if child.robot_class.is_some() { merged.robot_class = child.robot_class.clone(); }
-    if child.schedule_window.is_some() { merged.schedule_window = child.schedule_window.clone(); }
-    if child.access_group.is_some() { merged.access_group = child.access_group.clone(); }
+    if child.priority.is_some() {
+        merged.priority = child.priority;
+    }
+    if child.speed_limit.is_some() {
+        merged.speed_limit = child.speed_limit;
+    }
+    if child.waiting_allowed.is_some() {
+        merged.waiting_allowed = child.waiting_allowed;
+    }
+    if child.stop_allowed.is_some() {
+        merged.stop_allowed = child.stop_allowed;
+    }
+    if child.blocked.is_some() {
+        merged.blocked = child.blocked;
+    }
+    if child.replan_trigger.is_some() {
+        merged.replan_trigger = child.replan_trigger;
+    }
+    if child.entry_rule.is_some() {
+        merged.entry_rule = child.entry_rule.clone();
+    }
+    if child.exit_rule.is_some() {
+        merged.exit_rule = child.exit_rule.clone();
+    }
+    if child.robot_class.is_some() {
+        merged.robot_class = child.robot_class.clone();
+    }
+    if child.schedule_window.is_some() {
+        merged.schedule_window = child.schedule_window.clone();
+    }
+    if child.access_group.is_some() {
+        merged.access_group = child.access_group.clone();
+    }
 
     for (k, v) in &child.properties {
         merged.properties.insert(k.clone(), v.clone());
@@ -815,9 +968,7 @@ pub fn derive_effective_edge_semantics(
             });
         }
 
-        if zone_policy.capacity_is_explicit
-            || zone_policy.kind == ZonePolicyKind::CapacityLimited
-        {
+        if zone_policy.capacity_is_explicit || zone_policy.kind == ZonePolicyKind::CapacityLimited {
             semantics.capacity = Some(match semantics.capacity {
                 None => zone_policy.capacity,
                 Some(curr) => curr.min(zone_policy.capacity),
@@ -856,9 +1007,7 @@ pub fn derive_effective_edge_semantics(
             semantics.stop_allowed = Some(false);
         }
 
-        if zone_policy.blocked.unwrap_or(false)
-            || zone_policy.kind == ZonePolicyKind::Restricted
-        {
+        if zone_policy.blocked.unwrap_or(false) || zone_policy.kind == ZonePolicyKind::Restricted {
             semantics.blocked = Some(true);
         }
 
@@ -908,18 +1057,21 @@ mod tests {
 
     #[test]
     fn parse_edge_no_stop_clears_stop_allowed() {
-        let s = parse_edge_traffic_semantics(
-            &props(&[("traffic.no_stop", "true")]),
-            false,
-        );
+        let s = parse_edge_traffic_semantics(&props(&[("traffic.no_stop", "true")]), false);
         assert_eq!(s.no_stop, Some(true));
         assert_eq!(s.stop_allowed, Some(false));
     }
 
     #[test]
     fn merge_priority_restricted_over_exclusive() {
-        let parent = ZonePolicy { kind: ZonePolicyKind::ExclusiveAccess, ..ZonePolicy::empty() };
-        let child = ZonePolicy { kind: ZonePolicyKind::Restricted, ..ZonePolicy::empty() };
+        let parent = ZonePolicy {
+            kind: ZonePolicyKind::ExclusiveAccess,
+            ..ZonePolicy::empty()
+        };
+        let child = ZonePolicy {
+            kind: ZonePolicyKind::Restricted,
+            ..ZonePolicy::empty()
+        };
         let merged = merge_zone_policy(&parent, &child);
         assert_eq!(merged.kind, ZonePolicyKind::Restricted);
         assert!(merged.blocks_entry_without_grant);
@@ -929,9 +1081,11 @@ mod tests {
     #[test]
     fn merge_capacity_picks_minimum() {
         let mut parent = ZonePolicy::empty();
-        parent.capacity = 5; parent.capacity_is_explicit = true;
+        parent.capacity = 5;
+        parent.capacity_is_explicit = true;
         let mut child = ZonePolicy::empty();
-        child.capacity = 2; child.capacity_is_explicit = true;
+        child.capacity = 2;
+        child.capacity_is_explicit = true;
         let merged = merge_zone_policy(&parent, &child);
         assert_eq!(merged.capacity, 2);
         assert!(merged.capacity_is_explicit);
@@ -948,8 +1102,11 @@ mod tests {
     #[test]
     fn validate_edge_speed_limit_must_be_positive() {
         let issues = validate_edge_traffic_properties(&props(&[("traffic.speed_limit", "0")]));
-        assert!(issues.iter().any(|i| i.severity == TrafficIssueSeverity::Error
-            && i.message.contains("positive")));
+        assert!(
+            issues.iter().any(
+                |i| i.severity == TrafficIssueSeverity::Error && i.message.contains("positive")
+            )
+        );
     }
 
     #[test]

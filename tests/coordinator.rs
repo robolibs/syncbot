@@ -7,9 +7,15 @@ use timenav::{
 
 #[test]
 fn arbitration_emergency_wins() {
-    let ctx = ArbitrationContext { self_is_emergency: true, ..ArbitrationContext::default() };
+    let ctx = ArbitrationContext {
+        self_is_emergency: true,
+        ..ArbitrationContext::default()
+    };
     assert_eq!(arbitrate_right_of_way(&ctx), ArbitrationDecision::Proceed);
-    let ctx = ArbitrationContext { other_is_emergency: true, ..ArbitrationContext::default() };
+    let ctx = ArbitrationContext {
+        other_is_emergency: true,
+        ..ArbitrationContext::default()
+    };
     assert_eq!(arbitrate_right_of_way(&ctx), ArbitrationDecision::Yield);
 }
 
@@ -30,7 +36,9 @@ fn arbitration_lease_holder_proceeds() {
 #[test]
 fn arbitration_priority_then_state() {
     let ctx = ArbitrationContext {
-        self_priority: 5.0, other_priority: 3.0, ..ArbitrationContext::default()
+        self_priority: 5.0,
+        other_priority: 3.0,
+        ..ArbitrationContext::default()
     };
     assert_eq!(arbitrate_right_of_way(&ctx), ArbitrationDecision::Proceed);
 

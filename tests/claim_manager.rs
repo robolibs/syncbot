@@ -9,12 +9,15 @@ use uuid::Uuid;
 use zoneout::{Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
-    Polygon { vertices: vec![
-        Point::new(min_x, min_y, 0.0),
-        Point::new(max_x, min_y, 0.0),
-        Point::new(max_x, max_y, 0.0),
-        Point::new(min_x, max_y, 0.0),
-    ].into() }
+    Polygon {
+        vertices: vec![
+            Point::new(min_x, min_y, 0.0),
+            Point::new(max_x, min_y, 0.0),
+            Point::new(max_x, max_y, 0.0),
+            Point::new(min_x, max_y, 0.0),
+        ]
+        .into(),
+    }
 }
 
 fn make_workspace_with_zones() -> (Workspace, Uuid, Uuid) {
@@ -109,7 +112,10 @@ fn second_exclusive_request_conflicts() {
         id: ClaimId::new(1),
         robot_id: RobotId::new(1),
         access_mode: ClaimAccessMode::Exclusive,
-        targets: vec![ClaimTarget { kind: ClaimTargetKind::Zone, resource_id: exclusive_id }],
+        targets: vec![ClaimTarget {
+            kind: ClaimTargetKind::Zone,
+            resource_id: exclusive_id,
+        }],
         ..ClaimRequest::default()
     };
     mgr.add_request(first);
@@ -118,7 +124,10 @@ fn second_exclusive_request_conflicts() {
         id: ClaimId::new(2),
         robot_id: RobotId::new(2),
         access_mode: ClaimAccessMode::Exclusive,
-        targets: vec![ClaimTarget { kind: ClaimTargetKind::Zone, resource_id: exclusive_id }],
+        targets: vec![ClaimTarget {
+            kind: ClaimTargetKind::Zone,
+            resource_id: exclusive_id,
+        }],
         ..ClaimRequest::default()
     };
     let eval = mgr.evaluate_request(&second);
@@ -136,7 +145,10 @@ fn shared_request_admits_until_capacity() {
         id: ClaimId::new(id),
         robot_id: RobotId::new(robot),
         access_mode: ClaimAccessMode::Shared,
-        targets: vec![ClaimTarget { kind: ClaimTargetKind::Zone, resource_id: shared_id }],
+        targets: vec![ClaimTarget {
+            kind: ClaimTargetKind::Zone,
+            resource_id: shared_id,
+        }],
         ..ClaimRequest::default()
     };
 
@@ -208,9 +220,17 @@ fn release_for_robot_archives_leases() {
 fn upsert_replaces_existing_request() {
     let mut mgr = ClaimManager::new();
     let _ = MissionId::default();
-    let req1 = ClaimRequest { id: ClaimId::new(5), priority: 1, ..ClaimRequest::default() };
-    let req2 = ClaimRequest { id: ClaimId::new(5), priority: 9,
-        targets: vec![ClaimTarget::default()], ..ClaimRequest::default() };
+    let req1 = ClaimRequest {
+        id: ClaimId::new(5),
+        priority: 1,
+        ..ClaimRequest::default()
+    };
+    let req2 = ClaimRequest {
+        id: ClaimId::new(5),
+        priority: 9,
+        targets: vec![ClaimTarget::default()],
+        ..ClaimRequest::default()
+    };
     mgr.add_request(req1);
     mgr.upsert_request(req2);
     assert_eq!(mgr.request_count(), 1);

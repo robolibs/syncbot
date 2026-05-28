@@ -6,23 +6,40 @@ use serde::{Deserialize, Serialize};
 macro_rules! id_newtype {
     ($name:ident) => {
         #[derive(
-            Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord,
-            Serialize, Deserialize,
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            Hash,
+            Default,
+            PartialOrd,
+            Ord,
+            Serialize,
+            Deserialize,
         )]
         #[serde(transparent)]
         pub struct $name(pub u64);
 
         impl $name {
-            pub const fn new(v: u64) -> Self { Self(v) }
-            pub const fn raw(self) -> u64 { self.0 }
+            pub const fn new(v: u64) -> Self {
+                Self(v)
+            }
+            pub const fn raw(self) -> u64 {
+                self.0
+            }
         }
 
         impl From<u64> for $name {
-            fn from(v: u64) -> Self { Self(v) }
+            fn from(v: u64) -> Self {
+                Self(v)
+            }
         }
 
         impl From<$name> for u64 {
-            fn from(v: $name) -> Self { v.0 }
+            fn from(v: $name) -> Self {
+                v.0
+            }
         }
 
         impl std::fmt::Display for $name {

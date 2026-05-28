@@ -1,10 +1,18 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ActionStatus { Accepted, Rejected, Running, Finished, Failed }
+pub enum ActionStatus {
+    Accepted,
+    Rejected,
+    Running,
+    Finished,
+    Failed,
+}
 
 impl Default for ActionStatus {
-    fn default() -> Self { Self::Rejected }
+    fn default() -> Self {
+        Self::Rejected
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

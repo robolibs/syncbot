@@ -12,7 +12,9 @@ use timenav::ffi::*;
 unsafe fn cstr_into_owned(p: *mut std::os::raw::c_char) -> String {
     assert!(!p.is_null(), "expected non-null C string");
     let s = unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_owned();
-    unsafe { tn_string_free(p); }
+    unsafe {
+        tn_string_free(p);
+    }
     s
 }
 
@@ -63,7 +65,8 @@ fn claim_manager_full_lifecycle_via_ffi() {
         "requested_at_tick": null,
         "window": { "start_tick": null, "end_tick": null },
         "targets": [{"kind": "Zone", "resource_id": "00000000-0000-0000-0000-000000000001"}],
-    }).to_string();
+    })
+    .to_string();
     let cs = CString::new(req).unwrap();
     assert_eq!(unsafe { tn_claim_manager_add_request(mgr, cs.as_ptr()) }, 0);
     assert_eq!(unsafe { tn_claim_manager_request_count(mgr) }, 1);
@@ -77,7 +80,9 @@ fn claim_manager_full_lifecycle_via_ffi() {
     assert!(unsafe { tn_claim_manager_remove_request(mgr, 1) } == 0);
     assert_eq!(unsafe { tn_claim_manager_request_count(mgr) }, 0);
 
-    unsafe { tn_claim_manager_free(mgr); }
+    unsafe {
+        tn_claim_manager_free(mgr);
+    }
 }
 
 #[test]
@@ -97,7 +102,8 @@ fn coordinator_handle_lifecycle_via_ffi() {
         "scheduled_start_tick": null, "reserved_until_tick": null,
         "wait_ticks": 0, "needs_replan": false, "horizon": 0,
         "updated_at_tick": 0,
-    }).to_string();
+    })
+    .to_string();
     let cs = CString::new(state).unwrap();
     assert_eq!(unsafe { tn_coordinator_register_robot(c, cs.as_ptr()) }, 0);
     assert_eq!(unsafe { tn_coordinator_robot_count(c) }, 1);
@@ -109,18 +115,26 @@ fn coordinator_handle_lifecycle_via_ffi() {
     assert_eq!(unsafe { tn_coordinator_unregister_robot(c, 7) }, 0);
     assert_eq!(unsafe { tn_coordinator_robot_count(c) }, 0);
 
-    unsafe { tn_coordinator_free(c); }
+    unsafe {
+        tn_coordinator_free(c);
+    }
 }
 
 #[test]
 fn arbitration_emergency_proceeds_via_ffi() {
     let ctx = TnArbitrationContext {
-        self_priority: 0.0, other_priority: 0.0,
-        self_holds_lease: 0, other_holds_lease: 0,
-        self_is_emergency: 1, other_is_emergency: 0,
-        self_state: 0, other_state: 0,
-        self_wait_ticks: 0, other_wait_ticks: 0,
-        self_remaining_steps: 0, other_remaining_steps: 0,
+        self_priority: 0.0,
+        other_priority: 0.0,
+        self_holds_lease: 0,
+        other_holds_lease: 0,
+        self_is_emergency: 1,
+        other_is_emergency: 0,
+        self_state: 0,
+        other_state: 0,
+        self_wait_ticks: 0,
+        other_wait_ticks: 0,
+        self_remaining_steps: 0,
+        other_remaining_steps: 0,
     };
     assert_eq!(unsafe { tn_arbitrate_right_of_way(&ctx as *const _) }, 0);
 }
@@ -147,7 +161,8 @@ fn vda_order_from_route_via_ffi() {
         "traversed_node_zone_ids": [[], []],
         "traversed_edge_zone_ids": [[]],
         "total_cost": 1.0,
-    }).to_string();
+    })
+    .to_string();
     let cs = CString::new(plan).unwrap();
     let order_json = unsafe { cstr_into_owned(tn_vda_order_from_route(cs.as_ptr())) };
     let v: serde_json::Value = serde_json::from_str(&order_json).unwrap();

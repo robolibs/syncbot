@@ -1,17 +1,29 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OperatingMode { Manual, Automatic, Semiautomatic }
+pub enum OperatingMode {
+    Manual,
+    Automatic,
+    Semiautomatic,
+}
 
 impl Default for OperatingMode {
-    fn default() -> Self { Self::Manual }
+    fn default() -> Self {
+        Self::Manual
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ConnectionState { Online, Offline, ConnectionBroken }
+pub enum ConnectionState {
+    Online,
+    Offline,
+    ConnectionBroken,
+}
 
 impl Default for ConnectionState {
-    fn default() -> Self { Self::Offline }
+    fn default() -> Self {
+        Self::Offline
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

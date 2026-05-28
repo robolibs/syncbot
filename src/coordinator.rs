@@ -17,9 +17,7 @@ use crate::claim::{
 };
 use crate::core::ids::{MissionId, RobotId};
 use crate::index::WorkspaceIndex;
-use crate::policy::{
-    ZonePolicyKind, derive_effective_edge_semantics, parse_zone_policy,
-};
+use crate::policy::{ZonePolicyKind, derive_effective_edge_semantics, parse_zone_policy};
 use crate::robot::{RobotProgressState, RobotState};
 use crate::route::{RoutePlan, validate_route_plan_shape};
 
@@ -57,10 +55,16 @@ pub struct ScheduleConflict {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ScheduleDecisionKind { Proceed, Queue, Replan }
+pub enum ScheduleDecisionKind {
+    Proceed,
+    Queue,
+    Replan,
+}
 
 impl Default for ScheduleDecisionKind {
-    fn default() -> Self { Self::Proceed }
+    fn default() -> Self {
+        Self::Proceed
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -72,10 +76,7 @@ pub struct ScheduleDecision {
     pub diagnostics: Vec<String>,
 }
 
-pub fn claim_target_semantics(
-    index: &WorkspaceIndex,
-    target: ClaimTarget,
-) -> ClaimTargetSemantics {
+pub fn claim_target_semantics(index: &WorkspaceIndex, target: ClaimTarget) -> ClaimTargetSemantics {
     let mut semantics = ClaimTargetSemantics {
         target,
         waiting_allowed: true,
@@ -84,11 +85,15 @@ pub fn claim_target_semantics(
     };
 
     if target.kind == ClaimTargetKind::Zone {
-        let Some(zone) = index.zone(target.resource_id) else { return semantics; };
+        let Some(zone) = index.zone(target.resource_id) else {
+            return semantics;
+        };
         let policy = parse_zone_policy(zone.properties());
         semantics.requires_claim = policy.requires_claim;
         semantics.waiting_allowed = policy.waiting_allowed.unwrap_or(true);
-        semantics.stop_allowed = policy.stop_allowed.unwrap_or(!policy.blocked.unwrap_or(false));
+        semantics.stop_allowed = policy
+            .stop_allowed
+            .unwrap_or(!policy.blocked.unwrap_or(false));
         semantics.blocked = policy.blocked.unwrap_or(false)
             || policy.blocks_entry_without_grant
             || policy.blocks_traversal_without_grant;
@@ -101,13 +106,16 @@ pub fn claim_target_semantics(
     }
 
     if target.kind == ClaimTargetKind::Edge {
-        let Some(edge) = index.edge(target.resource_id) else { return semantics; };
+        let Some(edge) = index.edge(target.resource_id) else {
+            return semantics;
+        };
         let zone_policies: Vec<_> = index
             .zones_of_edge(target.resource_id)
             .into_iter()
             .map(|z| parse_zone_policy(z.properties()))
             .collect();
-        let edge_semantics = derive_effective_edge_semantics(&edge.properties, false, &zone_policies);
+        let edge_semantics =
+            derive_effective_edge_semantics(&edge.properties, false, &zone_policies);
         semantics.requires_claim = edge_semantics.requires_claim.unwrap_or(false);
         semantics.waiting_allowed = edge_semantics.waiting_allowed.unwrap_or(true);
         semantics.stop_allowed = edge_semantics
@@ -125,10 +133,9 @@ pub fn claim_target_semantics(
         for zone in index.zones_of_node(target.resource_id) {
             let policy = parse_zone_policy(zone.properties());
             semantics.requires_claim = semantics.requires_claim || policy.requires_claim;
-            semantics.waiting_allowed = semantics.waiting_allowed
-                && policy.waiting_allowed.unwrap_or(true);
-            semantics.stop_allowed = semantics.stop_allowed
-                && policy.stop_allowed.unwrap_or(true);
+            semantics.waiting_allowed =
+                semantics.waiting_allowed && policy.waiting_allowed.unwrap_or(true);
+            semantics.stop_allowed = semantics.stop_allowed && policy.stop_allowed.unwrap_or(true);
             semantics.blocked = semantics.blocked
                 || policy.blocked.unwrap_or(false)
                 || policy.blocks_entry_without_grant
@@ -155,13 +162,17 @@ pub fn scheduled_target_windows_from_route(
     ticks_per_cost_unit: f64,
 ) -> Vec<ScheduledTargetWindow> {
     let mut windows = Vec::new();
-    if validate_route_plan_shape(route_plan).is_err() { return windows; }
+    if validate_route_plan_shape(route_plan).is_err() {
+        return windows;
+    }
 
     let tick_at_step = |step_index: usize| -> u64 {
         if step_index >= route_plan.steps.len() {
             return start_tick;
         }
-        let offset_f = (route_plan.steps[step_index].cumulative_cost * ticks_per_cost_unit).max(0.0).ceil();
+        let offset_f = (route_plan.steps[step_index].cumulative_cost * ticks_per_cost_unit)
+            .max(0.0)
+            .ceil();
         start_tick + offset_f as u64
     };
 
@@ -169,13 +180,18 @@ pub fn scheduled_target_windows_from_route(
         let window_start = tick_at_step(i);
         let next_tick = if i + 1 < route_plan.steps.len() {
             tick_at_step(i + 1)
-        } else { window_start };
+        } else {
+            window_start
+        };
         let window_end = window_start.max(next_tick);
 
         windows.push(ScheduledTargetWindow {
             semantics: claim_target_semantics(
                 index,
-                ClaimTarget { kind: ClaimTargetKind::Node, resource_id: node_id },
+                ClaimTarget {
+                    kind: ClaimTargetKind::Node,
+                    resource_id: node_id,
+                },
             ),
             start_tick: window_start,
             end_tick: window_end,
@@ -186,7 +202,10 @@ pub fn scheduled_target_windows_from_route(
                 windows.push(ScheduledTargetWindow {
                     semantics: claim_target_semantics(
                         index,
-                        ClaimTarget { kind: ClaimTargetKind::Zone, resource_id: zone_id },
+                        ClaimTarget {
+                            kind: ClaimTargetKind::Zone,
+                            resource_id: zone_id,
+                        },
                     ),
                     start_tick: window_start,
                     end_tick: window_end,
@@ -200,7 +219,10 @@ pub fn scheduled_target_windows_from_route(
             windows.push(ScheduledTargetWindow {
                 semantics: claim_target_semantics(
                     index,
-                    ClaimTarget { kind: ClaimTargetKind::Edge, resource_id: edge_id },
+                    ClaimTarget {
+                        kind: ClaimTargetKind::Edge,
+                        resource_id: edge_id,
+                    },
                 ),
                 start_tick: window_start,
                 end_tick: edge_window_end,
@@ -210,7 +232,10 @@ pub fn scheduled_target_windows_from_route(
                     windows.push(ScheduledTargetWindow {
                         semantics: claim_target_semantics(
                             index,
-                            ClaimTarget { kind: ClaimTargetKind::Zone, resource_id: zone_id },
+                            ClaimTarget {
+                                kind: ClaimTargetKind::Zone,
+                                resource_id: zone_id,
+                            },
                         ),
                         start_tick: window_start,
                         end_tick: edge_window_end,
@@ -233,20 +258,38 @@ pub fn claim_target_windows_overlap(
     let rhs_start = rhs_window.start_tick.unwrap_or(0);
     let lhs_end = lhs_window.end_tick.unwrap_or(u64::MAX);
     let rhs_end = rhs_window.end_tick.unwrap_or(u64::MAX);
-    if !(lhs_start <= rhs_end && rhs_start <= lhs_end) { return false; }
+    if !(lhs_start <= rhs_end && rhs_start <= lhs_end) {
+        return false;
+    }
 
-    if lhs.kind != rhs.kind { return false; }
-    if lhs.resource_id == rhs.resource_id { return true; }
-    if lhs.kind != ClaimTargetKind::Zone { return false; }
-    let Some(index) = index else { return false; };
+    if lhs.kind != rhs.kind {
+        return false;
+    }
+    if lhs.resource_id == rhs.resource_id {
+        return true;
+    }
+    if lhs.kind != ClaimTargetKind::Zone {
+        return false;
+    }
+    let Some(index) = index else {
+        return false;
+    };
 
     if index.zone(lhs.resource_id).is_some() {
-        if index.ancestor_zones(lhs.resource_id).iter().any(|a| a.id() == rhs.resource_id) {
+        if index
+            .ancestor_zones(lhs.resource_id)
+            .iter()
+            .any(|a| a.id() == rhs.resource_id)
+        {
             return true;
         }
     }
     if index.zone(rhs.resource_id).is_some() {
-        if index.ancestor_zones(rhs.resource_id).iter().any(|a| a.id() == lhs.resource_id) {
+        if index
+            .ancestor_zones(rhs.resource_id)
+            .iter()
+            .any(|a| a.id() == lhs.resource_id)
+        {
             return true;
         }
     }
@@ -261,8 +304,12 @@ pub fn schedule_route_request(
     start_tick: u64,
     ticks_per_cost_unit: f64,
 ) -> ScheduleDecision {
-    let mut decision = ScheduleDecision { start_tick, ..ScheduleDecision::default() };
-    let windows = scheduled_target_windows_from_route(index, route_plan, start_tick, ticks_per_cost_unit);
+    let mut decision = ScheduleDecision {
+        start_tick,
+        ..ScheduleDecision::default()
+    };
+    let windows =
+        scheduled_target_windows_from_route(index, route_plan, start_tick, ticks_per_cost_unit);
     let mut latest_blocking_tick = start_tick;
 
     for window in &windows {
@@ -272,40 +319,62 @@ pub fn schedule_route_request(
         };
 
         for active in claim_manager.requests() {
-            if active.id == request.id { continue; }
+            if active.id == request.id {
+                continue;
+            }
             for target in &active.targets {
                 if !claim_target_windows_overlap(
-                    window.semantics.target, requested_window,
-                    *target, active.window, claim_manager.index(),
-                ) { continue; }
+                    window.semantics.target,
+                    requested_window,
+                    *target,
+                    active.window,
+                    claim_manager.index(),
+                ) {
+                    continue;
+                }
                 let blocking = active.window.end_tick.unwrap_or(window.end_tick);
                 add_conflict(
-                    &mut decision, &mut latest_blocking_tick,
-                    window.semantics.target, blocking,
-                    Some(active.id), None,
-                    &window.semantics, "active request",
+                    &mut decision,
+                    &mut latest_blocking_tick,
+                    window.semantics.target,
+                    blocking,
+                    Some(active.id),
+                    None,
+                    &window.semantics,
+                    "active request",
                 );
                 break;
             }
         }
 
         for lease in claim_manager.leases() {
-            if !lease.active { continue; }
+            if !lease.active {
+                continue;
+            }
             let lease_window = ClaimWindow {
                 start_tick: lease.granted_at_tick,
                 end_tick: lease.expires_at_tick,
             };
             for target in &lease.targets {
                 if !claim_target_windows_overlap(
-                    window.semantics.target, requested_window,
-                    *target, lease_window, claim_manager.index(),
-                ) { continue; }
+                    window.semantics.target,
+                    requested_window,
+                    *target,
+                    lease_window,
+                    claim_manager.index(),
+                ) {
+                    continue;
+                }
                 let blocking = lease.expires_at_tick.unwrap_or(window.end_tick);
                 add_conflict(
-                    &mut decision, &mut latest_blocking_tick,
-                    window.semantics.target, blocking,
-                    None, Some(lease.id),
-                    &window.semantics, "active lease",
+                    &mut decision,
+                    &mut latest_blocking_tick,
+                    window.semantics.target,
+                    blocking,
+                    None,
+                    Some(lease.id),
+                    &window.semantics,
+                    "active lease",
                 );
                 break;
             }
@@ -314,14 +383,20 @@ pub fn schedule_route_request(
 
     if decision.conflicts.is_empty() {
         decision.kind = ScheduleDecisionKind::Proceed;
-        decision.diagnostics.push("route can proceed within the requested reservation window".into());
+        decision
+            .diagnostics
+            .push("route can proceed within the requested reservation window".into());
         return decision;
     }
 
     let mut queueable = true;
     for conflict in &decision.conflicts {
         let semantics = claim_target_semantics(index, conflict.target);
-        if semantics.blocked || semantics.corridor || !semantics.waiting_allowed || !semantics.stop_allowed {
+        if semantics.blocked
+            || semantics.corridor
+            || !semantics.waiting_allowed
+            || !semantics.stop_allowed
+        {
             queueable = false;
             break;
         }
@@ -329,14 +404,18 @@ pub fn schedule_route_request(
 
     if !queueable {
         decision.kind = ScheduleDecisionKind::Replan;
-        decision.diagnostics.push("schedule conflicts require replanning instead of queuing".into());
+        decision
+            .diagnostics
+            .push("schedule conflicts require replanning instead of queuing".into());
         return decision;
     }
 
     decision.kind = ScheduleDecisionKind::Queue;
     decision.start_tick = latest_blocking_tick + 1;
     decision.queue_position = decision.conflicts.len() as u64 + 1;
-    decision.diagnostics.push("route should wait for an available reservation window".into());
+    decision
+        .diagnostics
+        .push("route should wait for an available reservation window".into());
     decision
 }
 
@@ -358,22 +437,34 @@ fn add_conflict(
         diagnostics: vec![format!("schedule conflict with {source}")],
     };
     if semantics.corridor {
-        conflict.diagnostics.push("corridor resources cannot be used for side waiting".into());
+        conflict
+            .diagnostics
+            .push("corridor resources cannot be used for side waiting".into());
     }
     if !semantics.waiting_allowed {
-        conflict.diagnostics.push("waiting is not allowed on the blocking resource".into());
+        conflict
+            .diagnostics
+            .push("waiting is not allowed on the blocking resource".into());
     }
     if !semantics.stop_allowed {
-        conflict.diagnostics.push("stopping is not allowed on the blocking resource".into());
+        conflict
+            .diagnostics
+            .push("stopping is not allowed on the blocking resource".into());
     }
     if semantics.blocked {
-        conflict.diagnostics.push("blocking resource is hard-restricted".into());
+        conflict
+            .diagnostics
+            .push("blocking resource is hard-restricted".into());
     }
     if semantics.slowdown {
-        conflict.diagnostics.push("blocking resource applies slowdown semantics".into());
+        conflict
+            .diagnostics
+            .push("blocking resource applies slowdown semantics".into());
     }
     if let Some(sw) = semantics.schedule_window.as_ref() {
-        conflict.diagnostics.push(format!("blocking schedule window={sw}"));
+        conflict
+            .diagnostics
+            .push(format!("blocking schedule window={sw}"));
     }
     decision.conflicts.push(conflict);
     if blocking_until_tick > *latest_blocking_tick {
@@ -381,12 +472,10 @@ fn add_conflict(
     }
 }
 
-pub fn robot_missed_schedule_slot(
-    state: &RobotState,
-    current_tick: u64,
-    grace_ticks: u64,
-) -> bool {
-    let Some(scheduled) = state.scheduled_start_tick else { return false; };
+pub fn robot_missed_schedule_slot(state: &RobotState, current_tick: u64, grace_ticks: u64) -> bool {
+    let Some(scheduled) = state.scheduled_start_tick else {
+        return false;
+    };
     current_tick > scheduled + grace_ticks
         && state.progress_state != RobotProgressState::FollowingRoute
         && state.progress_state != RobotProgressState::Idle
@@ -448,7 +537,9 @@ pub fn route_zone_targets_from_progress(
         .min((start_node_index + horizon + 1) as usize);
     for i in (start_node_index as usize)..node_limit {
         for &zid in &route_plan.traversed_node_zone_ids[i] {
-            if seen.insert(zid) { zone_ids.push(zid); }
+            if seen.insert(zid) {
+                zone_ids.push(zid);
+            }
         }
     }
 
@@ -458,7 +549,9 @@ pub fn route_zone_targets_from_progress(
         .min((start_node_index + horizon) as usize);
     for i in (start_node_index as usize)..edge_limit {
         for &zid in &route_plan.traversed_edge_zone_ids[i] {
-            if seen.insert(zid) { zone_ids.push(zid); }
+            if seen.insert(zid) {
+                zone_ids.push(zid);
+            }
         }
     }
 
@@ -468,13 +561,22 @@ pub fn route_zone_targets_from_progress(
 pub fn claim_targets_from_route(route_plan: &RoutePlan) -> Vec<ClaimTarget> {
     let mut targets = Vec::new();
     for &z in &route_plan.traversed_zone_ids {
-        targets.push(ClaimTarget { kind: ClaimTargetKind::Zone, resource_id: z });
+        targets.push(ClaimTarget {
+            kind: ClaimTargetKind::Zone,
+            resource_id: z,
+        });
     }
     for &e in &route_plan.traversed_edge_ids {
-        targets.push(ClaimTarget { kind: ClaimTargetKind::Edge, resource_id: e });
+        targets.push(ClaimTarget {
+            kind: ClaimTargetKind::Edge,
+            resource_id: e,
+        });
     }
     for &n in &route_plan.traversed_node_ids {
-        targets.push(ClaimTarget { kind: ClaimTargetKind::Node, resource_id: n });
+        targets.push(ClaimTarget {
+            kind: ClaimTargetKind::Node,
+            resource_id: n,
+        });
     }
     targets
 }
@@ -484,7 +586,9 @@ pub fn claim_window_from_route(
     start_tick: u64,
     ticks_per_cost_unit: f64,
 ) -> ClaimWindow {
-    let duration = (route_plan.total_cost * ticks_per_cost_unit).max(0.0).ceil() as u64;
+    let duration = (route_plan.total_cost * ticks_per_cost_unit)
+        .max(0.0)
+        .ceil() as u64;
     ClaimWindow {
         start_tick: Some(start_tick),
         end_tick: Some(start_tick + duration),
@@ -528,8 +632,12 @@ pub fn rolling_horizon_claim_request(
         ..ClaimRequest::default()
     };
 
-    let Some(plan) = state.route_plan.as_ref() else { return request; };
-    if validate_route_plan_shape(plan).is_err() { return request; }
+    let Some(plan) = state.route_plan.as_ref() else {
+        return request;
+    };
+    if validate_route_plan_shape(plan).is_err() {
+        return request;
+    }
 
     let start_node_index = route_progress_index(state);
     request.requested_at_tick = Some(state.updated_at_tick);
@@ -540,22 +648,33 @@ pub fn rolling_horizon_claim_request(
     }
 
     let available_nodes = plan.traversed_node_ids.len() - start_node_index as usize;
-    let available_edges = plan.traversed_edge_ids.len()
+    let available_edges = plan
+        .traversed_edge_ids
+        .len()
         .saturating_sub(start_node_index as usize);
     let node_limit = available_nodes.min((state.horizon + 1) as usize);
     let edge_limit = available_edges.min(state.horizon as usize);
     let zone_targets = route_zone_targets_from_progress(plan, start_node_index, state.horizon);
 
     for zid in zone_targets {
-        request.targets.push(ClaimTarget { kind: ClaimTargetKind::Zone, resource_id: zid });
+        request.targets.push(ClaimTarget {
+            kind: ClaimTargetKind::Zone,
+            resource_id: zid,
+        });
     }
     for i in 0..edge_limit {
         let eid = plan.traversed_edge_ids[start_node_index as usize + i];
-        request.targets.push(ClaimTarget { kind: ClaimTargetKind::Edge, resource_id: eid });
+        request.targets.push(ClaimTarget {
+            kind: ClaimTargetKind::Edge,
+            resource_id: eid,
+        });
     }
     for i in 0..node_limit {
         let nid = plan.traversed_node_ids[start_node_index as usize + i];
-        request.targets.push(ClaimTarget { kind: ClaimTargetKind::Node, resource_id: nid });
+        request.targets.push(ClaimTarget {
+            kind: ClaimTargetKind::Node,
+            resource_id: nid,
+        });
     }
 
     if (start_node_index as usize) < plan.steps.len() {
@@ -577,9 +696,15 @@ pub fn release_targets_behind_progress(
     state: &mut RobotState,
     claim_manager: &mut ClaimManager,
 ) -> u64 {
-    let Some(plan) = state.route_plan.as_ref() else { return 0; };
-    if validate_route_plan_shape(plan).is_err() { return 0; }
-    let Some(current) = state.current_node_id else { return 0; };
+    let Some(plan) = state.route_plan.as_ref() else {
+        return 0;
+    };
+    if validate_route_plan_shape(plan).is_err() {
+        return 0;
+    }
+    let Some(current) = state.current_node_id else {
+        return 0;
+    };
     let Some(current_index) = plan.traversed_node_ids.iter().position(|id| *id == current) else {
         return 0;
     };
@@ -594,16 +719,22 @@ pub fn release_targets_behind_progress(
         remaining_edge_ids.insert(plan.traversed_edge_ids[i]);
     }
     for i in current_index..plan.traversed_node_zone_ids.len() {
-        for &zid in &plan.traversed_node_zone_ids[i] { remaining_zone_ids.insert(zid); }
+        for &zid in &plan.traversed_node_zone_ids[i] {
+            remaining_zone_ids.insert(zid);
+        }
     }
     for i in current_index..plan.traversed_edge_zone_ids.len() {
-        for &zid in &plan.traversed_edge_zone_ids[i] { remaining_zone_ids.insert(zid); }
+        for &zid in &plan.traversed_edge_zone_ids[i] {
+            remaining_zone_ids.insert(zid);
+        }
     }
 
     let mut retained: Vec<LeaseId> = Vec::new();
     let mut released: u64 = 0;
     for lease_id in state.active_lease_ids.clone() {
-        let Some(lease) = claim_manager.find_lease(lease_id) else { continue; };
+        let Some(lease) = claim_manager.find_lease(lease_id) else {
+            continue;
+        };
         let keep = lease.targets.iter().any(|t| match t.kind {
             ClaimTargetKind::Node => remaining_node_ids.contains(&t.resource_id),
             ClaimTargetKind::Edge => remaining_edge_ids.contains(&t.resource_id),
@@ -633,7 +764,9 @@ pub fn route_schedule_window_conflicts(
             .split(',')
             .map(|t| t.trim())
             .any(|t| t == active_window);
-        if !matches_window { out.push(zid); }
+        if !matches_window {
+            out.push(zid);
+        }
     }
     out
 }
@@ -651,7 +784,11 @@ pub fn route_matches_schedule_window(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ArbitrationDecision { Proceed, Yield, Replan }
+pub enum ArbitrationDecision {
+    Proceed,
+    Yield,
+    Replan,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ArbitrationContext {
@@ -673,23 +810,51 @@ pub fn arbitrate_right_of_way(ctx: &ArbitrationContext) -> ArbitrationDecision {
     use ArbitrationDecision::*;
     use RobotProgressState::*;
 
-    if ctx.self_is_emergency && !ctx.other_is_emergency { return Proceed; }
-    if ctx.other_is_emergency && !ctx.self_is_emergency { return Yield; }
-    if ctx.other_holds_lease && !ctx.self_holds_lease { return Yield; }
-    if ctx.self_holds_lease && !ctx.other_holds_lease { return Proceed; }
-    if ctx.self_priority > ctx.other_priority { return Proceed; }
-    if ctx.self_priority < ctx.other_priority { return Yield; }
-    if ctx.self_state == Blocked && ctx.other_state != Blocked { return Yield; }
-    if ctx.other_state == Blocked && ctx.self_state != Blocked { return Proceed; }
-    if ctx.self_state == FollowingRoute && ctx.other_state == Waiting { return Proceed; }
-    if ctx.self_state == Waiting && ctx.other_state == FollowingRoute { return Yield; }
+    if ctx.self_is_emergency && !ctx.other_is_emergency {
+        return Proceed;
+    }
+    if ctx.other_is_emergency && !ctx.self_is_emergency {
+        return Yield;
+    }
+    if ctx.other_holds_lease && !ctx.self_holds_lease {
+        return Yield;
+    }
+    if ctx.self_holds_lease && !ctx.other_holds_lease {
+        return Proceed;
+    }
+    if ctx.self_priority > ctx.other_priority {
+        return Proceed;
+    }
+    if ctx.self_priority < ctx.other_priority {
+        return Yield;
+    }
+    if ctx.self_state == Blocked && ctx.other_state != Blocked {
+        return Yield;
+    }
+    if ctx.other_state == Blocked && ctx.self_state != Blocked {
+        return Proceed;
+    }
+    if ctx.self_state == FollowingRoute && ctx.other_state == Waiting {
+        return Proceed;
+    }
+    if ctx.self_state == Waiting && ctx.other_state == FollowingRoute {
+        return Yield;
+    }
     if ctx.self_state == Waiting && ctx.other_state == Waiting {
-        if ctx.self_wait_ticks > ctx.other_wait_ticks { return Proceed; }
-        if ctx.self_wait_ticks < ctx.other_wait_ticks { return Yield; }
+        if ctx.self_wait_ticks > ctx.other_wait_ticks {
+            return Proceed;
+        }
+        if ctx.self_wait_ticks < ctx.other_wait_ticks {
+            return Yield;
+        }
     }
     if ctx.self_remaining_steps > 0 || ctx.other_remaining_steps > 0 {
-        if ctx.self_remaining_steps < ctx.other_remaining_steps { return Proceed; }
-        if ctx.self_remaining_steps > ctx.other_remaining_steps { return Yield; }
+        if ctx.self_remaining_steps < ctx.other_remaining_steps {
+            return Proceed;
+        }
+        if ctx.self_remaining_steps > ctx.other_remaining_steps {
+            return Yield;
+        }
     }
     Replan
 }
@@ -715,7 +880,9 @@ impl Default for Coordinator {
 }
 
 impl Coordinator {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn with_index(index: Arc<WorkspaceIndex>) -> Self {
         Self {
@@ -725,14 +892,30 @@ impl Coordinator {
         }
     }
 
-    pub fn index(&self) -> Option<&WorkspaceIndex> { self.index.as_deref() }
-    pub fn index_arc(&self) -> Option<Arc<WorkspaceIndex>> { self.index.clone() }
-    pub fn has_index(&self) -> bool { self.index.is_some() }
-    pub fn claim_manager(&self) -> &ClaimManager { &self.claim_manager }
-    pub fn claim_manager_mut(&mut self) -> &mut ClaimManager { &mut self.claim_manager }
-    pub fn empty(&self) -> bool { self.robot_states.is_empty() }
-    pub fn robot_count(&self) -> usize { self.robot_states.len() }
-    pub fn robot_states(&self) -> &[RobotState] { &self.robot_states }
+    pub fn index(&self) -> Option<&WorkspaceIndex> {
+        self.index.as_deref()
+    }
+    pub fn index_arc(&self) -> Option<Arc<WorkspaceIndex>> {
+        self.index.clone()
+    }
+    pub fn has_index(&self) -> bool {
+        self.index.is_some()
+    }
+    pub fn claim_manager(&self) -> &ClaimManager {
+        &self.claim_manager
+    }
+    pub fn claim_manager_mut(&mut self) -> &mut ClaimManager {
+        &mut self.claim_manager
+    }
+    pub fn empty(&self) -> bool {
+        self.robot_states.is_empty()
+    }
+    pub fn robot_count(&self) -> usize {
+        self.robot_states.len()
+    }
+    pub fn robot_states(&self) -> &[RobotState] {
+        &self.robot_states
+    }
 
     pub fn bind_index(&mut self, index: Arc<WorkspaceIndex>) {
         self.index = Some(Arc::clone(&index));
@@ -745,7 +928,11 @@ impl Coordinator {
     }
 
     pub fn register_robot(&mut self, state: RobotState) {
-        if let Some(slot) = self.robot_states.iter_mut().find(|s| s.robot_id == state.robot_id) {
+        if let Some(slot) = self
+            .robot_states
+            .iter_mut()
+            .find(|s| s.robot_id == state.robot_id)
+        {
             *slot = state;
             return;
         }
@@ -753,10 +940,15 @@ impl Coordinator {
     }
 
     pub fn unregister_robot(&mut self, robot_id: RobotId) -> bool {
-        if let Some(pos) = self.robot_states.iter().position(|s| s.robot_id == robot_id) {
+        if let Some(pos) = self
+            .robot_states
+            .iter()
+            .position(|s| s.robot_id == robot_id)
+        {
             let updated_at_tick = self.robot_states[pos].updated_at_tick;
             self.claim_manager.remove_requests_for_robot(robot_id);
-            self.claim_manager.release_leases_for_robot(robot_id, Some(updated_at_tick));
+            self.claim_manager
+                .release_leases_for_robot(robot_id, Some(updated_at_tick));
             self.robot_states.remove(pos);
             return true;
         }
@@ -768,7 +960,9 @@ impl Coordinator {
     }
 
     pub fn find_robot_state_mut(&mut self, robot_id: RobotId) -> Option<&mut RobotState> {
-        self.robot_states.iter_mut().find(|s| s.robot_id == robot_id)
+        self.robot_states
+            .iter_mut()
+            .find(|s| s.robot_id == robot_id)
     }
 
     pub fn claim_request_for_robot(
@@ -790,7 +984,9 @@ impl Coordinator {
         current_edge_id: Option<Uuid>,
         updated_at_tick: u64,
     ) -> bool {
-        let Some(state) = self.find_robot_state_mut(robot_id) else { return false; };
+        let Some(state) = self.find_robot_state_mut(robot_id) else {
+            return false;
+        };
         state.current_node_id = current_node_id;
         state.current_edge_id = current_edge_id;
         if let (Some(plan), Some(node_id)) = (state.route_plan.as_ref(), current_node_id) {
@@ -823,7 +1019,9 @@ impl Coordinator {
         horizon: u64,
         updated_at_tick: u64,
     ) -> bool {
-        let Some(state) = self.find_robot_state_mut(robot_id) else { return false; };
+        let Some(state) = self.find_robot_state_mut(robot_id) else {
+            return false;
+        };
         let total_cost = route_plan.total_cost;
         let is_empty = route_plan.traversed_node_ids.is_empty();
         state.route_plan = Some(route_plan);
@@ -849,7 +1047,9 @@ impl Coordinator {
         active_lease_ids: Vec<LeaseId>,
         last_claim_tick: Option<u64>,
     ) -> bool {
-        let Some(state) = self.find_robot_state_mut(robot_id) else { return false; };
+        let Some(state) = self.find_robot_state_mut(robot_id) else {
+            return false;
+        };
         state.pending_claim_ids = pending_claim_ids;
         state.active_lease_ids = active_lease_ids;
         state.last_claim_tick = last_claim_tick;
@@ -857,7 +1057,11 @@ impl Coordinator {
     }
 
     pub fn release_behind_progress(&mut self, robot_id: RobotId) -> u64 {
-        let Some(pos) = self.robot_states.iter().position(|s| s.robot_id == robot_id) else {
+        let Some(pos) = self
+            .robot_states
+            .iter()
+            .position(|s| s.robot_id == robot_id)
+        else {
             return 0;
         };
         let mut state = std::mem::take(&mut self.robot_states[pos]);
@@ -896,11 +1100,21 @@ impl Coordinator {
         };
         let mission_id = state.mission_id;
         let request = claim_request_from_route(
-            claim_id, robot_id, mission_id, &plan,
-            Some(start_tick), ticks_per_cost_unit, access_mode,
+            claim_id,
+            robot_id,
+            mission_id,
+            &plan,
+            Some(start_tick),
+            ticks_per_cost_unit,
+            access_mode,
         );
         let decision = schedule_route_request(
-            index, &self.claim_manager, &request, &plan, start_tick, ticks_per_cost_unit,
+            index,
+            &self.claim_manager,
+            &request,
+            &plan,
+            start_tick,
+            ticks_per_cost_unit,
         );
         if let Some(state) = self.find_robot_state_mut(robot_id) {
             state.reserved_until_tick = request.window.end_tick;
@@ -915,16 +1129,23 @@ impl Coordinator {
         refreshed_at_tick: u64,
         extension_ticks: u64,
     ) -> u64 {
-        let Some(state) = self.find_robot_state_mut(robot_id) else { return 0; };
+        let Some(state) = self.find_robot_state_mut(robot_id) else {
+            return 0;
+        };
         let lease_ids = state.active_lease_ids.clone();
         state.last_claim_tick = Some(refreshed_at_tick);
 
         let mut refreshed: u64 = 0;
         for lease_id in lease_ids {
-            let new_expiry = self.claim_manager.find_lease(lease_id)
+            let new_expiry = self
+                .claim_manager
+                .find_lease(lease_id)
                 .and_then(|l| l.expires_at_tick)
                 .map(|t| t + extension_ticks);
-            if self.claim_manager.refresh_lease(lease_id, refreshed_at_tick, new_expiry) {
+            if self
+                .claim_manager
+                .refresh_lease(lease_id, refreshed_at_tick, new_expiry)
+            {
                 refreshed += 1;
             }
         }
@@ -937,7 +1158,9 @@ impl Coordinator {
         reason: String,
         revoked_at_tick: u64,
     ) -> u64 {
-        let Some(state) = self.find_robot_state_mut(robot_id) else { return 0; };
+        let Some(state) = self.find_robot_state_mut(robot_id) else {
+            return 0;
+        };
         let lease_ids = std::mem::take(&mut state.active_lease_ids);
         state.progress_state = RobotProgressState::Replanning;
         state.hold_reason = Some(reason.clone());
@@ -945,7 +1168,10 @@ impl Coordinator {
 
         let mut revoked: u64 = 0;
         for lease_id in lease_ids {
-            if self.claim_manager.revoke_lease(lease_id, reason.clone(), revoked_at_tick) {
+            if self
+                .claim_manager
+                .revoke_lease(lease_id, reason.clone(), revoked_at_tick)
+            {
                 revoked += 1;
             }
         }
@@ -962,7 +1188,9 @@ impl Coordinator {
         current_tick: u64,
         grace_ticks: u64,
     ) -> bool {
-        let Some(state) = self.find_robot_state_mut(robot_id) else { return false; };
+        let Some(state) = self.find_robot_state_mut(robot_id) else {
+            return false;
+        };
         if !robot_missed_schedule_slot(state, current_tick, grace_ticks) {
             return false;
         }

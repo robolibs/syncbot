@@ -19,6 +19,9 @@ pub struct Factsheet {
 
 impl Factsheet {
     pub fn new() -> Self {
-        Self { protocol_version: "3.0.0".into(), ..Self::default() }
+        Self {
+            protocol_version: "3.0.0".into(),
+            ..Self::default()
+        }
     }
 }

@@ -12,36 +12,61 @@ pub mod manager;
 pub use manager::ClaimManager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClaimTargetKind { Zone, Node, Edge }
+pub enum ClaimTargetKind {
+    Zone,
+    Node,
+    Edge,
+}
 
 impl Default for ClaimTargetKind {
-    fn default() -> Self { Self::Zone }
+    fn default() -> Self {
+        Self::Zone
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClaimAccessMode { Shared, Exclusive }
+pub enum ClaimAccessMode {
+    Shared,
+    Exclusive,
+}
 
 impl Default for ClaimAccessMode {
-    fn default() -> Self { Self::Exclusive }
+    fn default() -> Self {
+        Self::Exclusive
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClaimDecision { Grant, Deny }
+pub enum ClaimDecision {
+    Grant,
+    Deny,
+}
 
 impl Default for ClaimDecision {
-    fn default() -> Self { Self::Grant }
+    fn default() -> Self {
+        Self::Grant
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LeaseDisposition { Active, Released, Expired, Revoked }
+pub enum LeaseDisposition {
+    Active,
+    Released,
+    Expired,
+    Revoked,
+}
 
 impl Default for LeaseDisposition {
-    fn default() -> Self { Self::Active }
+    fn default() -> Self {
+        Self::Active
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_tick: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_tick: Option<u64>,
 }
 
