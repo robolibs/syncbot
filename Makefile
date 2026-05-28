@@ -8,7 +8,7 @@ endif
 
 TOP_DIR := $(CURDIR)
 CARGO := cargo
-EXAMPLE ?= main
+EXAMPLE ?= route_planning
 
 $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
@@ -62,7 +62,7 @@ help:
 	@echo "Available targets:"
 	@echo "  build        Build the library and examples"
 	@echo "  compile      Clean and rebuild"
-	@echo "  run          Run a development example (EXAMPLE=main by default)"
+	@echo "  run          Run a development example (EXAMPLE=route_planning by default)"
 	@echo "  test         Run all tests"
 	@echo "  test-python  Run tests with Python bindings enabled"
 	@echo "  check        Run cargo check on all targets"
@@ -73,7 +73,7 @@ help:
 	@echo
 	@echo "Examples:"
 	@echo "  make run"
-	@echo "  make run EXAMPLE=main"
+	@echo "  make run EXAMPLE=route_planning"
 	@echo
 
 h: help

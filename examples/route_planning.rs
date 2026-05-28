@@ -1,22 +1,28 @@
 //! Build a tiny workspace, plan a route, and print the resulting plan.
 
-use datapod::{Geo, OMap, Point, Polygon};
+use std::collections::BTreeMap as OMap;
+
+use datapod::{Geo, Point, Polygon};
 use graphix::vertex::EdgeType;
 use timenav::{WorkspaceIndex, plan_route};
 use zoneout::{NodeData, Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
-    Polygon { vertices: vec![
-        Point::new(min_x, min_y, 0.0),
-        Point::new(max_x, min_y, 0.0),
-        Point::new(max_x, max_y, 0.0),
-        Point::new(min_x, max_y, 0.0),
-    ].into() }
+    Polygon {
+        vertices: vec![
+            Point::new(min_x, min_y, 0.0),
+            Point::new(max_x, min_y, 0.0),
+            Point::new(max_x, max_y, 0.0),
+            Point::new(min_x, max_y, 0.0),
+        ]
+        .into(),
+    }
 }
 
 fn main() {
     let root = ZoneBuilder::new()
-        .with_name("yard").with_kind("workspace")
+        .with_name("yard")
+        .with_kind("workspace")
         .with_boundary(rectangle(0.0, 0.0, 100.0, 100.0))
         .with_datum(Geo::new(52.0, 5.0, 0.0))
         .build()
@@ -39,12 +45,18 @@ fn main() {
 
     match result.plan {
         Some(plan) => {
-            println!("planned route from {} to {}", plan.start_node_id, plan.goal_node_id);
+            println!(
+                "planned route from {} to {}",
+                plan.start_node_id, plan.goal_node_id
+            );
             println!("  total cost: {}", plan.total_cost);
             println!("  nodes:      {}", plan.traversed_node_ids.len());
             println!("  edges:      {}", plan.traversed_edge_ids.len());
             for (i, step) in plan.steps.iter().enumerate() {
-                println!("  step {i}: node={} cumulative={}", step.node_id, step.cumulative_cost);
+                println!(
+                    "  step {i}: node={} cumulative={}",
+                    step.node_id, step.cumulative_cost
+                );
             }
         }
         None => {

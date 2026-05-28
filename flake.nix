@@ -29,6 +29,7 @@
             pkgs.pkg-config
           ];
 
+          LIBCLANG_PATH = "${pkgs.clang.cc.lib}/lib";
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
         };
       }

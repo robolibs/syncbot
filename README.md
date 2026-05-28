@@ -17,8 +17,8 @@ shared workspace:
 
 ## Status
 
-Functional parity with the C++ reference plus full **C ABI** and **PyO3**
-bindings. 47 tests pass; clippy clean with `-D warnings`.
+Functional parity with the C++ reference plus **C ABI** and **PyO3**
+bindings. The primary validation lanes are the Makefile targets below.
 
 ## Build
 
@@ -26,7 +26,7 @@ bindings. 47 tests pass; clippy clean with `-D warnings`.
 make build                           # cargo build --lib --examples
 make test                            # cargo test --all-targets
 make run EXAMPLE=route_planning      # run an example
-cargo check --features python        # python feature plumbing
+make test-python                     # python feature plumbing
 ```
 
 ## Dependencies
@@ -34,7 +34,7 @@ cargo check --features python        # python feature plumbing
 | crate     | role                                                       |
 |-----------|------------------------------------------------------------|
 | `zoneout` | sibling Rust port — `Workspace`, `Zone`, graph, JSON I/O   |
-| `datapod` | POD geometry types + `OMap`                                |
+| `datapod` | POD geometry types                                          |
 | `concord` | coordinate transforms (WGS ↔ ENU)                          |
 | `graphix` | vertex graph types (reused via `zoneout::Workspace`)       |
 | `pyo3`    | Python bindings (optional, gated)                          |
@@ -67,7 +67,9 @@ cargo check --features python        # python feature plumbing
 ```rust
 use std::sync::Arc;
 
-use datapod::{Geo, OMap, Point, Polygon};
+use std::collections::BTreeMap as OMap;
+
+use datapod::{Geo, Point, Polygon};
 use graphix::vertex::EdgeType;
 use timenav::{WorkspaceIndex, plan_route};
 use zoneout::{NodeData, Workspace, ZoneBuilder};
