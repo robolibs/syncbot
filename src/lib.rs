@@ -27,7 +27,7 @@ pub mod vda;
 #[cfg(feature = "python")]
 pub mod python;
 
-#[cfg(any(feature = "rest", feature = "robo", feature = "xmlt"))]
+#[cfg(any(feature = "rest", feature = "robo", feature = "xmlt", feature = "quicbit"))]
 pub mod wire;
 
 pub use crate::core::error::{Error, Result};

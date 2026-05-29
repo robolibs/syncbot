@@ -26,11 +26,16 @@ python-extension = ["python", "pyo3/extension-module"]
 rest = ["dep:axum", "dep:tokio"]
 robo = ["dep:tokio", "dep:zenoh"]
 xmlt = ["dep:axum", "dep:quick-xml"]
+# Publish fleet events / state over quicbit (iceoryx2 SHM on the same
+# host, iroh QUIC across hosts — chosen automatically per subscriber).
+# No bytemuck dep needed: the `#[datapod::datapod]` macro now expands to
+# `::datapod::bytemuck::*`, so datapod alone suffices.
+quicbit = ["dep:quicbit"]
 
 [dependencies]
 zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", rev = "541b3c4fd521568c94e7cf23848bf0360056e3f0" }
 concord = { git = "https://codeberg.org/robolibs/concord.git", rev = "34062145237c2f2e19cb62e50eba127b4bc848b5" }
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", rev = "4547e328826fb4fd788b7acac29c2f70efc62746" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.1.2" }
 graphix = { git = "https://codeberg.org/robolibs/graphix.git", rev = "63b38d1b71b621cddf6d6a3070d9646bea83e7c4" }
 axum = { version = "0.8.9", optional = true }
 pyo3 = { version = "0.23", optional = true }
@@ -41,7 +46,12 @@ tokio = { version = "1.52", features = ["rt", "macros", "net", "time"], optional
 uuid = { version = "1.10", features = ["v4", "serde"] }
 zenoh = { version = "1.9.0", optional = true }
 quick-xml = { version = "0.36", features = ["serialize"], optional = true }
+quicbit = { git = "https://codeberg.org/robolibs/quicbit.git", tag = "0.1.0", optional = true }
 
 [[example]]
 name = "rest_server"
 required-features = ["rest"]
+
+[[example]]
+name = "quicbit_fleet"
+required-features = ["quicbit"]

@@ -28,6 +28,9 @@ pub mod robo;
 #[cfg(feature = "xmlt")]
 pub mod xmlt;
 
+#[cfg(feature = "quicbit")]
+pub mod quicbit;
+
 /// Shared state used by all serving adapters.
 #[derive(Clone)]
 pub struct ServeState {
