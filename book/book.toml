@@ -1,0 +1,20 @@
+[book]
+title = "timenav"
+description = "Multi-robot navigation, claims, and scheduling — and the wire transports that expose it."
+authors = ["Trim Bresilla"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://codeberg.org/robolibs/timenav"
+edit-url-template = "https://codeberg.org/robolibs/timenav/_edit/main/book/{path}"
+additional-css = []
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
