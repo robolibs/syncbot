@@ -149,16 +149,16 @@ impl ClaimTargetWire {
 /// Wire form of [`ClaimRequest`] — mirrors the core struct but accepts
 /// `ResourceRef` for each target's `resource_id`. Convert with
 /// [`ClaimRequestWire::into_request`] before handing to `ClaimManager`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ClaimRequestWire {
     pub id: ClaimId,
     pub robot_id: RobotId,
     pub mission_id: MissionId,
     pub access_mode: ClaimAccessMode,
     pub priority: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_at_tick: Option<u64>,
-    #[serde(default)]
     pub window: ClaimWindow,
     pub targets: Vec<ClaimTargetWire>,
 }

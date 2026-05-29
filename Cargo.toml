@@ -23,7 +23,7 @@ crate-type = ["rlib", "cdylib"]
 default = []
 python = ["dep:pyo3", "pyo3/abi3-py39", "pyo3/auto-initialize"]
 python-extension = ["python", "pyo3/extension-module"]
-rest = ["dep:axum"]
+rest = ["dep:axum", "dep:tokio"]
 robo = ["dep:tokio", "dep:zenoh"]
 xmlt = ["dep:axum", "dep:quick-xml"]
 
@@ -37,7 +37,11 @@ pyo3 = { version = "0.23", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-tokio = { version = "1.52", features = ["rt"], optional = true }
+tokio = { version = "1.52", features = ["rt", "macros", "net", "time"], optional = true }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 zenoh = { version = "1.9.0", optional = true }
 quick-xml = { version = "0.36", features = ["serialize"], optional = true }
+
+[[example]]
+name = "rest_server"
+required-features = ["rest"]

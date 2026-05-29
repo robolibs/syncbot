@@ -89,6 +89,7 @@ pub struct ClaimRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Lease {
     pub id: LeaseId,
     pub claim_id: ClaimId,

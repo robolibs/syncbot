@@ -24,6 +24,7 @@ impl Default for RobotProgressState {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RobotState {
     pub robot_id: RobotId,
     pub mission_id: MissionId,
