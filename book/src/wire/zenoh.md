@@ -104,7 +104,3 @@ ares/v1/events/lease
 ares/v1/events/zone
 ares/v1/events/alert
 ```
-
-> For a high-rate, zero-copy event bus on the same host (or P2P across hosts),
-> see [quicbit](./quicbit.md), which is purpose-built for that and avoids JSON
-> entirely on the hot path.

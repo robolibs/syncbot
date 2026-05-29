@@ -8,13 +8,16 @@ endif
 
 TOP_DIR := $(CURDIR)
 CARGO := cargo
-EXAMPLE ?= route_planning
+EXAMPLE ?= serve_workspace
+RUN_FEATURES ?= rest
+RUN_ARGS ?= examples/fixed
+RUN_FEATURE_ARGS := $(if $(strip $(RUN_FEATURES)),--features "$(RUN_FEATURES)",)
 
 $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t check check-rest check-robo check-transports fmt bench clean help h test-python c-demo
+.PHONY: build b compile c run r fixed-map test t check check-rest check-robo check-transports fmt bench clean help h test-python c-demo
 
 build:
 	@$(CARGO) build --lib --examples
@@ -28,9 +31,12 @@ compile:
 c: compile
 
 run:
-	@$(CARGO) run --example $(EXAMPLE)
+	@$(CARGO) run $(RUN_FEATURE_ARGS) --example $(EXAMPLE) -- $(RUN_ARGS)
 
 r: run
+
+fixed-map:
+	@$(CARGO) run --example generate_fixed -- examples/fixed
 
 test:
 	@$(CARGO) test --all-targets
@@ -71,7 +77,8 @@ help:
 	@echo "Available targets:"
 	@echo "  build        Build the library and examples"
 	@echo "  compile      Clean and rebuild"
-	@echo "  run          Run a development example (EXAMPLE=route_planning by default)"
+	@echo "  run          Run the workspace REST server (loads RUN_ARGS=examples/fixed by default)"
+	@echo "  fixed-map    Generate the fixed example zone map in examples/fixed"
 	@echo "  test         Run all tests"
 	@echo "  test-python  Run tests with Python bindings enabled"
 	@echo "  check        Run cargo check on all targets"
@@ -85,7 +92,8 @@ help:
 	@echo
 	@echo "Examples:"
 	@echo "  make run"
-	@echo "  make run EXAMPLE=route_planning"
+	@echo "  make run RUN_ARGS=\"examples/fixed 127.0.0.1:8081\""
+	@echo "  make run EXAMPLE=route_planning RUN_FEATURES= RUN_ARGS="
 	@echo
 
 h: help

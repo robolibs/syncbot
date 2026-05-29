@@ -5,6 +5,7 @@
 //! core (`Coordinator`, `ClaimManager`, `plan_route`) and serialises core
 //! results back to the wire.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,7 @@ use crate::claim::{
 };
 use crate::coordinator::{Coordinator, ScheduleDecision};
 use crate::core::ids::RobotId;
-use crate::index::{ResourceRef, WorkspaceIndex};
+use crate::index::{NUMERIC_ID_PROPERTY, ResourceRef, WorkspaceIndex};
 use crate::robot::RobotState;
 use crate::route::{RouteFailure, RoutePlan, plan_route};
 
@@ -27,9 +28,6 @@ pub mod robo;
 
 #[cfg(feature = "xmlt")]
 pub mod xmlt;
-
-#[cfg(feature = "quicbit")]
-pub mod quicbit;
 
 /// Shared state used by all serving adapters.
 #[derive(Clone)]
@@ -75,6 +73,40 @@ pub struct FleetSnapshot {
     pub robots: Vec<RobotState>,
     pub requests: Vec<ClaimRequest>,
     pub leases: Vec<Lease>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZoneView {
+    pub id: uuid::Uuid,
+    pub numeric_id: Option<u64>,
+    pub name: String,
+    pub kind: String,
+    pub parent_id: Option<uuid::Uuid>,
+    pub child_ids: Vec<uuid::Uuid>,
+    pub node_ids: Vec<uuid::Uuid>,
+    pub properties: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeView {
+    pub id: uuid::Uuid,
+    pub numeric_id: Option<u64>,
+    pub name: String,
+    pub position: zoneout::NodePosition,
+    pub zone_ids: Vec<uuid::Uuid>,
+    pub properties: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeView {
+    pub id: uuid::Uuid,
+    pub numeric_id: Option<u64>,
+    pub source_node_id: uuid::Uuid,
+    pub target_node_id: uuid::Uuid,
+    pub directed: bool,
+    pub weight: f64,
+    pub zone_ids: Vec<uuid::Uuid>,
+    pub properties: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +234,127 @@ pub fn fleet_snapshot(state: &ServeState) -> ApiResult<FleetSnapshot> {
     })
 }
 
+pub fn list_zones(state: &ServeState) -> ApiResult<Vec<ZoneView>> {
+    let coord = read_coord(state)?;
+    let idx = coord
+        .index()
+        .ok_or_else(|| ApiError::new("coordinator has no WorkspaceIndex bound"))?;
+    let mut zones = Vec::new();
+    let root_id = idx
+        .root_zone_id()
+        .ok_or_else(|| ApiError::new("workspace has no root zone"))?;
+    let root = idx
+        .zone(root_id)
+        .ok_or_else(|| ApiError::new("root zone is missing from index"))?;
+    zones.push(zone_view(idx, root));
+    for zone in idx.descendant_zones(root_id) {
+        zones.push(zone_view(idx, zone));
+    }
+    Ok(zones)
+}
+
+pub fn find_zone(state: &ServeState, id: ResourceRef) -> ApiResult<ZoneView> {
+    let coord = read_coord(state)?;
+    let idx = coord
+        .index()
+        .ok_or_else(|| ApiError::new("coordinator has no WorkspaceIndex bound"))?;
+    let zone_id = id
+        .resolve_zone(idx)
+        .ok_or_else(|| ApiError::new(format!("unknown zone id {:?}", id)))?;
+    let zone = idx
+        .zone(zone_id)
+        .ok_or_else(|| ApiError::new(format!("unknown zone id {zone_id}")))?;
+    Ok(zone_view(idx, zone))
+}
+
+pub fn list_nodes(state: &ServeState) -> ApiResult<Vec<NodeView>> {
+    let coord = read_coord(state)?;
+    let idx = coord
+        .index()
+        .ok_or_else(|| ApiError::new("coordinator has no WorkspaceIndex bound"))?;
+    let graph = idx.workspace().graph();
+    Ok(graph
+        .vertices()
+        .into_iter()
+        .filter_map(|vid| graph.get_vertex(vid))
+        .map(node_view)
+        .collect())
+}
+
+pub fn find_node(state: &ServeState, id: ResourceRef) -> ApiResult<NodeView> {
+    let coord = read_coord(state)?;
+    let idx = coord
+        .index()
+        .ok_or_else(|| ApiError::new("coordinator has no WorkspaceIndex bound"))?;
+    let node_id = id
+        .resolve_node(idx)
+        .ok_or_else(|| ApiError::new(format!("unknown node id {:?}", id)))?;
+    let node = idx
+        .node(node_id)
+        .ok_or_else(|| ApiError::new(format!("unknown node id {node_id}")))?;
+    Ok(node_view(node))
+}
+
+pub fn list_edges(state: &ServeState) -> ApiResult<Vec<EdgeView>> {
+    let coord = read_coord(state)?;
+    let idx = coord
+        .index()
+        .ok_or_else(|| ApiError::new("coordinator has no WorkspaceIndex bound"))?;
+    let graph = idx.workspace().graph();
+    let mut edges = Vec::new();
+    for edge in graph.edges() {
+        let Some(data) = graph.edge_property(edge.id) else {
+            continue;
+        };
+        let Some(source) = graph.source(edge.id).and_then(|vid| graph.get_vertex(vid)) else {
+            continue;
+        };
+        let Some(target) = graph.target(edge.id).and_then(|vid| graph.get_vertex(vid)) else {
+            continue;
+        };
+        edges.push(edge_view(
+            data,
+            source.id,
+            target.id,
+            matches!(graph.get_edge_type(edge.id), Some(graphix::vertex::EdgeType::Directed)),
+            graph.get_weight(edge.id).unwrap_or(edge.weight),
+        ));
+    }
+    Ok(edges)
+}
+
+pub fn find_edge(state: &ServeState, id: ResourceRef) -> ApiResult<EdgeView> {
+    let coord = read_coord(state)?;
+    let idx = coord
+        .index()
+        .ok_or_else(|| ApiError::new("coordinator has no WorkspaceIndex bound"))?;
+    let edge_uuid = id
+        .resolve_edge(idx)
+        .ok_or_else(|| ApiError::new(format!("unknown edge id {:?}", id)))?;
+    let edge_id = idx
+        .edge_id(edge_uuid)
+        .ok_or_else(|| ApiError::new(format!("unknown edge id {edge_uuid}")))?;
+    let graph = idx.workspace().graph();
+    let data = graph
+        .edge_property(edge_id)
+        .ok_or_else(|| ApiError::new(format!("unknown edge id {edge_uuid}")))?;
+    let source = graph
+        .source(edge_id)
+        .and_then(|vid| graph.get_vertex(vid))
+        .ok_or_else(|| ApiError::new(format!("edge {edge_uuid} has no source node")))?;
+    let target = graph
+        .target(edge_id)
+        .and_then(|vid| graph.get_vertex(vid))
+        .ok_or_else(|| ApiError::new(format!("edge {edge_uuid} has no target node")))?;
+    Ok(edge_view(
+        data,
+        source.id,
+        target.id,
+        matches!(graph.get_edge_type(edge_id), Some(graphix::vertex::EdgeType::Directed)),
+        graph.get_weight(edge_id).unwrap_or_default(),
+    ))
+}
+
 pub fn register_robot(state: &ServeState, robot: RobotState) -> ApiResult<RobotState> {
     let mut coord = write_coord(state)?;
     coord.register_robot(robot.clone());
@@ -326,6 +479,22 @@ pub fn list_claims(state: &ServeState) -> ApiResult<Vec<ClaimRequest>> {
     Ok(read_coord(state)?.claim_manager().requests().to_vec())
 }
 
+pub fn find_claim(state: &ServeState, claim_id: ClaimId) -> ApiResult<ClaimRequest> {
+    read_coord(state)?
+        .claim_manager()
+        .requests()
+        .iter()
+        .find(|request| request.id == claim_id)
+        .cloned()
+        .ok_or_else(|| ApiError::new(format!("claim {claim_id} is not active")))
+}
+
+pub fn remove_claim(state: &ServeState, claim_id: ClaimId) -> ApiResult<bool> {
+    Ok(write_coord(state)?
+        .claim_manager_mut()
+        .remove_request(claim_id))
+}
+
 pub fn evaluate_claim(
     state: &ServeState,
     request: ClaimRequestWire,
@@ -388,4 +557,59 @@ fn write_coord(
         .coordinator
         .write()
         .map_err(|_| ApiError::new("coordinator lock is poisoned"))
+}
+
+fn zone_view(idx: &WorkspaceIndex, zone: &zoneout::Zone) -> ZoneView {
+    ZoneView {
+        id: zone.id(),
+        numeric_id: zone
+            .property(NUMERIC_ID_PROPERTY)
+            .and_then(|raw| raw.trim().parse::<u64>().ok()),
+        name: zone.name().into(),
+        kind: zone.kind().into(),
+        parent_id: idx.parent_zone(zone.id()).map(|parent| parent.id()),
+        child_ids: idx
+            .child_zones(zone.id())
+            .into_iter()
+            .map(|child| child.id())
+            .collect(),
+        node_ids: zone.node_ids().to_vec(),
+        properties: zone.properties().clone(),
+    }
+}
+
+fn node_view(node: &zoneout::NodeData) -> NodeView {
+    NodeView {
+        id: node.id,
+        numeric_id: numeric_id(&node.properties),
+        name: node.name.clone(),
+        position: node.position,
+        zone_ids: node.zone_ids.clone(),
+        properties: node.properties.clone(),
+    }
+}
+
+fn edge_view(
+    edge: &zoneout::EdgeData,
+    source_node_id: uuid::Uuid,
+    target_node_id: uuid::Uuid,
+    directed: bool,
+    weight: f64,
+) -> EdgeView {
+    EdgeView {
+        id: edge.id,
+        numeric_id: numeric_id(&edge.properties),
+        source_node_id,
+        target_node_id,
+        directed,
+        weight,
+        zone_ids: edge.zone_ids.clone(),
+        properties: edge.properties.clone(),
+    }
+}
+
+fn numeric_id(properties: &BTreeMap<String, String>) -> Option<u64> {
+    properties
+        .get(NUMERIC_ID_PROPERTY)
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
 }

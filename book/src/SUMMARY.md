@@ -13,7 +13,6 @@
 - [REST / JSON](./wire/rest-json.md)
 - [REST / XML](./wire/rest-xml.md)
 - [Zenoh](./wire/zenoh.md)
-- [quicbit](./wire/quicbit.md)
 
 # In-process bindings
 

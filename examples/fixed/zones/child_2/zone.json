@@ -1,0 +1,13 @@
+{
+  "id": "00000000-0000-0000-0000-000000000102",
+  "name": "dock_b",
+  "type": "zone",
+  "properties": {
+    "external.numeric_id": "102",
+    "traffic.claim_required": "true",
+    "traffic.policy": "exclusive"
+  },
+  "node_ids": [
+    "00000000-0000-0000-0000-000000001003"
+  ]
+}

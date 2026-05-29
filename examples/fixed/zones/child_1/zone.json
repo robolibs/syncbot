@@ -1,0 +1,14 @@
+{
+  "id": "00000000-0000-0000-0000-000000000101",
+  "name": "cross_aisle",
+  "type": "zone",
+  "properties": {
+    "external.numeric_id": "101",
+    "traffic.capacity": "2",
+    "traffic.policy": "shared",
+    "traffic.speed_limit": "1.2"
+  },
+  "node_ids": [
+    "00000000-0000-0000-0000-000000001002"
+  ]
+}

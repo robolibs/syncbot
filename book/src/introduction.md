@@ -21,12 +21,12 @@ checks, capacity rules, or arbitration.
                  │              timenav core             │
                  │  route · policy · claims · schedule   │
                  └───────────────────────────────────────┘
-                    ▲          ▲          ▲          ▲
-                    │          │          │          │
-                REST/JSON   REST/XML    Zenoh     quicbit
-                    │          │          │          │
-               dashboards    PLCs    robots /    SHM / QUIC
-               & tooling             bridges     event bus
+                       ▲            ▲            ▲
+                       │            │            │
+                   REST/JSON     REST/XML      Zenoh
+                       │            │            │
+                  dashboards      PLCs       robots /
+                  & tooling                  bridges
 ```
 
 Pick the door that matches the caller. The state machine and decisions behind

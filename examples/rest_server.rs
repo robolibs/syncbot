@@ -12,6 +12,8 @@ use std::sync::Arc;
 use datapod::{Geo, Point, Polygon};
 use timenav::wire::{ServeState, rest};
 use timenav::{Coordinator, NUMERIC_ID_PROPERTY, WorkspaceIndex};
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 use uuid::{Uuid, uuid};
 use zoneout::{Workspace, ZoneBuilder};
 
@@ -69,6 +71,8 @@ fn build_workspace() -> Workspace {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_logging();
+
     let ws = build_workspace();
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     let coord = Coordinator::with_index(idx);
@@ -87,7 +91,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  junction  numeric_id=102  uuid={ZONE_JUNCTION}");
     println!();
     println!("try: curl http://{addr}/ares/v1/health");
+    info!(addr = %addr, "REST demo server listening");
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn init_logging() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,timenav=debug,tower_http=debug"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(true)
+        .pretty()
+        .init();
 }

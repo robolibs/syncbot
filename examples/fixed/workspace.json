@@ -1,0 +1,10 @@
+{
+  "format_version": 2,
+  "root_zone_id": "00000000-0000-0000-0000-000000000001",
+  "coord_mode": "local",
+  "datum": {
+    "lat": 52.0,
+    "lon": 5.0,
+    "alt": 0.0
+  }
+}

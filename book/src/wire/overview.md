@@ -25,10 +25,8 @@ same fleet — a claim granted over REST is visible over Zenoh immediately.
 | [REST / JSON](./rest-json.md) | `rest`   | JSON   | HTTP (axum)        | dashboards, tools, tests, web clients |
 | [REST / XML](./rest-xml.md)   | `xmlt`   | XML    | HTTP (axum)        | PLCs, XML-native / legacy controllers |
 | [Zenoh](./zenoh.md)           | `robo`   | JSON   | Zenoh queryables   | robots, bridges, wireless / edge      |
-| [quicbit](./quicbit.md)       | `quicbit`| POD / JSON | SHM (iceoryx2) or QUIC (iroh) | zero-copy local + P2P event bus |
 
-REST and Zenoh are **request/response** over the full API. quicbit is a
-**publish** path for fleet events and snapshots, not a control API.
+All three are **request/response** over the same API surface.
 
 ## Common address space
 
@@ -64,5 +62,5 @@ The capability set is identical; only the wrapping differs.
 Adapters may parse requests, serialise responses, authenticate, publish events,
 and call core functions. They may **not** own independent fleet state, bypass the
 `ClaimManager`, make route/schedule decisions outside the `Coordinator`, or invent
-different semantics per transport. That is what keeps REST, XML, Zenoh, quicbit,
+different semantics per transport. That is what keeps REST, XML, Zenoh,
 Python, and the C ABI aligned.

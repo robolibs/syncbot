@@ -88,7 +88,4 @@ ScheduleDecision { kind: "Proceed"|"Queue"|"Replan", start_tick, queue_position,
 PlanRouteResponse { found: bool, distance: f64, plan: Option<RoutePlan>, failure: Option<RouteFailure> }
 ```
 
-See [Resource IDs](../resource-ids.md) for the `ResourceRef` encoding, and
-[quicbit](../wire/quicbit.md) for that transport's separate POD event types
-(`LeaseEvent`, `ScheduleEvent`, `FleetStateMsg`), which are **not** shared with
-REST/Zenoh.
+See [Resource IDs](../resource-ids.md) for the `ResourceRef` encoding.
