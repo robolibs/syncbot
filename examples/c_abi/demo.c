@@ -10,47 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* --- minimal C declarations of the symbols we use ----------------------- */
-
-typedef struct TnWorkspace TnWorkspace;
-typedef struct TnWorkspaceIndex TnWorkspaceIndex;
-typedef struct TnClaimManager TnClaimManager;
-typedef struct TnCoordinator TnCoordinator;
-
-typedef struct {
-    double self_priority;
-    double other_priority;
-    uint8_t self_holds_lease;
-    uint8_t other_holds_lease;
-    uint8_t self_is_emergency;
-    uint8_t other_is_emergency;
-    uint8_t self_state;
-    uint8_t other_state;
-    uint64_t self_wait_ticks;
-    uint64_t other_wait_ticks;
-    uint64_t self_remaining_steps;
-    uint64_t other_remaining_steps;
-} TnArbitrationContext;
-
-const char *tn_version(void);
-const char *tn_last_error(void);
-void tn_string_free(char *s);
-
-int tn_parse_traffic_bool(const char *value);
-char *tn_parse_zone_policy(const char *properties_json);
-
-TnClaimManager *tn_claim_manager_new(void);
-void tn_claim_manager_free(TnClaimManager *mgr);
-uint64_t tn_claim_manager_request_count(const TnClaimManager *mgr);
-int tn_claim_manager_add_request(TnClaimManager *mgr, const char *request_json);
-char *tn_claim_manager_evaluate(const TnClaimManager *mgr, const char *request_json);
-
-TnCoordinator *tn_coordinator_new(void);
-void tn_coordinator_free(TnCoordinator *c);
-uint64_t tn_coordinator_robot_count(const TnCoordinator *c);
-int tn_coordinator_register_robot(TnCoordinator *c, const char *state_json);
-
-int tn_arbitrate_right_of_way(const TnArbitrationContext *ctx);
+#include "timenav.h"
 
 /* --- demo --------------------------------------------------------------- */
 

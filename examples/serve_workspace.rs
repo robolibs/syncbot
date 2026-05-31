@@ -55,8 +55,7 @@ async fn main() -> ExitCode {
     if !issues.is_empty() {
         warn!(
             issues = issues.len(),
-            errors,
-            "workspace validation reported issues"
+            errors, "workspace validation reported issues"
         );
         for i in &issues {
             warn!(
@@ -125,8 +124,19 @@ fn print_zones(idx: &WorkspaceIndex) {
             .map(String::as_str)
             .unwrap_or("-");
         match z.property(NUMERIC_ID_PROPERTY) {
-            Some(n) => println!("  {:<20} numeric_id={:<6} policy={:<10} uuid={}", z.name(), n, policy, zid),
-            None => println!("  {:<20} (no numeric id)  policy={:<10} uuid={}", z.name(), policy, zid),
+            Some(n) => println!(
+                "  {:<20} numeric_id={:<6} policy={:<10} uuid={}",
+                z.name(),
+                n,
+                policy,
+                zid
+            ),
+            None => println!(
+                "  {:<20} (no numeric id)  policy={:<10} uuid={}",
+                z.name(),
+                policy,
+                zid
+            ),
         }
     }
 }

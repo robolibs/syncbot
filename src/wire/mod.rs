@@ -37,7 +37,9 @@ pub struct ServeState {
 
 impl ServeState {
     pub fn new(coordinator: Coordinator) -> Self {
-        Self { coordinator: Arc::new(RwLock::new(coordinator)) }
+        Self {
+            coordinator: Arc::new(RwLock::new(coordinator)),
+        }
     }
 
     pub fn shared(coordinator: Arc<RwLock<Coordinator>>) -> Self {
@@ -56,7 +58,9 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -316,7 +320,10 @@ pub fn list_edges(state: &ServeState) -> ApiResult<Vec<EdgeView>> {
             data,
             source.id,
             target.id,
-            matches!(graph.get_edge_type(edge.id), Some(graphix::vertex::EdgeType::Directed)),
+            matches!(
+                graph.get_edge_type(edge.id),
+                Some(graphix::vertex::EdgeType::Directed)
+            ),
             graph.get_weight(edge.id).unwrap_or(edge.weight),
         ));
     }
@@ -350,7 +357,10 @@ pub fn find_edge(state: &ServeState, id: ResourceRef) -> ApiResult<EdgeView> {
         data,
         source.id,
         target.id,
-        matches!(graph.get_edge_type(edge_id), Some(graphix::vertex::EdgeType::Directed)),
+        matches!(
+            graph.get_edge_type(edge_id),
+            Some(graphix::vertex::EdgeType::Directed)
+        ),
         graph.get_weight(edge_id).unwrap_or_default(),
     ))
 }
@@ -387,15 +397,17 @@ pub fn heartbeat(
             .index()
             .ok_or_else(|| ApiError::new("coordinator has no WorkspaceIndex bound"))?;
         let node = match request.current_node_id {
-            Some(r) => Some(r.resolve_node(idx).ok_or_else(|| {
-                ApiError::new(format!("unknown node id {:?}", r))
-            })?),
+            Some(r) => Some(
+                r.resolve_node(idx)
+                    .ok_or_else(|| ApiError::new(format!("unknown node id {:?}", r)))?,
+            ),
             None => None,
         };
         let edge = match request.current_edge_id {
-            Some(r) => Some(r.resolve_edge(idx).ok_or_else(|| {
-                ApiError::new(format!("unknown edge id {:?}", r))
-            })?),
+            Some(r) => Some(
+                r.resolve_edge(idx)
+                    .ok_or_else(|| ApiError::new(format!("unknown edge id {:?}", r)))?,
+            ),
             None => None,
         };
         (node, edge)
@@ -463,9 +475,10 @@ pub fn plan_route_request(
     let start = request.start_node_id.resolve_node(index).ok_or_else(|| {
         ApiError::new(format!("unknown start node id {:?}", request.start_node_id))
     })?;
-    let goal = request.goal_node_id.resolve_node(index).ok_or_else(|| {
-        ApiError::new(format!("unknown goal node id {:?}", request.goal_node_id))
-    })?;
+    let goal = request
+        .goal_node_id
+        .resolve_node(index)
+        .ok_or_else(|| ApiError::new(format!("unknown goal node id {:?}", request.goal_node_id)))?;
     let result = plan_route(index, start, goal, request.use_penalties);
     Ok(PlanRouteResponse {
         found: result.search.found,
@@ -495,10 +508,7 @@ pub fn remove_claim(state: &ServeState, claim_id: ClaimId) -> ApiResult<bool> {
         .remove_request(claim_id))
 }
 
-pub fn evaluate_claim(
-    state: &ServeState,
-    request: ClaimRequestWire,
-) -> ApiResult<ClaimEvaluation> {
+pub fn evaluate_claim(state: &ServeState, request: ClaimRequestWire) -> ApiResult<ClaimEvaluation> {
     let coord = read_coord(state)?;
     let idx = coord
         .index()
@@ -507,10 +517,7 @@ pub fn evaluate_claim(
     Ok(coord.claim_manager().evaluate_request(&resolved))
 }
 
-pub fn submit_claim(
-    state: &ServeState,
-    request: ClaimRequestWire,
-) -> ApiResult<ClaimEvaluation> {
+pub fn submit_claim(state: &ServeState, request: ClaimRequestWire) -> ApiResult<ClaimEvaluation> {
     let mut coord = write_coord(state)?;
     let resolved = {
         let idx = coord
@@ -541,18 +548,14 @@ pub fn release_lease(state: &ServeState, request: ReleaseLeaseRequest) -> ApiRes
         .release_lease(request.lease_id, request.released_at_tick))
 }
 
-fn read_coord(
-    state: &ServeState,
-) -> ApiResult<std::sync::RwLockReadGuard<'_, Coordinator>> {
+fn read_coord(state: &ServeState) -> ApiResult<std::sync::RwLockReadGuard<'_, Coordinator>> {
     state
         .coordinator
         .read()
         .map_err(|_| ApiError::new("coordinator lock is poisoned"))
 }
 
-fn write_coord(
-    state: &ServeState,
-) -> ApiResult<std::sync::RwLockWriteGuard<'_, Coordinator>> {
+fn write_coord(state: &ServeState) -> ApiResult<std::sync::RwLockWriteGuard<'_, Coordinator>> {
     state
         .coordinator
         .write()

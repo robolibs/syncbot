@@ -13,8 +13,8 @@ use timenav::wire::{
     evaluate_claim, heartbeat, plan_route_request, register_robot,
 };
 use timenav::{
-    ClaimAccessMode, ClaimDecision, ClaimId, ClaimTargetKind, ClaimWindow, Coordinator,
-    MissionId, NUMERIC_ID_PROPERTY, ResourceRef, RobotId, RobotState, WorkspaceIndex,
+    ClaimAccessMode, ClaimDecision, ClaimId, ClaimTargetKind, ClaimWindow, Coordinator, MissionId,
+    NUMERIC_ID_PROPERTY, ResourceRef, RobotId, RobotState, WorkspaceIndex,
 };
 use zoneout::{Workspace, ZoneBuilder};
 
@@ -25,8 +25,7 @@ fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
             Point::new(max_x, min_y, 0.0),
             Point::new(max_x, max_y, 0.0),
             Point::new(min_x, max_y, 0.0),
-        ]
-        .into(),
+        ],
     }
 }
 

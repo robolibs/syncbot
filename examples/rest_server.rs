@@ -28,12 +28,16 @@ fn rectangle(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
             Point::new(x1, y0, 0.0),
             Point::new(x1, y1, 0.0),
             Point::new(x0, y1, 0.0),
-        ]
-        .into(),
+        ],
     }
 }
 
-fn exclusive_zone(name: &str, uuid: Uuid, numeric_id: u64, bbox: (f64, f64, f64, f64)) -> zoneout::Zone {
+fn exclusive_zone(
+    name: &str,
+    uuid: Uuid,
+    numeric_id: u64,
+    bbox: (f64, f64, f64, f64),
+) -> zoneout::Zone {
     let (x0, y0, x1, y1) = bbox;
     let mut zone = ZoneBuilder::new()
         .with_name(name)
@@ -60,7 +64,12 @@ fn build_workspace() -> Workspace {
     let zones = [
         ("dock_a", ZONE_DOCK_A, 100u64, (10.0, 10.0, 60.0, 60.0)),
         ("dock_b", ZONE_DOCK_B, 101u64, (80.0, 10.0, 130.0, 60.0)),
-        ("junction", ZONE_JUNCTION, 102u64, (50.0, 80.0, 100.0, 130.0)),
+        (
+            "junction",
+            ZONE_JUNCTION,
+            102u64,
+            (50.0, 80.0, 100.0, 130.0),
+        ),
     ];
     for (name, uuid, num, bbox) in zones {
         root.add_child(exclusive_zone(name, uuid, num, bbox))

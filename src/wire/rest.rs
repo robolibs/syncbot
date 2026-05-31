@@ -33,7 +33,10 @@ pub fn router(state: ServeState) -> Router {
         .route("/ares/v1/edges", get(list_edges))
         .route("/ares/v1/edges/{id}", get(edge))
         .route("/ares/v1/robots", get(list_robots).post(register_robot))
-        .route("/ares/v1/robots/{id}", get(robot_state).delete(unregister_robot))
+        .route(
+            "/ares/v1/robots/{id}",
+            get(robot_state).delete(unregister_robot),
+        )
         .route("/ares/v1/robots/{id}/heartbeat", post(heartbeat))
         .route("/ares/v1/robots/{id}/route", post(assign_route))
         .route("/ares/v1/robots/{id}/schedule", post(schedule_robot_route))
@@ -141,24 +144,22 @@ async fn schedule_robot_route(
     Path(id): Path<u64>,
     Json(request): Json<ScheduleRobotRouteRequest>,
 ) -> RestResult<crate::coordinator::ScheduleDecision> {
-    ok(crate::wire::schedule_robot_route(&state, RobotId::new(id), request))
+    ok(crate::wire::schedule_robot_route(
+        &state,
+        RobotId::new(id),
+        request,
+    ))
 }
 
 async fn list_claims(State(state): State<ServeState>) -> RestResult<Vec<ClaimRequest>> {
     ok(crate::wire::list_claims(&state))
 }
 
-async fn claim(
-    State(state): State<ServeState>,
-    Path(id): Path<u64>,
-) -> RestResult<ClaimRequest> {
+async fn claim(State(state): State<ServeState>, Path(id): Path<u64>) -> RestResult<ClaimRequest> {
     ok(crate::wire::find_claim(&state, ClaimId::new(id)))
 }
 
-async fn remove_claim(
-    State(state): State<ServeState>,
-    Path(id): Path<u64>,
-) -> RestResult<bool> {
+async fn remove_claim(State(state): State<ServeState>, Path(id): Path<u64>) -> RestResult<bool> {
     ok(crate::wire::remove_claim(&state, ClaimId::new(id)))
 }
 
@@ -180,10 +181,7 @@ async fn list_leases(State(state): State<ServeState>) -> RestResult<Vec<Lease>> 
     ok(crate::wire::list_leases(&state))
 }
 
-async fn add_lease(
-    State(state): State<ServeState>,
-    Json(lease): Json<Lease>,
-) -> RestResult<Lease> {
+async fn add_lease(State(state): State<ServeState>, Json(lease): Json<Lease>) -> RestResult<Lease> {
     ok(crate::wire::add_lease(&state, lease))
 }
 
@@ -200,12 +198,17 @@ async fn release_lease_by_path(
 ) -> RestResult<bool> {
     ok(crate::wire::release_lease(
         &state,
-        ReleaseLeaseRequest { lease_id: crate::core::ids::LeaseId::new(id), released_at_tick: None },
+        ReleaseLeaseRequest {
+            lease_id: crate::core::ids::LeaseId::new(id),
+            released_at_tick: None,
+        },
     ))
 }
 
 fn ok<T>(result: crate::wire::ApiResult<T>) -> RestResult<T> {
-    result.map(Json).map_err(|err| (StatusCode::BAD_REQUEST, Json(err)))
+    result
+        .map(Json)
+        .map_err(|err| (StatusCode::BAD_REQUEST, Json(err)))
 }
 
 fn parse_resource_ref(raw: &str) -> crate::wire::ApiResult<ResourceRef> {

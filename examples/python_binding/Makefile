@@ -4,7 +4,7 @@
 # Requires `maturin` (pip install maturin) and `python3.9+`.
 
 build:
-	cd ../.. && maturin develop --features python-extension
+	cd ../.. && maturin develop --features python
 
 run: build
 	python3 example.py

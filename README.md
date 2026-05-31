@@ -466,12 +466,12 @@ function returns `NULL` / `-1` and `tn_last_error()` describes the cause
 ## Python bindings
 
 The same surface, idiomatic Python, gated behind the `python` /
-`python-extension` features. Built with [maturin](https://github.com/PyO3/maturin):
+`python` feature. Built with [maturin](https://github.com/PyO3/maturin):
 
 ```sh
 pip install maturin
 cd timenav
-maturin develop --features python-extension
+maturin develop --features python
 python -c "import timenav; print(timenav.version())"
 ```
 
@@ -590,7 +590,7 @@ src/
 ├── coordinator.rs              Coordinator + scheduling + arbitration
 ├── vda/                        VDA 5050 transport + Adapter
 ├── ffi.rs                      C ABI (opaque handles + JSON marshaling)
-└── python.rs                   PyO3 (gated, full surface)
+└── python/mod.rs               PyO3 (gated, full surface)
 ```
 
 ## See also

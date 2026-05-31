@@ -2,15 +2,10 @@
 
 CARGO ?= cargo
 TIMENAV_LIB := ../../target/debug/libtimenav.so
-INCLUDE := ../..
-CFLAGS := -Wall -Wextra -O2 -g -I.
+CFLAGS := -Wall -Wextra -O2 -g -I../../include
 
-build: $(TIMENAV_LIB) demo
-
-$(TIMENAV_LIB):
+build:
 	cd ../.. && $(CARGO) build --lib
-
-demo: demo.c $(TIMENAV_LIB)
 	$(CC) $(CFLAGS) -o demo demo.c -L../../target/debug -ltimenav -Wl,-rpath,../../target/debug
 
 run: build

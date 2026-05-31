@@ -79,7 +79,10 @@ impl<'de> Deserialize<'de> for ResourceRef {
                     .map_err(|_| E::custom(format!("negative resource id {n}")))
             }
 
-            fn visit_str<E: serde::de::Error>(self, s: &str) -> std::result::Result<Self::Value, E> {
+            fn visit_str<E: serde::de::Error>(
+                self,
+                s: &str,
+            ) -> std::result::Result<Self::Value, E> {
                 let s = s.trim();
                 if let Ok(u) = Uuid::parse_str(s) {
                     return Ok(ResourceRef::Uuid(u));
@@ -748,12 +751,7 @@ fn parse_numeric_id(raw: Option<&String>) -> Option<u64> {
     raw?.trim().parse::<u64>().ok()
 }
 
-fn insert_numeric_id(
-    n: u64,
-    uuid: Uuid,
-    map: &mut HashMap<u64, Uuid>,
-    duplicates: &mut Vec<u64>,
-) {
+fn insert_numeric_id(n: u64, uuid: Uuid, map: &mut HashMap<u64, Uuid>, duplicates: &mut Vec<u64>) {
     if let Some(existing) = map.get(&n) {
         if *existing != uuid && !duplicates.contains(&n) {
             duplicates.push(n);

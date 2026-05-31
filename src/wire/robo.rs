@@ -9,8 +9,8 @@ use zenoh::query::Query;
 
 use crate::core::ids::RobotId;
 use crate::wire::{
-    ApiError, AssignRouteRequest, ClaimRequestWire, HeartbeatRequest, Lease,
-    PlanRouteRequest, ReleaseLeaseRequest, ScheduleRobotRouteRequest, ServeState,
+    ApiError, AssignRouteRequest, ClaimRequestWire, HeartbeatRequest, Lease, PlanRouteRequest,
+    ReleaseLeaseRequest, ScheduleRobotRouteRequest, ServeState,
 };
 
 /// Zenoh key-expression prefix used by `PRESENTATION.md`.
@@ -46,76 +46,145 @@ impl Drop for ZenohServeHandle {
 }
 
 /// Install timenav queryables on an existing Zenoh session.
-pub async fn serve(
-    session: &zenoh::Session,
-    state: ServeState,
-) -> zenoh::Result<ZenohServeHandle> {
+pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result<ZenohServeHandle> {
     let mut tasks = Vec::new();
 
-    tasks.push(spawn_queryable(session, "health", state.clone(), |_state, _| {
-        Ok(crate::wire::health())
-    }).await?);
+    tasks.push(
+        spawn_queryable(session, "health", state.clone(), |_state, _| {
+            Ok(crate::wire::health())
+        })
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "fleet/snapshot", state.clone(), |state, _| {
-        crate::wire::fleet_snapshot(&state)
-    }).await?);
+    tasks.push(
+        spawn_queryable(session, "fleet/snapshot", state.clone(), |state, _| {
+            crate::wire::fleet_snapshot(&state)
+        })
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "routes/plan", state.clone(), |state, payload| {
-        let request: PlanRouteRequest = decode_required(payload)?;
-        crate::wire::plan_route_request(&state, request)
-    }).await?);
+    tasks.push(
+        spawn_queryable(session, "routes/plan", state.clone(), |state, payload| {
+            let request: PlanRouteRequest = decode_required(payload)?;
+            crate::wire::plan_route_request(&state, request)
+        })
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "robots/register", state.clone(), |state, payload| {
-        let robot: crate::robot::RobotState = decode_required(payload)?;
-        crate::wire::register_robot(&state, robot)
-    }).await?);
+    tasks.push(
+        spawn_queryable(
+            session,
+            "robots/register",
+            state.clone(),
+            |state, payload| {
+                let robot: crate::robot::RobotState = decode_required(payload)?;
+                crate::wire::register_robot(&state, robot)
+            },
+        )
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "robots/list", state.clone(), |state, _| {
-        crate::wire::list_robots(&state)
-    }).await?);
+    tasks.push(
+        spawn_queryable(session, "robots/list", state.clone(), |state, _| {
+            crate::wire::list_robots(&state)
+        })
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "robots/heartbeat", state.clone(), |state, payload| {
-        let request: RobotHeartbeatEnvelope = decode_required(payload)?;
-        crate::wire::heartbeat(&state, request.robot_id, request.heartbeat)
-    }).await?);
+    tasks.push(
+        spawn_queryable(
+            session,
+            "robots/heartbeat",
+            state.clone(),
+            |state, payload| {
+                let request: RobotHeartbeatEnvelope = decode_required(payload)?;
+                crate::wire::heartbeat(&state, request.robot_id, request.heartbeat)
+            },
+        )
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "robots/assign_route", state.clone(), |state, payload| {
-        let request: RobotAssignRouteEnvelope = decode_required(payload)?;
-        crate::wire::assign_route(&state, request.robot_id, request.assignment)
-    }).await?);
+    tasks.push(
+        spawn_queryable(
+            session,
+            "robots/assign_route",
+            state.clone(),
+            |state, payload| {
+                let request: RobotAssignRouteEnvelope = decode_required(payload)?;
+                crate::wire::assign_route(&state, request.robot_id, request.assignment)
+            },
+        )
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "robots/schedule", state.clone(), |state, payload| {
-        let request: RobotScheduleEnvelope = decode_required(payload)?;
-        crate::wire::schedule_robot_route(&state, request.robot_id, request.schedule)
-    }).await?);
+    tasks.push(
+        spawn_queryable(
+            session,
+            "robots/schedule",
+            state.clone(),
+            |state, payload| {
+                let request: RobotScheduleEnvelope = decode_required(payload)?;
+                crate::wire::schedule_robot_route(&state, request.robot_id, request.schedule)
+            },
+        )
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "claims/list", state.clone(), |state, _| {
-        crate::wire::list_claims(&state)
-    }).await?);
+    tasks.push(
+        spawn_queryable(session, "claims/list", state.clone(), |state, _| {
+            crate::wire::list_claims(&state)
+        })
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "claims/evaluate", state.clone(), |state, payload| {
-        let request: ClaimRequestWire = decode_required(payload)?;
-        crate::wire::evaluate_claim(&state, request)
-    }).await?);
+    tasks.push(
+        spawn_queryable(
+            session,
+            "claims/evaluate",
+            state.clone(),
+            |state, payload| {
+                let request: ClaimRequestWire = decode_required(payload)?;
+                crate::wire::evaluate_claim(&state, request)
+            },
+        )
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "claims/request", state.clone(), |state, payload| {
-        let request: ClaimRequestWire = decode_required(payload)?;
-        crate::wire::submit_claim(&state, request)
-    }).await?);
+    tasks.push(
+        spawn_queryable(
+            session,
+            "claims/request",
+            state.clone(),
+            |state, payload| {
+                let request: ClaimRequestWire = decode_required(payload)?;
+                crate::wire::submit_claim(&state, request)
+            },
+        )
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "leases/list", state.clone(), |state, _| {
-        crate::wire::list_leases(&state)
-    }).await?);
+    tasks.push(
+        spawn_queryable(session, "leases/list", state.clone(), |state, _| {
+            crate::wire::list_leases(&state)
+        })
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "leases/add", state.clone(), |state, payload| {
-        let lease: Lease = decode_required(payload)?;
-        crate::wire::add_lease(&state, lease)
-    }).await?);
+    tasks.push(
+        spawn_queryable(session, "leases/add", state.clone(), |state, payload| {
+            let lease: Lease = decode_required(payload)?;
+            crate::wire::add_lease(&state, lease)
+        })
+        .await?,
+    );
 
-    tasks.push(spawn_queryable(session, "leases/release", state, |state, payload| {
-        let request: ReleaseLeaseRequest = decode_required(payload)?;
-        crate::wire::release_lease(&state, request)
-    }).await?);
+    tasks.push(
+        spawn_queryable(session, "leases/release", state, |state, payload| {
+            let request: ReleaseLeaseRequest = decode_required(payload)?;
+            crate::wire::release_lease(&state, request)
+        })
+        .await?,
+    );
 
     Ok(ZenohServeHandle { tasks })
 }
@@ -125,8 +194,8 @@ pub async fn publish_fleet_state(
     session: &zenoh::Session,
     state: &ServeState,
 ) -> zenoh::Result<()> {
-    let payload = encode(&crate::wire::fleet_snapshot(state)
-        .map_err(|e| zenoh::Error::from(e.message))?);
+    let payload =
+        encode(&crate::wire::fleet_snapshot(state).map_err(|e| zenoh::Error::from(e.message))?);
     session.put(key_expr("fleet/state"), payload).await?;
     Ok(())
 }

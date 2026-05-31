@@ -6,12 +6,12 @@
 //! `quick-xml` produces from the existing `serde` derives — same field
 //! names, same nesting as the JSON form, just XML-encoded.
 
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use axum::Router;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -83,7 +83,10 @@ pub fn router(state: ServeState) -> Router {
         .route("/ares/v1/fleet/snapshot", get(fleet_snapshot))
         .route("/ares/v1/routes/plan", post(plan_route))
         .route("/ares/v1/robots", get(list_robots).post(register_robot))
-        .route("/ares/v1/robots/{id}", get(robot_state).delete(unregister_robot))
+        .route(
+            "/ares/v1/robots/{id}",
+            get(robot_state).delete(unregister_robot),
+        )
         .route("/ares/v1/robots/{id}/heartbeat", post(heartbeat))
         .route("/ares/v1/robots/{id}/route", post(assign_route))
         .route("/ares/v1/robots/{id}/schedule", post(schedule_robot_route))
@@ -121,10 +124,7 @@ async fn register_robot(
     ok(crate::wire::register_robot(&state, robot))
 }
 
-async fn unregister_robot(
-    State(state): State<ServeState>,
-    Path(id): Path<u64>,
-) -> XmlResult<bool> {
+async fn unregister_robot(State(state): State<ServeState>, Path(id): Path<u64>) -> XmlResult<bool> {
     ok(crate::wire::unregister_robot(&state, RobotId::new(id)))
 }
 
@@ -187,10 +187,7 @@ async fn list_leases(State(state): State<ServeState>) -> XmlResult<Vec<Lease>> {
     ok(crate::wire::list_leases(&state))
 }
 
-async fn add_lease(
-    State(state): State<ServeState>,
-    Xml(lease): Xml<Lease>,
-) -> XmlResult<Lease> {
+async fn add_lease(State(state): State<ServeState>, Xml(lease): Xml<Lease>) -> XmlResult<Lease> {
     ok(crate::wire::add_lease(&state, lease))
 }
 

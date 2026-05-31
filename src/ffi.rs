@@ -1,14 +1,13 @@
-//! Full C ABI surface.
+//! C ABI for timenav.
 //!
-//! Strategy:
-//! - Opaque handles for stateful types (`TnWorkspace`, `TnWorkspaceIndex`,
-//!   `TnClaimManager`, `TnCoordinator`).
-//! - JSON strings for complex inputs/outputs (`ClaimRequest`, `Lease`,
-//!   `RoutePlan`, `RobotState`, `ScheduleDecision`, validation lists, etc.).
-//! - Returned C strings are heap-allocated; callers must free via
-//!   `tn_string_free`.
-//! - Errors: functions return -1 / NULL on failure and set a thread-local
-//!   error message accessible via `tn_last_error`.
+//! Conventions: opaque Box-backed handles (free with the matching
+//! *_free); fallible calls return bool/int with the reason in the
+//! thread-local tn_last_error(); complex inputs/outputs use JSON C strings.
+//!
+//! `include/timenav.h` is generated from this file by cbindgen.
+
+// extern "C" fns take raw pointers from C and deref them by design.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_int};

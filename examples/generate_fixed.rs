@@ -31,8 +31,7 @@ fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
             Point::new(max_x, min_y, 0.0),
             Point::new(max_x, max_y, 0.0),
             Point::new(min_x, max_y, 0.0),
-        ]
-        .into(),
+        ],
     }
 }
 

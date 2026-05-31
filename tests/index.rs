@@ -14,8 +14,7 @@ fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
             Point::new(max_x, min_y, 0.0),
             Point::new(max_x, max_y, 0.0),
             Point::new(min_x, max_y, 0.0),
-        ]
-        .into(),
+        ],
     }
 }
 
@@ -133,7 +132,10 @@ fn numeric_id_property_resolves_to_uuid() {
     assert_eq!(idx.node_uuid_by_numeric_id(139), Some(node_a_uuid));
     assert_eq!(idx.edge_uuid_by_numeric_id(203), Some(edge_uuid));
 
-    assert_eq!(ResourceRef::Numeric(205).resolve_zone(&idx), Some(zone_uuid));
+    assert_eq!(
+        ResourceRef::Numeric(205).resolve_zone(&idx),
+        Some(zone_uuid)
+    );
     assert_eq!(
         ResourceRef::Uuid(zone_uuid).resolve_zone(&idx),
         Some(zone_uuid)
