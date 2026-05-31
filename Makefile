@@ -95,7 +95,7 @@ help:
 	@echo
 	@echo "Examples:"
 	@echo "  make run"
-	@echo "  make run RUN_ARGS=\"examples/fixed 127.0.0.1:8081\""
+	@echo "  make run RUN_ARGS=\"examples/fixed 0.0.0.0:8081\""
 	@echo
 
 h: help

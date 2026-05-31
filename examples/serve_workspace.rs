@@ -33,7 +33,7 @@ async fn main() -> ExitCode {
 
     let mut args = std::env::args().skip(1);
     let dir = args.next().unwrap_or_else(|| "examples/fixed".to_string());
-    let addr = args.next().unwrap_or_else(|| "127.0.0.1:8080".to_string());
+    let addr = args.next().unwrap_or_else(|| "0.0.0.0:8080".to_string());
 
     // 1. Load the workspace from disk.
     let ws = match Workspace::load(&dir) {
