@@ -8,7 +8,10 @@ endif
 
 TOP_DIR := $(CURDIR)
 CARGO := cargo
-EXAMPLE ?= main
+EXAMPLE ?= serve_workspace
+RUN_FEATURES ?= rest
+RUN_ARGS ?= examples/fixed
+RUN_FEATURE_ARGS := $(if $(strip $(RUN_FEATURES)),--features "$(RUN_FEATURES)",)
 
 HAS_REL := $(shell command -v git-rel 2>/dev/null)
 
@@ -30,7 +33,7 @@ compile:
 c: compile
 
 run:
-	@$(CARGO) run --example $(EXAMPLE)
+	@$(CARGO) run $(RUN_FEATURE_ARGS) --example $(EXAMPLE) -- $(RUN_ARGS)
 
 r: run
 
@@ -81,7 +84,7 @@ help:
 	@echo "Available targets:"
 	@echo "  build        Build the library"
 	@echo "  compile      Clean and rebuild"
-	@echo "  run          Run a development example (if examples exist)"
+	@echo "  run          Run the workspace REST server (loads RUN_ARGS=examples/fixed by default)"
 	@echo "  test         Run all tests"
 	@echo "  bind         Generate both C and Python bindings"
 	@echo "  check        Run cargo check on all targets"
@@ -92,7 +95,7 @@ help:
 	@echo
 	@echo "Examples:"
 	@echo "  make run"
-	@echo "  make run EXAMPLE=main"
+	@echo "  make run RUN_ARGS=\"examples/fixed 127.0.0.1:8081\""
 	@echo
 
 h: help
