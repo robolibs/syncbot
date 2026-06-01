@@ -33,7 +33,19 @@ compile:
 c: compile
 
 run:
-	@$(CARGO) run $(RUN_FEATURE_ARGS) --example $(EXAMPLE) -- $(RUN_ARGS)
+	@if [ "$(DAEMON)" = "1" ]; then \
+		mkdir -p target; \
+		$(CARGO) build $(RUN_FEATURE_ARGS) --example $(EXAMPLE) && \
+		nohup target/debug/examples/$(EXAMPLE) $(RUN_ARGS) \
+			> target/$(PROJECT_NAME)-$(EXAMPLE).log 2>&1 < /dev/null & \
+		pid=$$!; \
+		echo $$pid > target/$(PROJECT_NAME)-$(EXAMPLE).pid; \
+		echo "daemon started: pid=$$pid"; \
+		echo "log: target/$(PROJECT_NAME)-$(EXAMPLE).log"; \
+		echo "stop: kill \$$(cat target/$(PROJECT_NAME)-$(EXAMPLE).pid)"; \
+	else \
+		$(CARGO) run $(RUN_FEATURE_ARGS) --example $(EXAMPLE) -- $(RUN_ARGS); \
+	fi
 
 r: run
 
@@ -95,6 +107,7 @@ help:
 	@echo
 	@echo "Examples:"
 	@echo "  make run"
+	@echo "  make run DAEMON=1"
 	@echo "  make run RUN_ARGS=\"examples/fixed 0.0.0.0:8081\""
 	@echo
 
