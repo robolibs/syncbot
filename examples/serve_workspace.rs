@@ -7,7 +7,22 @@
 //! well as by UUID.
 //!
 //! ```sh
-//! cargo run --example serve_workspace --features rest -- [workspace_dir] [bind_addr]
+//! cargo run --example serve_workspace --features "rest robo" -- [workspace_dir] [bind_addr]
+//! ```
+//!
+//! With the `robo` feature enabled this same process also exposes one
+//! Zenoh/ROS2DDS service endpoint for `zenoh-bridge-ros2dds`:
+//!
+//! - ROS2 service: `/timenav/list_zones`
+//! - ROS2 type: `std_srvs/srv/Trigger`
+//! - Zenoh key: `timenav/list_zones`
+//!
+//! Optional Zenoh environment:
+//!
+//! ```sh
+//! # by default the server listens on tcp/0.0.0.0:7447
+//! TIMENAV_ZENOH_LISTEN=tcp/0.0.0.0:7448
+//! TIMENAV_ROS2DDS_LIST_ZONES_KEY=timenav/list_zones
 //! ```
 //!
 //! A workspace directory is what `zoneout::Workspace::save(dir)` writes:
@@ -21,13 +36,18 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+#[cfg(feature = "robo")]
+use timenav::wire::ros2dds::{LIST_ZONES_KEY, Ros2DdsListZonesHandle, serve_list_zones_trigger};
 use timenav::wire::{ServeState, rest};
 use timenav::{Coordinator, NUMERIC_ID_PROPERTY, ValidationSeverity, WorkspaceIndex};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use zoneout::Workspace;
 
-#[tokio::main(flavor = "current_thread")]
+#[cfg(feature = "robo")]
+const DEFAULT_ZENOH_LISTEN: &str = "tcp/0.0.0.0:7447";
+
+#[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() -> ExitCode {
     init_logging();
 
@@ -77,6 +97,8 @@ async fn main() -> ExitCode {
 
     // 4. Serve.
     let state = ServeState::new(Coordinator::with_index(idx));
+    #[cfg(feature = "robo")]
+    let _ros2dds = start_ros2dds(state.clone()).await;
     let app = rest::router(state);
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -96,6 +118,105 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(feature = "robo")]
+async fn start_ros2dds(state: ServeState) -> Option<(zenoh::Session, Ros2DdsListZonesHandle)> {
+    let key = std::env::var("TIMENAV_ROS2DDS_LIST_ZONES_KEY")
+        .unwrap_or_else(|_| LIST_ZONES_KEY.to_string());
+
+    let config = match zenoh_config_from_env() {
+        Ok(config) => config,
+        Err(err) => {
+            warn!(
+                error = %err,
+                "ROS2DDS list_zones queryable disabled: invalid Zenoh config"
+            );
+            return None;
+        }
+    };
+
+    let session = match zenoh::open(config).await {
+        Ok(session) => session,
+        Err(err) => {
+            warn!(
+                error = %err,
+                "ROS2DDS list_zones queryable disabled: failed to open Zenoh session"
+            );
+            return None;
+        }
+    };
+
+    let handle = match serve_list_zones_trigger(&session, state, key.clone()).await {
+        Ok(handle) => handle,
+        Err(err) => {
+            warn!(
+                zenoh_key = %key,
+                error = %err,
+                "ROS2DDS list_zones queryable disabled: failed to declare queryable"
+            );
+            return None;
+        }
+    };
+
+    info!(
+        zenoh_key = %key,
+        ros_service = "/timenav/list_zones",
+        ros_type = "std_srvs/srv/Trigger",
+        "ROS2DDS list_zones queryable ready"
+    );
+    println!(
+        "ROS2DDS service ready: /timenav/list_zones (std_srvs/srv/Trigger) via Zenoh key '{key}'"
+    );
+    let listen =
+        std::env::var("TIMENAV_ZENOH_LISTEN").unwrap_or_else(|_| DEFAULT_ZENOH_LISTEN.to_string());
+    println!("Zenoh listening for bridge/peer connections on {listen}");
+    println!("ROS2 test: ros2 service call /timenav/list_zones std_srvs/srv/Trigger");
+
+    Some((session, handle))
+}
+
+#[cfg(feature = "robo")]
+fn zenoh_config_from_env() -> Result<zenoh::Config, String> {
+    let mut config = zenoh::Config::default();
+
+    if let Ok(raw) = std::env::var("TIMENAV_ZENOH_CONNECT") {
+        let endpoints = split_env_list(&raw);
+        if !endpoints.is_empty() {
+            config
+                .insert_json5("connect/endpoints", &json_array(&endpoints))
+                .map_err(|err| format!("TIMENAV_ZENOH_CONNECT: {err}"))?;
+        }
+    }
+
+    let listen_raw =
+        std::env::var("TIMENAV_ZENOH_LISTEN").unwrap_or_else(|_| DEFAULT_ZENOH_LISTEN.to_string());
+    let listen_endpoints = split_env_list(&listen_raw);
+    if !listen_endpoints.is_empty() {
+        config
+            .insert_json5("listen/endpoints", &json_array(&listen_endpoints))
+            .map_err(|err| format!("TIMENAV_ZENOH_LISTEN: {err}"))?;
+    }
+
+    Ok(config)
+}
+
+#[cfg(feature = "robo")]
+fn split_env_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[cfg(feature = "robo")]
+fn json_array(values: &[String]) -> String {
+    let quoted = values
+        .iter()
+        .map(|value| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect::<Vec<_>>();
+    format!("[{}]", quoted.join(","))
 }
 
 fn init_logging() {

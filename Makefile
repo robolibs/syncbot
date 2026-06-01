@@ -9,7 +9,7 @@ endif
 TOP_DIR := $(CURDIR)
 CARGO := cargo
 EXAMPLE ?= serve_workspace
-RUN_FEATURES ?= rest
+RUN_FEATURES ?= rest robo
 RUN_ARGS ?= examples/fixed
 RUN_FEATURE_ARGS := $(if $(strip $(RUN_FEATURES)),--features "$(RUN_FEATURES)",)
 
@@ -96,7 +96,7 @@ help:
 	@echo "Available targets:"
 	@echo "  build        Build the library"
 	@echo "  compile      Clean and rebuild"
-	@echo "  run          Run the workspace REST server (loads RUN_ARGS=examples/fixed by default)"
+	@echo "  run          Run the workspace server (REST + Zenoh when available)"
 	@echo "  test         Run all tests"
 	@echo "  bind         Generate both C and Python bindings"
 	@echo "  check        Run cargo check on all targets"

@@ -26,6 +26,9 @@ pub mod rest;
 #[cfg(feature = "robo")]
 pub mod robo;
 
+#[cfg(feature = "robo")]
+pub mod ros2dds;
+
 #[cfg(feature = "xmlt")]
 pub mod xmlt;
 

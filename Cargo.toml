@@ -56,3 +56,7 @@ required-features = ["rest"]
 [[example]]
 name = "serve_workspace"
 required-features = ["rest"]
+
+[[example]]
+name = "ros2dds_list_zones"
+required-features = ["robo"]
