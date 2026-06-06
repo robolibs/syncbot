@@ -1,6 +1,6 @@
 [package]
 name = "timenav"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 description = "Rust multi-robot navigation, claims, and scheduling library on top of zoneout"
 license = "MIT"
@@ -29,10 +29,10 @@ robo = ["dep:tokio", "dep:zenoh"]
 xmlt = ["dep:axum", "dep:quick-xml"]
 
 [dependencies]
-zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", tag = "0.1.0" }
-concord = { git = "https://codeberg.org/robolibs/concord.git", tag = "0.1.0" }
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.2.0" }
-graphix = { git = "https://codeberg.org/robolibs/graphix.git", tag = "0.1.0" }
+zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", tag = "0.1.1" }
+concord = { git = "https://codeberg.org/robolibs/concord.git", tag = "0.1.1" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.0" }
+graphix = { git = "https://codeberg.org/robolibs/graphix.git", tag = "0.1.1" }
 axum = { version = "0.8.9", optional = true }
 pyo3 = { version = "0.23", optional = true, features = [
     "abi3-py39",

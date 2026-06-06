@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.0.2] - 2026-06-06
+
+### <!-- 0 -->⛰️  Features
+
+- Add Zenoh/ROS2DDS service endpoint for listing zones
+- Improve C ABI with cbindgen and update Python bindings
+- Implement REST endpoint for workspace details
+- Add quicbit transport for fleet events
+- Add REST server example and Python demo script
+- Introduce HTTP REST and Zenoh robotics wire protocols
+- CPP-PARITY
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Update Makefile for improved example running
+
+### <!-- 3 -->📚 Documentation
+
+- Add initial project documentation
+- Update `CHANGELOG.md` and `README.md` for 0.0.1 release
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Add daemon mode for running examples
+- Update example addresses to bind to all interfaces
+- Harmonize example and documentation references
+
+### Deps
+
+- Pin all sibling crates to new revs
+
 ## 0.0.1 — initial Rust port
 
 First release of the Rust port of the C++
