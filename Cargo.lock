@@ -377,8 +377,8 @@ dependencies = [
 
 [[package]]
 name = "concord"
-version = "0.1.0"
-source = "git+https://codeberg.org/robolibs/concord.git?tag=0.1.0#e1d4fabb58eb0ea963ebd4d4c9d7406a42c4e0b1"
+version = "0.1.1"
+source = "git+https://codeberg.org/robolibs/concord.git?tag=0.1.1#070bb5b19a3d802c8dc48a6f4e0cc0fefcd198af"
 dependencies = [
  "datapod",
  "graphix",
@@ -579,8 +579,8 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "datapod"
-version = "0.2.0"
-source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.2.0#bf7839e417050b1fab33167c418595bf86313894"
+version = "0.4.0"
+source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.4.0#e90e11ce9d3e6a2269b4c86b6b1a441b1b6981fe"
 dependencies = [
  "bytemuck",
  "datapod-macros",
@@ -589,7 +589,7 @@ dependencies = [
 [[package]]
 name = "datapod-macros"
 version = "0.0.1"
-source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.2.0#bf7839e417050b1fab33167c418595bf86313894"
+source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.4.0#e90e11ce9d3e6a2269b4c86b6b1a441b1b6981fe"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -661,7 +661,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -718,7 +718,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1057,8 +1057,8 @@ checksum = "8fb167719045debebe9f532320accc7b5c993c5a3b813f5696a11d5ca7bdc57b"
 
 [[package]]
 name = "graphix"
-version = "0.1.0"
-source = "git+https://codeberg.org/robolibs/graphix.git?tag=0.1.0#4ec1dd507ec3fb87fce6aab55aea788ebf15b837"
+version = "0.1.1"
+source = "git+https://codeberg.org/robolibs/graphix.git?tag=0.1.1#bc9e51107ef2c63e91eb497257eeea8adc8dd2b6"
 dependencies = [
  "datapod",
  "glam",
@@ -1890,7 +1890,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2371,7 +2371,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2410,7 +2410,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -2497,8 +2497,8 @@ dependencies = [
 
 [[package]]
 name = "rastera"
-version = "0.1.0"
-source = "git+https://codeberg.org/robolibs/rastera.git?tag=0.1.0#a914e193f3838ddfec7b7dc54c915dd4180756c3"
+version = "0.1.1"
+source = "git+https://codeberg.org/robolibs/rastera.git?tag=0.1.1#047da15fe02769fd8bc9dcab46bd39418801c9c6"
 dependencies = [
  "bytemuck",
  "concord",
@@ -2766,7 +2766,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2833,7 +2833,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3223,7 +3223,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3915,8 +3915,8 @@ checksum = "f1bddf1187be692e79c5ffeab891132dfb0f236ed36a43c7ed39f1165ee20191"
 
 [[package]]
 name = "vectory"
-version = "0.1.0"
-source = "git+https://codeberg.org/robolibs/vectory.git?tag=0.1.0#614a00281797e7056e9c0f37182d881e6436bf41"
+version = "0.1.1"
+source = "git+https://codeberg.org/robolibs/vectory.git?tag=0.1.1#7016a98faaff005ec4756abff560d3e865f53658"
 dependencies = [
  "concord",
  "datapod",
@@ -4106,7 +4106,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5164,8 +5164,8 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zoneout"
-version = "0.1.0"
-source = "git+https://codeberg.org/robolibs/zoneout.git?tag=0.1.0#34627acc888c7089862b94fecc1e2aec114c39df"
+version = "0.1.1"
+source = "git+https://codeberg.org/robolibs/zoneout.git?tag=0.1.1#a813a5ddb11d11fa61cc5feef24f87e41e63dc40"
 dependencies = [
  "chrono",
  "concord",
