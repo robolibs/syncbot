@@ -7,7 +7,8 @@ use serde::de::DeserializeOwned;
 use tokio::task::JoinHandle;
 use zenoh::query::Query;
 
-use crate::core::ids::RobotId;
+use crate::core::ids::{ClaimId, RobotId};
+use crate::index::ResourceRef;
 use crate::wire::{
     ApiError, AssignRouteRequest, ClaimRequestWire, HeartbeatRequest, Lease, PlanRouteRequest,
     ReleaseLeaseRequest, ScheduleRobotRouteRequest, ServeState,
@@ -64,6 +65,51 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
     );
 
     tasks.push(
+        spawn_queryable(session, "zones/list", state.clone(), |state, _| {
+            crate::wire::list_zones(&state)
+        })
+        .await?,
+    );
+
+    tasks.push(
+        spawn_queryable(session, "zones/get", state.clone(), |state, payload| {
+            let request: ResourceRefEnvelope = decode_required(payload)?;
+            crate::wire::find_zone(&state, request.id)
+        })
+        .await?,
+    );
+
+    tasks.push(
+        spawn_queryable(session, "nodes/list", state.clone(), |state, _| {
+            crate::wire::list_nodes(&state)
+        })
+        .await?,
+    );
+
+    tasks.push(
+        spawn_queryable(session, "nodes/get", state.clone(), |state, payload| {
+            let request: ResourceRefEnvelope = decode_required(payload)?;
+            crate::wire::find_node(&state, request.id)
+        })
+        .await?,
+    );
+
+    tasks.push(
+        spawn_queryable(session, "edges/list", state.clone(), |state, _| {
+            crate::wire::list_edges(&state)
+        })
+        .await?,
+    );
+
+    tasks.push(
+        spawn_queryable(session, "edges/get", state.clone(), |state, payload| {
+            let request: ResourceRefEnvelope = decode_required(payload)?;
+            crate::wire::find_edge(&state, request.id)
+        })
+        .await?,
+    );
+
+    tasks.push(
         spawn_queryable(session, "routes/plan", state.clone(), |state, payload| {
             let request: PlanRouteRequest = decode_required(payload)?;
             crate::wire::plan_route_request(&state, request)
@@ -88,6 +134,27 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
         spawn_queryable(session, "robots/list", state.clone(), |state, _| {
             crate::wire::list_robots(&state)
         })
+        .await?,
+    );
+
+    tasks.push(
+        spawn_queryable(session, "robots/get", state.clone(), |state, payload| {
+            let request: RobotIdEnvelope = decode_required(payload)?;
+            crate::wire::robot_state(&state, request.robot_id)
+        })
+        .await?,
+    );
+
+    tasks.push(
+        spawn_queryable(
+            session,
+            "robots/unregister",
+            state.clone(),
+            |state, payload| {
+                let request: RobotIdEnvelope = decode_required(payload)?;
+                crate::wire::unregister_robot(&state, request.robot_id)
+            },
+        )
         .await?,
     );
 
@@ -133,6 +200,22 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
     tasks.push(
         spawn_queryable(session, "claims/list", state.clone(), |state, _| {
             crate::wire::list_claims(&state)
+        })
+        .await?,
+    );
+
+    tasks.push(
+        spawn_queryable(session, "claims/get", state.clone(), |state, payload| {
+            let request: ClaimIdEnvelope = decode_required(payload)?;
+            crate::wire::find_claim(&state, request.claim_id)
+        })
+        .await?,
+    );
+
+    tasks.push(
+        spawn_queryable(session, "claims/remove", state.clone(), |state, payload| {
+            let request: ClaimIdEnvelope = decode_required(payload)?;
+            crate::wire::remove_claim(&state, request.claim_id)
         })
         .await?,
     );
@@ -271,4 +354,19 @@ struct RobotAssignRouteEnvelope {
 struct RobotScheduleEnvelope {
     robot_id: RobotId,
     schedule: ScheduleRobotRouteRequest,
+}
+
+#[derive(serde::Deserialize)]
+struct ResourceRefEnvelope {
+    id: ResourceRef,
+}
+
+#[derive(serde::Deserialize)]
+struct RobotIdEnvelope {
+    robot_id: RobotId,
+}
+
+#[derive(serde::Deserialize)]
+struct ClaimIdEnvelope {
+    claim_id: ClaimId,
 }

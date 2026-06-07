@@ -18,7 +18,8 @@ use serde::de::DeserializeOwned;
 use tokio::task::JoinHandle;
 use zenoh::query::Query;
 
-use crate::core::ids::RobotId;
+use crate::core::ids::{ClaimId, RobotId};
+use crate::index::ResourceRef;
 use crate::wire::{
     ApiError, AssignRouteRequest, ClaimRequestWire, HeartbeatRequest, Lease, PlanRouteRequest,
     ReleaseLeaseRequest, ScheduleRobotRouteRequest, ServeState,
@@ -70,6 +71,45 @@ pub async fn serve_ares_json_services(
         .await?,
     );
     tasks.push(
+        spawn_json_service(session, "ares/v1/zones/list", state.clone(), |state, _| {
+            to_json(crate::wire::list_zones(&state)?)
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(session, "ares/v1/zones/get", state.clone(), |state, req| {
+            let request: ResourceRefEnvelope = from_json(&req)?;
+            to_json(crate::wire::find_zone(&state, request.id)?)
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(session, "ares/v1/nodes/list", state.clone(), |state, _| {
+            to_json(crate::wire::list_nodes(&state)?)
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(session, "ares/v1/nodes/get", state.clone(), |state, req| {
+            let request: ResourceRefEnvelope = from_json(&req)?;
+            to_json(crate::wire::find_node(&state, request.id)?)
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(session, "ares/v1/edges/list", state.clone(), |state, _| {
+            to_json(crate::wire::list_edges(&state)?)
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(session, "ares/v1/edges/get", state.clone(), |state, req| {
+            let request: ResourceRefEnvelope = from_json(&req)?;
+            to_json(crate::wire::find_edge(&state, request.id)?)
+        })
+        .await?,
+    );
+    tasks.push(
         spawn_json_service(
             session,
             "ares/v1/routes/plan",
@@ -97,6 +137,30 @@ pub async fn serve_ares_json_services(
         spawn_json_service(session, "ares/v1/robots/list", state.clone(), |state, _| {
             to_json(crate::wire::list_robots(&state)?)
         })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/robots/get",
+            state.clone(),
+            |state, req| {
+                let request: RobotIdEnvelope = from_json(&req)?;
+                to_json(crate::wire::robot_state(&state, request.robot_id)?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/robots/unregister",
+            state.clone(),
+            |state, req| {
+                let request: RobotIdEnvelope = from_json(&req)?;
+                to_json(crate::wire::unregister_robot(&state, request.robot_id)?)
+            },
+        )
         .await?,
     );
     tasks.push(
@@ -151,6 +215,30 @@ pub async fn serve_ares_json_services(
         spawn_json_service(session, "ares/v1/claims/list", state.clone(), |state, _| {
             to_json(crate::wire::list_claims(&state)?)
         })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/claims/get",
+            state.clone(),
+            |state, req| {
+                let request: ClaimIdEnvelope = from_json(&req)?;
+                to_json(crate::wire::find_claim(&state, request.claim_id)?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/claims/remove",
+            state.clone(),
+            |state, req| {
+                let request: ClaimIdEnvelope = from_json(&req)?;
+                to_json(crate::wire::remove_claim(&state, request.claim_id)?)
+            },
+        )
         .await?,
     );
     tasks.push(
@@ -326,6 +414,21 @@ struct RobotAssignRouteEnvelope {
 struct RobotScheduleEnvelope {
     robot_id: RobotId,
     schedule: ScheduleRobotRouteRequest,
+}
+
+#[derive(serde::Deserialize)]
+struct ResourceRefEnvelope {
+    id: ResourceRef,
+}
+
+#[derive(serde::Deserialize)]
+struct RobotIdEnvelope {
+    robot_id: RobotId,
+}
+
+#[derive(serde::Deserialize)]
+struct ClaimIdEnvelope {
+    claim_id: ClaimId,
 }
 
 #[cfg(test)]
