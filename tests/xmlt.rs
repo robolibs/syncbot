@@ -4,7 +4,7 @@
 
 #![cfg(feature = "xmlt")]
 
-use timenav::wire::{ClaimRequestWire, ClaimTargetWire, PlanRouteRequest};
+use timenav::wire::{AssignRouteRequest, ClaimRequestWire, ClaimTargetWire, PlanRouteRequest};
 use timenav::{
     ClaimAccessMode, ClaimId, ClaimTargetKind, ClaimWindow, MissionId, ResourceRef, RobotId,
 };
@@ -106,4 +106,21 @@ fn claim_request_wire_accepts_multiple_targets() {
     assert_eq!(req.targets.len(), 2);
     assert_eq!(req.targets[0].kind, ClaimTargetKind::Zone);
     assert_eq!(req.targets[1].kind, ClaimTargetKind::Node);
+}
+
+#[test]
+fn assign_route_request_accepts_minimal_route_plan_xml() {
+    let xml = r#"<AssignRouteRequest>
+        <route_plan>
+            <start_node_id>00000000-0000-0000-0000-000000001001</start_node_id>
+            <goal_node_id>00000000-0000-0000-0000-000000001003</goal_node_id>
+            <total_cost>0</total_cost>
+        </route_plan>
+        <horizon>100</horizon>
+        <updated_at_tick>10</updated_at_tick>
+    </AssignRouteRequest>"#;
+    let req: AssignRouteRequest = quick_xml::de::from_str(xml).expect("deserialise");
+    assert_eq!(req.route_plan.steps.len(), 0);
+    assert_eq!(req.route_plan.traversed_zone_ids.len(), 0);
+    assert_eq!(req.horizon, 100);
 }

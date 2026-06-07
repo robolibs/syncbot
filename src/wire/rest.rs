@@ -379,7 +379,7 @@ fn respond<T: Serialize>(format: WireFormat, result: crate::wire::ApiResult<T>) 
 #[cfg(feature = "xmlt")]
 fn respond_xml<T: Serialize>(result: crate::wire::ApiResult<T>) -> Response {
     match result {
-        Ok(value) => match quick_xml::se::to_string(&value) {
+        Ok(value) => match serialize_xml("Response", &value) {
             Ok(body) => (
                 StatusCode::OK,
                 [(header::CONTENT_TYPE, "application/xml")],
@@ -393,7 +393,7 @@ fn respond_xml<T: Serialize>(result: crate::wire::ApiResult<T>) -> Response {
             )
                 .into_response(),
         },
-        Err(err) => match quick_xml::se::to_string(&err) {
+        Err(err) => match serialize_xml("ApiError", &err) {
             Ok(body) => (
                 StatusCode::BAD_REQUEST,
                 [(header::CONTENT_TYPE, "application/xml")],
@@ -408,6 +408,22 @@ fn respond_xml<T: Serialize>(result: crate::wire::ApiResult<T>) -> Response {
                 .into_response(),
         },
     }
+}
+
+#[cfg(feature = "xmlt")]
+fn serialize_xml<T: Serialize>(
+    fallback_root: &str,
+    value: &T,
+) -> Result<String, quick_xml::DeError> {
+    quick_xml::se::to_string(value)
+        .or_else(|_| quick_xml::se::to_string_with_root(fallback_root, &XmlItems { item: value }))
+}
+
+#[cfg(feature = "xmlt")]
+#[derive(Serialize)]
+struct XmlItems<'a, T: Serialize + ?Sized> {
+    #[serde(rename = "item")]
+    item: &'a T,
 }
 
 #[cfg(not(feature = "xmlt"))]

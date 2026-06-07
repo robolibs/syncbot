@@ -578,6 +578,12 @@ XML uses the same `/ares/v1` prefix as REST. The server selects XML when:
 
 Body requests return XML automatically when their body was XML.
 
+List responses are wrapped as `<Response>` with repeated `<item>` children:
+
+```xml
+<Response><item>...</item><item>...</item></Response>
+```
+
 == XML endpoint table
 
 #table(
