@@ -10,19 +10,18 @@
 //! cargo run --example serve_workspace --features "rest robo" -- [workspace_dir] [bind_addr]
 //! ```
 //!
-//! With the `robo` feature enabled this same process also exposes one
-//! Zenoh/ROS2DDS service endpoint for `zenoh-bridge-ros2dds`:
+//! With the `robo` feature enabled this same process also exposes ARES
+//! Zenoh/ROS2DDS service endpoints for `zenoh-bridge-ros2dds`:
 //!
-//! - ROS2 service: `/timenav/list_zones`
-//! - ROS2 type: `std_srvs/srv/Trigger`
-//! - Zenoh key: `timenav/list_zones`
+//! - ROS2 services: `/ares/v1/...`
+//! - ROS2 type: `ares_interfaces/srv/Json`
+//! - Zenoh keys: `ares/v1/...`
 //!
 //! Optional Zenoh environment:
 //!
 //! ```sh
 //! # by default the server listens on tcp/0.0.0.0:7447
 //! TIMENAV_ZENOH_LISTEN=tcp/0.0.0.0:7448
-//! TIMENAV_ROS2DDS_LIST_ZONES_KEY=timenav/list_zones
 //! ```
 //!
 //! A workspace directory is what `zoneout::Workspace::save(dir)` writes:
@@ -37,7 +36,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 #[cfg(feature = "robo")]
-use timenav::wire::ros2dds::{LIST_ZONES_KEY, Ros2DdsListZonesHandle, serve_list_zones_trigger};
+use timenav::wire::ros2dds::{Ros2DdsAresJsonHandle, serve_ares_json_services};
 use timenav::wire::{ServeState, rest};
 use timenav::{Coordinator, NUMERIC_ID_PROPERTY, ValidationSeverity, WorkspaceIndex};
 use tracing::{error, info, warn};
@@ -121,16 +120,13 @@ async fn main() -> ExitCode {
 }
 
 #[cfg(feature = "robo")]
-async fn start_ros2dds(state: ServeState) -> Option<(zenoh::Session, Ros2DdsListZonesHandle)> {
-    let key = std::env::var("TIMENAV_ROS2DDS_LIST_ZONES_KEY")
-        .unwrap_or_else(|_| LIST_ZONES_KEY.to_string());
-
+async fn start_ros2dds(state: ServeState) -> Option<(zenoh::Session, Ros2DdsAresJsonHandle)> {
     let config = match zenoh_config_from_env() {
         Ok(config) => config,
         Err(err) => {
             warn!(
                 error = %err,
-                "ROS2DDS list_zones queryable disabled: invalid Zenoh config"
+                "ROS2DDS ARES JSON services disabled: invalid Zenoh config"
             );
             return None;
         }
@@ -141,39 +137,40 @@ async fn start_ros2dds(state: ServeState) -> Option<(zenoh::Session, Ros2DdsList
         Err(err) => {
             warn!(
                 error = %err,
-                "ROS2DDS list_zones queryable disabled: failed to open Zenoh session"
+                "ROS2DDS ARES JSON services disabled: failed to open Zenoh session"
             );
             return None;
         }
     };
 
-    let handle = match serve_list_zones_trigger(&session, state, key.clone()).await {
+    let ares_json_handle = match serve_ares_json_services(&session, state).await {
         Ok(handle) => handle,
         Err(err) => {
             warn!(
-                zenoh_key = %key,
                 error = %err,
-                "ROS2DDS list_zones queryable disabled: failed to declare queryable"
+                "ROS2DDS ARES JSON services disabled: failed to declare queryables"
             );
             return None;
         }
     };
 
     info!(
-        zenoh_key = %key,
-        ros_service = "/timenav/list_zones",
-        ros_type = "std_srvs/srv/Trigger",
-        "ROS2DDS list_zones queryable ready"
+        services = ares_json_handle.task_count(),
+        ros_type = "ares_interfaces/srv/Json",
+        "ROS2DDS ARES JSON services ready"
     );
     println!(
-        "ROS2DDS service ready: /timenav/list_zones (std_srvs/srv/Trigger) via Zenoh key '{key}'"
+        "ROS2DDS ARES JSON services ready: {} services using ares_interfaces/srv/Json",
+        ares_json_handle.task_count()
     );
     let listen =
         std::env::var("TIMENAV_ZENOH_LISTEN").unwrap_or_else(|_| DEFAULT_ZENOH_LISTEN.to_string());
     println!("Zenoh listening for bridge/peer connections on {listen}");
-    println!("ROS2 test: ros2 service call /timenav/list_zones std_srvs/srv/Trigger");
+    println!(
+        "ROS2 test: ros2 service call /ares/v1/health ares_interfaces/srv/Json \"{{request: '{{}}'}}\""
+    );
 
-    Some((session, handle))
+    Some((session, ares_json_handle))
 }
 
 #[cfg(feature = "robo")]

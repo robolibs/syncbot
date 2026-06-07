@@ -1,63 +1,238 @@
-//! Experimental native-Zenoh endpoint for `zenoh-bridge-ros2dds`.
+//! Native-Zenoh ARES services for `zenoh-bridge-ros2dds`.
 //!
-//! This is intentionally tiny: one ROS2 service shape only:
+//! ARES stays pure Zenoh here: no ROS2 libraries are linked. The ROS side uses
+//! `ares_interfaces/srv/Json`:
 //!
-//! - ROS2 service name: `/timenav/list_zones`
-//! - Zenoh key expression: `timenav/list_zones`
-//! - ROS2 type: `std_srvs/srv/Trigger`
+//! ```text
+//! string request
+//! ---
+//! bool success
+//! string response
+//! ```
 //!
-//! The bridge forwards the service request payload to this queryable without
-//! the 16-byte DDS request id. We reply with a CDR-encoded
-//! `std_srvs::srv::Trigger_Response`: `bool success` + `string message`.
-//! `message` contains the JSON zones list.
+//! Service names and Zenoh keys mirror the native ARES keys, for example:
+//! `/ares/v1/claims/request` <-> `ares/v1/claims/request`.
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::task::JoinHandle;
 use zenoh::query::Query;
 
-use crate::wire::{ApiError, ServeState};
+use crate::core::ids::RobotId;
+use crate::wire::{
+    ApiError, AssignRouteRequest, ClaimRequestWire, HeartbeatRequest, Lease, PlanRouteRequest,
+    ReleaseLeaseRequest, ScheduleRobotRouteRequest, ServeState,
+};
 
-/// Default key used by `zenoh-bridge-ros2dds` route logs for
-/// `/timenav/list_zones`.
-pub const LIST_ZONES_KEY: &str = "timenav/list_zones";
+/// Generic ROS2 service type used for all ARES JSON services.
+pub const JSON_SERVICE_TYPE: &str = "ares_interfaces/srv/Json";
 
-/// Running queryable task. Dropping it aborts the background loop.
-pub struct Ros2DdsListZonesHandle {
-    task: JoinHandle<()>,
+/// Running ARES ROS2DDS JSON service tasks. Dropping it aborts the background
+/// query loops.
+pub struct Ros2DdsAresJsonHandle {
+    tasks: Vec<JoinHandle<()>>,
 }
 
-impl Drop for Ros2DdsListZonesHandle {
-    fn drop(&mut self) {
-        self.task.abort();
+impl Ros2DdsAresJsonHandle {
+    pub fn task_count(&self) -> usize {
+        self.tasks.len()
     }
 }
 
-/// Declare one queryable that behaves like a ROS2 `std_srvs/srv/Trigger`
-/// service server when called through `zenoh-bridge-ros2dds`.
-pub async fn serve_list_zones_trigger(
+impl Drop for Ros2DdsAresJsonHandle {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+/// Declare the complete ARES JSON ROS2 service surface.
+pub async fn serve_ares_json_services(
     session: &zenoh::Session,
     state: ServeState,
-    key_expr: impl Into<String>,
-) -> zenoh::Result<Ros2DdsListZonesHandle> {
-    let key = key_expr.into();
+) -> zenoh::Result<Ros2DdsAresJsonHandle> {
+    let mut tasks = Vec::new();
+
+    tasks.push(
+        spawn_json_service(session, "ares/v1/health", state.clone(), |_state, _| {
+            to_json(crate::wire::health())
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/fleet/snapshot",
+            state.clone(),
+            |state, _| to_json(crate::wire::fleet_snapshot(&state)?),
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/routes/plan",
+            state.clone(),
+            |state, req| {
+                let request: PlanRouteRequest = from_json(&req)?;
+                to_json(crate::wire::plan_route_request(&state, request)?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/robots/register",
+            state.clone(),
+            |state, req| {
+                let robot: crate::robot::RobotState = from_json(&req)?;
+                to_json(crate::wire::register_robot(&state, robot)?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(session, "ares/v1/robots/list", state.clone(), |state, _| {
+            to_json(crate::wire::list_robots(&state)?)
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/robots/heartbeat",
+            state.clone(),
+            |state, req| {
+                let request: RobotHeartbeatEnvelope = from_json(&req)?;
+                to_json(crate::wire::heartbeat(
+                    &state,
+                    request.robot_id,
+                    request.heartbeat,
+                )?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/robots/assign_route",
+            state.clone(),
+            |state, req| {
+                let request: RobotAssignRouteEnvelope = from_json(&req)?;
+                to_json(crate::wire::assign_route(
+                    &state,
+                    request.robot_id,
+                    request.assignment,
+                )?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/robots/schedule",
+            state.clone(),
+            |state, req| {
+                let request: RobotScheduleEnvelope = from_json(&req)?;
+                to_json(crate::wire::schedule_robot_route(
+                    &state,
+                    request.robot_id,
+                    request.schedule,
+                )?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(session, "ares/v1/claims/list", state.clone(), |state, _| {
+            to_json(crate::wire::list_claims(&state)?)
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/claims/evaluate",
+            state.clone(),
+            |state, req| {
+                let request: ClaimRequestWire = from_json(&req)?;
+                to_json(crate::wire::evaluate_claim(&state, request)?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/claims/request",
+            state.clone(),
+            |state, req| {
+                let request: ClaimRequestWire = from_json(&req)?;
+                to_json(crate::wire::submit_claim(&state, request)?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(session, "ares/v1/leases/list", state.clone(), |state, _| {
+            to_json(crate::wire::list_leases(&state)?)
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/leases/add",
+            state.clone(),
+            |state, req| {
+                let lease: Lease = from_json(&req)?;
+                to_json(crate::wire::add_lease(&state, lease)?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(session, "ares/v1/leases/release", state, |state, req| {
+            let request: ReleaseLeaseRequest = from_json(&req)?;
+            to_json(crate::wire::release_lease(&state, request)?)
+        })
+        .await?,
+    );
+
+    Ok(Ros2DdsAresJsonHandle { tasks })
+}
+
+async fn spawn_json_service<F>(
+    session: &zenoh::Session,
+    key: &'static str,
+    state: ServeState,
+    handler: F,
+) -> zenoh::Result<JoinHandle<()>>
+where
+    F: Fn(ServeState, String) -> crate::wire::ApiResult<String> + Send + Sync + 'static,
+{
     let queryable = session
-        .declare_queryable(key.clone())
+        .declare_queryable(key.to_string())
         .complete(true)
         .await?;
     let task = tokio::spawn(async move {
         while let Ok(query) = queryable.recv_async().await {
-            let response = match zones_json(&state) {
-                Ok(json) => encode_trigger_response(true, &json),
-                Err(err) => encode_trigger_response(false, &err.message),
+            let request = query
+                .payload()
+                .map(|payload| decode_json_request(&payload.to_bytes()))
+                .unwrap_or_else(|| Ok(String::new()));
+            let response = match request.and_then(|request| handler(state.clone(), request)) {
+                Ok(response_json) => encode_json_response(true, &response_json),
+                Err(err) => encode_json_response(false, &err.message),
             };
-            reply_cdr(&query, &key, response).await;
+            reply_cdr(&query, key, response).await;
         }
     });
-    Ok(Ros2DdsListZonesHandle { task })
-}
-
-fn zones_json(state: &ServeState) -> crate::wire::ApiResult<String> {
-    let zones = crate::wire::list_zones(state)?;
-    serde_json::to_string(&zones).map_err(|err| ApiError::new(format!("serialize zones: {err}")))
+    Ok(task)
 }
 
 async fn reply_cdr(query: &Query, key: &str, payload: Vec<u8>) {
@@ -66,7 +241,43 @@ async fn reply_cdr(query: &Query, key: &str, payload: Vec<u8>) {
     }
 }
 
-/// Encode `std_srvs/srv/Trigger_Response` as XCDR1 little-endian CDR.
+fn to_json<T: Serialize>(value: T) -> crate::wire::ApiResult<String> {
+    serde_json::to_string(&value).map_err(|err| ApiError::new(format!("serialize response: {err}")))
+}
+
+fn from_json<T: DeserializeOwned>(raw: &str) -> crate::wire::ApiResult<T> {
+    serde_json::from_str(raw).map_err(|err| ApiError::new(format!("invalid JSON request: {err}")))
+}
+
+fn decode_json_request(bytes: &[u8]) -> crate::wire::ApiResult<String> {
+    if bytes.is_empty() {
+        return Ok(String::new());
+    }
+    for offset in [4usize, 8, 20, 0] {
+        if let Some(text) = try_decode_cdr_string_at(bytes, offset) {
+            return Ok(text);
+        }
+    }
+    Err(ApiError::new(format!(
+        "invalid {JSON_SERVICE_TYPE} request payload: could not decode CDR string"
+    )))
+}
+
+fn try_decode_cdr_string_at(bytes: &[u8], offset: usize) -> Option<String> {
+    let len_bytes = bytes.get(offset..offset + 4)?;
+    let len_with_nul =
+        u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as usize;
+    if len_with_nul == 0 {
+        return Some(String::new());
+    }
+    let start = offset + 4;
+    let end = start.checked_add(len_with_nul)?;
+    let raw = bytes.get(start..end)?;
+    let without_nul = raw.strip_suffix(&[0]).unwrap_or(raw);
+    String::from_utf8(without_nul.to_vec()).ok()
+}
+
+/// Encode `ares_interfaces/srv/Json_Response` as XCDR1 little-endian CDR.
 ///
 /// Layout:
 ///
@@ -79,15 +290,15 @@ async fn reply_cdr(query: &Query, key: &str, payload: Vec<u8>) {
 /// trailing NUL
 /// padding to 4-byte alignment
 /// ```
-pub fn encode_trigger_response(success: bool, message: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(8 + message.len());
+pub fn encode_json_response(success: bool, response: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + response.len());
     out.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
     out.push(u8::from(success));
     pad_to_4(&mut out);
 
-    let len_with_nul = message.as_bytes().len() + 1;
+    let len_with_nul = response.as_bytes().len() + 1;
     out.extend_from_slice(&(len_with_nul as u32).to_le_bytes());
-    out.extend_from_slice(message.as_bytes());
+    out.extend_from_slice(response.as_bytes());
     out.push(0);
     pad_to_4(&mut out);
     out
@@ -99,17 +310,44 @@ fn pad_to_4(out: &mut Vec<u8>) {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct RobotHeartbeatEnvelope {
+    robot_id: RobotId,
+    heartbeat: HeartbeatRequest,
+}
+
+#[derive(serde::Deserialize)]
+struct RobotAssignRouteEnvelope {
+    robot_id: RobotId,
+    assignment: AssignRouteRequest,
+}
+
+#[derive(serde::Deserialize)]
+struct RobotScheduleEnvelope {
+    robot_id: RobotId,
+    schedule: ScheduleRobotRouteRequest,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::encode_trigger_response;
+    use super::{decode_json_request, encode_json_response};
 
     #[test]
-    fn trigger_response_cdr_contains_header_bool_and_string() {
-        let bytes = encode_trigger_response(true, "ok");
+    fn json_response_cdr_contains_header_bool_and_string() {
+        let bytes = encode_json_response(true, "ok");
         assert_eq!(&bytes[0..4], &[0x00, 0x01, 0x00, 0x00]);
         assert_eq!(bytes[4], 1);
         assert_eq!(&bytes[8..12], &3u32.to_le_bytes());
         assert_eq!(&bytes[12..15], b"ok\0");
         assert_eq!(bytes.len() % 4, 0);
+    }
+
+    #[test]
+    fn decodes_json_service_string_request() {
+        let mut bytes = vec![0x00, 0x01, 0x00, 0x00];
+        bytes.extend_from_slice(&12u32.to_le_bytes());
+        bytes.extend_from_slice(b"{\"ok\":true}\0");
+        let request = decode_json_request(&bytes).expect("decode");
+        assert_eq!(request, "{\"ok\":true}");
     }
 }

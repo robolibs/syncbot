@@ -1,11 +1,17 @@
 //! Axum REST adapter for the timenav core.
 //!
 //! Enabled with `--features rest`.
+//! With `--features xmlt`, the same routes also accept/return XML when the
+//! request uses `Content-Type: application/xml` or `Accept: application/xml`.
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tower_http::trace::TraceLayer;
 
 use crate::core::ids::{ClaimId, RobotId};
@@ -18,7 +24,11 @@ use crate::wire::{
 /// REST API prefix used by `PRESENTATION.md`.
 pub const REST_PREFIX: &str = "/ares/v1";
 
-type RestResult<T> = std::result::Result<Json<T>, (StatusCode, Json<ApiError>)>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WireFormat {
+    Json,
+    Xml,
+}
 
 /// Build a real router wired to a shared `Coordinator`.
 pub fn router(state: ServeState) -> Router {
@@ -50,165 +60,365 @@ pub fn router(state: ServeState) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
-async fn health() -> Json<crate::wire::Health> {
-    Json(crate::wire::health())
+async fn health(headers: HeaderMap) -> Response {
+    respond(preferred_format(&headers), Ok(crate::wire::health()))
 }
 
-async fn fleet_snapshot(State(state): State<ServeState>) -> RestResult<crate::wire::FleetSnapshot> {
-    ok(crate::wire::fleet_snapshot(&state))
+async fn fleet_snapshot(headers: HeaderMap, State(state): State<ServeState>) -> Response {
+    respond(
+        preferred_format(&headers),
+        crate::wire::fleet_snapshot(&state),
+    )
 }
 
-async fn plan_route(
-    State(state): State<ServeState>,
-    Json(request): Json<PlanRouteRequest>,
-) -> RestResult<crate::wire::PlanRouteResponse> {
-    ok(crate::wire::plan_route_request(&state, request))
+async fn plan_route(headers: HeaderMap, State(state): State<ServeState>, body: Bytes) -> Response {
+    let format = request_format(&headers);
+    let request = match parse_body::<PlanRouteRequest>(format, &body) {
+        Ok(request) => request,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(format, crate::wire::plan_route_request(&state, request))
 }
 
-async fn list_zones(State(state): State<ServeState>) -> RestResult<Vec<crate::wire::ZoneView>> {
-    ok(crate::wire::list_zones(&state))
+async fn list_zones(headers: HeaderMap, State(state): State<ServeState>) -> Response {
+    respond(preferred_format(&headers), crate::wire::list_zones(&state))
 }
 
 async fn zone(
+    headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<String>,
-) -> RestResult<crate::wire::ZoneView> {
-    ok(parse_resource_ref(&id).and_then(|id| crate::wire::find_zone(&state, id)))
+) -> Response {
+    respond(
+        preferred_format(&headers),
+        parse_resource_ref(&id).and_then(|id| crate::wire::find_zone(&state, id)),
+    )
 }
 
-async fn list_nodes(State(state): State<ServeState>) -> RestResult<Vec<crate::wire::NodeView>> {
-    ok(crate::wire::list_nodes(&state))
+async fn list_nodes(headers: HeaderMap, State(state): State<ServeState>) -> Response {
+    respond(preferred_format(&headers), crate::wire::list_nodes(&state))
 }
 
 async fn node(
+    headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<String>,
-) -> RestResult<crate::wire::NodeView> {
-    ok(parse_resource_ref(&id).and_then(|id| crate::wire::find_node(&state, id)))
+) -> Response {
+    respond(
+        preferred_format(&headers),
+        parse_resource_ref(&id).and_then(|id| crate::wire::find_node(&state, id)),
+    )
 }
 
-async fn list_edges(State(state): State<ServeState>) -> RestResult<Vec<crate::wire::EdgeView>> {
-    ok(crate::wire::list_edges(&state))
+async fn list_edges(headers: HeaderMap, State(state): State<ServeState>) -> Response {
+    respond(preferred_format(&headers), crate::wire::list_edges(&state))
 }
 
 async fn edge(
+    headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<String>,
-) -> RestResult<crate::wire::EdgeView> {
-    ok(parse_resource_ref(&id).and_then(|id| crate::wire::find_edge(&state, id)))
+) -> Response {
+    respond(
+        preferred_format(&headers),
+        parse_resource_ref(&id).and_then(|id| crate::wire::find_edge(&state, id)),
+    )
 }
 
-async fn list_robots(State(state): State<ServeState>) -> RestResult<Vec<crate::robot::RobotState>> {
-    ok(crate::wire::list_robots(&state))
+async fn list_robots(headers: HeaderMap, State(state): State<ServeState>) -> Response {
+    respond(preferred_format(&headers), crate::wire::list_robots(&state))
 }
 
 async fn register_robot(
+    headers: HeaderMap,
     State(state): State<ServeState>,
-    Json(robot): Json<crate::robot::RobotState>,
-) -> RestResult<crate::robot::RobotState> {
-    ok(crate::wire::register_robot(&state, robot))
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let robot = match parse_body::<crate::robot::RobotState>(format, &body) {
+        Ok(robot) => robot,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(format, crate::wire::register_robot(&state, robot))
 }
 
 async fn unregister_robot(
+    headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<u64>,
-) -> RestResult<bool> {
-    ok(crate::wire::unregister_robot(&state, RobotId::new(id)))
+) -> Response {
+    respond(
+        preferred_format(&headers),
+        crate::wire::unregister_robot(&state, RobotId::new(id)),
+    )
 }
 
 async fn robot_state(
+    headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<u64>,
-) -> RestResult<crate::robot::RobotState> {
-    ok(crate::wire::robot_state(&state, RobotId::new(id)))
+) -> Response {
+    respond(
+        preferred_format(&headers),
+        crate::wire::robot_state(&state, RobotId::new(id)),
+    )
 }
 
 async fn heartbeat(
+    headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<u64>,
-    Json(request): Json<HeartbeatRequest>,
-) -> RestResult<crate::robot::RobotState> {
-    ok(crate::wire::heartbeat(&state, RobotId::new(id), request))
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let request = match parse_body::<HeartbeatRequest>(format, &body) {
+        Ok(request) => request,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(
+        format,
+        crate::wire::heartbeat(&state, RobotId::new(id), request),
+    )
 }
 
 async fn assign_route(
+    headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<u64>,
-    Json(request): Json<AssignRouteRequest>,
-) -> RestResult<crate::robot::RobotState> {
-    ok(crate::wire::assign_route(&state, RobotId::new(id), request))
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let request = match parse_body::<AssignRouteRequest>(format, &body) {
+        Ok(request) => request,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(
+        format,
+        crate::wire::assign_route(&state, RobotId::new(id), request),
+    )
 }
 
 async fn schedule_robot_route(
+    headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<u64>,
-    Json(request): Json<ScheduleRobotRouteRequest>,
-) -> RestResult<crate::coordinator::ScheduleDecision> {
-    ok(crate::wire::schedule_robot_route(
-        &state,
-        RobotId::new(id),
-        request,
-    ))
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let request = match parse_body::<ScheduleRobotRouteRequest>(format, &body) {
+        Ok(request) => request,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(
+        format,
+        crate::wire::schedule_robot_route(&state, RobotId::new(id), request),
+    )
 }
 
-async fn list_claims(State(state): State<ServeState>) -> RestResult<Vec<ClaimRequest>> {
-    ok(crate::wire::list_claims(&state))
+async fn list_claims(headers: HeaderMap, State(state): State<ServeState>) -> Response {
+    respond(
+        preferred_format(&headers),
+        crate::wire::list_claims(&state) as crate::wire::ApiResult<Vec<ClaimRequest>>,
+    )
 }
 
-async fn claim(State(state): State<ServeState>, Path(id): Path<u64>) -> RestResult<ClaimRequest> {
-    ok(crate::wire::find_claim(&state, ClaimId::new(id)))
+async fn claim(
+    headers: HeaderMap,
+    State(state): State<ServeState>,
+    Path(id): Path<u64>,
+) -> Response {
+    respond(
+        preferred_format(&headers),
+        crate::wire::find_claim(&state, ClaimId::new(id)),
+    )
 }
 
-async fn remove_claim(State(state): State<ServeState>, Path(id): Path<u64>) -> RestResult<bool> {
-    ok(crate::wire::remove_claim(&state, ClaimId::new(id)))
+async fn remove_claim(
+    headers: HeaderMap,
+    State(state): State<ServeState>,
+    Path(id): Path<u64>,
+) -> Response {
+    respond(
+        preferred_format(&headers),
+        crate::wire::remove_claim(&state, ClaimId::new(id)),
+    )
 }
 
 async fn evaluate_claim(
+    headers: HeaderMap,
     State(state): State<ServeState>,
-    Json(request): Json<ClaimRequestWire>,
-) -> RestResult<crate::claim::ClaimEvaluation> {
-    ok(crate::wire::evaluate_claim(&state, request))
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let request = match parse_body::<ClaimRequestWire>(format, &body) {
+        Ok(request) => request,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(format, crate::wire::evaluate_claim(&state, request))
 }
 
 async fn submit_claim(
+    headers: HeaderMap,
     State(state): State<ServeState>,
-    Json(request): Json<ClaimRequestWire>,
-) -> RestResult<crate::claim::ClaimEvaluation> {
-    ok(crate::wire::submit_claim(&state, request))
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let request = match parse_body::<ClaimRequestWire>(format, &body) {
+        Ok(request) => request,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(format, crate::wire::submit_claim(&state, request))
 }
 
-async fn list_leases(State(state): State<ServeState>) -> RestResult<Vec<Lease>> {
-    ok(crate::wire::list_leases(&state))
+async fn list_leases(headers: HeaderMap, State(state): State<ServeState>) -> Response {
+    respond(
+        preferred_format(&headers),
+        crate::wire::list_leases(&state) as crate::wire::ApiResult<Vec<Lease>>,
+    )
 }
 
-async fn add_lease(State(state): State<ServeState>, Json(lease): Json<Lease>) -> RestResult<Lease> {
-    ok(crate::wire::add_lease(&state, lease))
+async fn add_lease(headers: HeaderMap, State(state): State<ServeState>, body: Bytes) -> Response {
+    let format = request_format(&headers);
+    let lease = match parse_body::<Lease>(format, &body) {
+        Ok(lease) => lease,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(format, crate::wire::add_lease(&state, lease))
 }
 
 async fn release_lease(
+    headers: HeaderMap,
     State(state): State<ServeState>,
-    Json(request): Json<ReleaseLeaseRequest>,
-) -> RestResult<bool> {
-    ok(crate::wire::release_lease(&state, request))
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let request = match parse_body::<ReleaseLeaseRequest>(format, &body) {
+        Ok(request) => request,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(format, crate::wire::release_lease(&state, request))
 }
 
 async fn release_lease_by_path(
+    headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<u64>,
-) -> RestResult<bool> {
-    ok(crate::wire::release_lease(
-        &state,
-        ReleaseLeaseRequest {
-            lease_id: crate::core::ids::LeaseId::new(id),
-            released_at_tick: None,
-        },
+) -> Response {
+    respond(
+        preferred_format(&headers),
+        crate::wire::release_lease(
+            &state,
+            ReleaseLeaseRequest {
+                lease_id: crate::core::ids::LeaseId::new(id),
+                released_at_tick: None,
+            },
+        ),
+    )
+}
+
+fn preferred_format(headers: &HeaderMap) -> WireFormat {
+    if header_contains(headers, header::ACCEPT, "application/xml")
+        || header_contains(headers, header::ACCEPT, "text/xml")
+    {
+        WireFormat::Xml
+    } else {
+        WireFormat::Json
+    }
+}
+
+fn request_format(headers: &HeaderMap) -> WireFormat {
+    if header_contains(headers, header::CONTENT_TYPE, "application/xml")
+        || header_contains(headers, header::CONTENT_TYPE, "text/xml")
+    {
+        WireFormat::Xml
+    } else {
+        WireFormat::Json
+    }
+}
+
+fn header_contains(headers: &HeaderMap, name: header::HeaderName, needle: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase().contains(needle))
+        .unwrap_or(false)
+}
+
+fn parse_body<T: DeserializeOwned>(format: WireFormat, body: &[u8]) -> crate::wire::ApiResult<T> {
+    match format {
+        WireFormat::Json => serde_json::from_slice(body)
+            .map_err(|err| ApiError::new(format!("invalid JSON body: {err}"))),
+        WireFormat::Xml => parse_xml_body(body),
+    }
+}
+
+#[cfg(feature = "xmlt")]
+fn parse_xml_body<T: DeserializeOwned>(body: &[u8]) -> crate::wire::ApiResult<T> {
+    let text = std::str::from_utf8(body)
+        .map_err(|err| ApiError::new(format!("XML body is not UTF-8: {err}")))?;
+    quick_xml::de::from_str(text).map_err(|err| ApiError::new(format!("invalid XML body: {err}")))
+}
+
+#[cfg(not(feature = "xmlt"))]
+fn parse_xml_body<T: DeserializeOwned>(_body: &[u8]) -> crate::wire::ApiResult<T> {
+    Err(ApiError::new(
+        "XML support is not compiled; enable feature xmlt",
     ))
 }
 
-fn ok<T>(result: crate::wire::ApiResult<T>) -> RestResult<T> {
-    result
-        .map(Json)
-        .map_err(|err| (StatusCode::BAD_REQUEST, Json(err)))
+fn respond<T: Serialize>(format: WireFormat, result: crate::wire::ApiResult<T>) -> Response {
+    match format {
+        WireFormat::Json => match result {
+            Ok(value) => Json(value).into_response(),
+            Err(err) => (StatusCode::BAD_REQUEST, Json(err)).into_response(),
+        },
+        WireFormat::Xml => respond_xml(result),
+    }
+}
+
+#[cfg(feature = "xmlt")]
+fn respond_xml<T: Serialize>(result: crate::wire::ApiResult<T>) -> Response {
+    match result {
+        Ok(value) => match quick_xml::se::to_string(&value) {
+            Ok(body) => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/xml")],
+                body,
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain")],
+                format!("serialize XML: {err}"),
+            )
+                .into_response(),
+        },
+        Err(err) => match quick_xml::se::to_string(&err) {
+            Ok(body) => (
+                StatusCode::BAD_REQUEST,
+                [(header::CONTENT_TYPE, "application/xml")],
+                body,
+            )
+                .into_response(),
+            Err(xml_err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain")],
+                format!("serialize XML error response: {xml_err}"),
+            )
+                .into_response(),
+        },
+    }
+}
+
+#[cfg(not(feature = "xmlt"))]
+fn respond_xml<T: Serialize>(_result: crate::wire::ApiResult<T>) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ApiError::new(
+            "XML support is not compiled; enable feature xmlt",
+        )),
+    )
+        .into_response()
 }
 
 fn parse_resource_ref(raw: &str) -> crate::wire::ApiResult<ResourceRef> {
