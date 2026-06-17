@@ -71,7 +71,7 @@ pub use crate::coordinator::{
     schedule_route_request, scheduled_target_windows_from_route,
 };
 
-/// Crate version (mirrors the C++ `syncbot::version()`).
+/// Crate version, read from `Cargo.toml` at compile time so it never drifts.
 pub const fn version() -> &'static str {
-    "0.1.0"
+    env!("CARGO_PKG_VERSION")
 }
