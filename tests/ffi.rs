@@ -21,7 +21,7 @@ unsafe fn cstr_into_owned(p: *mut std::os::raw::c_char) -> String {
 #[test]
 fn version_and_traffic_helpers_round_trip() {
     let p = sb_version();
-    assert_eq!(unsafe { CStr::from_ptr(p) }.to_str().unwrap(), "0.0.2");
+    assert_eq!(unsafe { CStr::from_ptr(p) }.to_str().unwrap(), "0.1.0");
 
     let yes = CString::new("yes").unwrap();
     assert_eq!(unsafe { sb_parse_traffic_bool(yes.as_ptr()) }, 1);

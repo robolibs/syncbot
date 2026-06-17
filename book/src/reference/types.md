@@ -50,15 +50,15 @@ The PLC-facing flows use flat request envelopes and one reply type. `key` is an
 integer password or `did:pass=<secret>`; `id` carries one or more ids.
 
 ```rust
-FlatRegister  { robot: String, key: String }   // key optional, defaults to "0"
-FlatHeartbeat { key: String, zone: Option<u64>, node: Option<u64>, edge: Option<u64> }
+FlatRegister  { robot: String, key: String, alive: Option<u64> }  // key+alive optional
+FlatHeartbeat { key: String, zone: Option<i64>, node: Option<u64>, edge: Option<u64> }
 FlatClaim     { key: String, robot: String, id: Vec<u64>,
-                AccessMode: Option<u8>, LeaseTime: Option<u64> }
+                access_mode: Option<u8>, lease_time: Option<u64> }
 FlatRelease   { key: String, robot: String, id: u64 }
 
 // key omitted -> shared default password (insecure)
-// AccessMode: 0/absent/1 -> exclusive; 2+ reserved (rejected)
-// LeaseTime: minutes; 0/absent -> unlimited
+// access_mode: 0/absent/1 -> exclusive; 2+ reserved (rejected)
+// lease_time: seconds; 0/absent -> unlimited
 
 FlatReply { decision: u8, reason: u8, blocked: Option<u64> }   // 1/0, enum, offending id
 ```

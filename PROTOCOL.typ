@@ -61,7 +61,7 @@ Check the server is up (no key needed):
 
 ```sh
 curl http://<host>:8080/ares/v1/health
-# {"status":"ok","version":"0.0.2"}
+# {"status":"ok","version":"0.1.0"}
 ```
 
 = The key
@@ -101,11 +101,13 @@ may be an *integer or a UUID string*.
 
 == Register
 
-Bind a robot id to a key. Do this once.
+Bind a robot id to a key. Do this once. Optional `<alive>` is the heartbeat
+interval in seconds (default 2); the server marks the robot inactive after `2×`
+that without a heartbeat.
 
 ```xml
 POST /ares/v1/robots
-  <reg><robot>7</robot><key>1234</key></reg>
+  <reg><robot>7</robot><key>1234</key><alive>2</alive></reg>
   <reply><decision>1</decision><reason>0</reason></reply>
 ```
 
@@ -123,11 +125,12 @@ ros2 service call /ares/v1/robots/register ares_interfaces/srv/Json \
 == Heartbeat
 
 Liveness + where the robot is. The reply is just an ack; the server timestamps
-it. Send one of `zone` / `node` / `edge`.
+it. Send one of `zone` / `node` / `edge`. Use `zone = -1` when the robot holds
+no zone and its location is unknown.
 
 ```xml
 POST /ares/v1/robots/7/heartbeat
-  <hb><key>1234</key><zone>42</zone></hb>
+  <hb><key>1234</key><zone>42</zone></hb>     <!-- or <zone>-1</zone> if unknown -->
   <reply><decision>1</decision><reason>0</reason></reply>
 ```
 
@@ -149,8 +152,8 @@ that stopped it. Two optional fields:
 
 #table(columns: (24mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
   table.header([Field], [Meaning]),
-  [`<AccessMode>`], [`1` = exclusive (default), `0` = unspecified (→ exclusive); `2`+ reserved for future modes and rejected for now.],
-  [`<LeaseTime>`], [minutes the claim should hold: `0` (default) = unlimited, `X` = X minutes.],
+  [`<access_mode>`], [`1` = exclusive (default), `0` = unspecified (→ exclusive); `2`+ reserved for future modes and rejected for now.],
+  [`<lease_time>`], [seconds the claim should hold: `0` (default) = unlimited, `X` = X seconds.],
 )
 
 ```xml
@@ -158,9 +161,9 @@ POST /ares/v1/claims/zone
   <claim><key>1234</key><robot>7</robot><id>42</id></claim>
   <reply><decision>1</decision><reason>0</reason></reply>
 
-  <!-- several zones, atomic, exclusive, 30-minute lease -->
+  <!-- several zones, atomic, exclusive, 30-second lease -->
   <claim><key>1234</key><robot>7</robot><id>42</id><id>43</id>
-         <AccessMode>1</AccessMode><LeaseTime>30</LeaseTime></claim>
+         <access_mode>1</access_mode><lease_time>30</lease_time></claim>
   <reply><decision>0</decision><reason>2</reason><blocked>43</blocked></reply>
 ```
 
@@ -173,7 +176,7 @@ ros2 service call /ares/v1/claims/zone ares_interfaces/srv/Json \
   table.header([reason], [meaning]),
   [0], [granted], [1], [mismatched key], [2], [conflict — someone holds it],
   [3], [capacity exceeded (shared zone full)], [4], [unknown id],
-  [5], [bad request (no id, or unsupported `AccessMode`)],
+  [5], [bad request (no id, or unsupported `access_mode`)],
 )
 
 Claiming a zone reserves everything inside it — so a zone claim and a claim on a

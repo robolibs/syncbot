@@ -125,7 +125,9 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
             state.clone(),
             |state, payload| {
                 let req: crate::wire::FlatRegister = decode_required(payload)?;
-                Ok(crate::wire::flat_register(&state, &req.robot, &req.key))
+                Ok(crate::wire::flat_register(
+                    &state, &req.robot, &req.key, req.alive,
+                ))
             },
         )
         .await?,

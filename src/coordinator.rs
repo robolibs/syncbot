@@ -878,10 +878,21 @@ pub struct Coordinator {
     /// Next id minted for a previously-unseen UUID robot. Starts high to avoid
     /// colliding with client-supplied numeric ids.
     next_synthetic_robot_id: u64,
+    /// Heartbeat liveness tracking per robot: expected interval + last seen.
+    robot_alive: BTreeMap<RobotId, AliveInfo>,
 }
 
 /// Base for synthetic ids minted for UUID robots (2^56).
 const SYNTHETIC_ROBOT_ID_BASE: u64 = 1 << 56;
+
+/// Per-robot heartbeat liveness: the expected interval (seconds) the robot
+/// promised at registration, and the wall-clock time (epoch millis) of its last
+/// heartbeat. A robot is "inactive" once `2 × interval` has elapsed.
+#[derive(Debug, Clone, Copy)]
+struct AliveInfo {
+    interval_secs: u64,
+    last_seen_ms: u64,
+}
 
 impl Default for Coordinator {
     fn default() -> Self {
@@ -892,6 +903,7 @@ impl Default for Coordinator {
             robot_keys: BTreeMap::new(),
             robot_id_by_uuid: BTreeMap::new(),
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
+            robot_alive: BTreeMap::new(),
         }
     }
 }
@@ -909,7 +921,55 @@ impl Coordinator {
             robot_keys: BTreeMap::new(),
             robot_id_by_uuid: BTreeMap::new(),
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
+            robot_alive: BTreeMap::new(),
         }
+    }
+
+    /// Default heartbeat interval (seconds) a robot is assumed to use when it
+    /// does not specify one at registration.
+    pub const DEFAULT_ALIVE_SECS: u64 = 2;
+
+    /// Record the heartbeat interval a robot promised at registration and stamp
+    /// it as just-seen. `interval_secs == 0` falls back to the default.
+    pub fn set_alive(&mut self, robot_id: RobotId, interval_secs: u64, now_ms: u64) {
+        let interval_secs = if interval_secs == 0 {
+            Self::DEFAULT_ALIVE_SECS
+        } else {
+            interval_secs
+        };
+        self.robot_alive.insert(
+            robot_id,
+            AliveInfo {
+                interval_secs,
+                last_seen_ms: now_ms,
+            },
+        );
+    }
+
+    /// Refresh a robot's last-seen time (call on every heartbeat).
+    pub fn touch_robot(&mut self, robot_id: RobotId, now_ms: u64) {
+        if let Some(a) = self.robot_alive.get_mut(&robot_id) {
+            a.last_seen_ms = now_ms;
+        }
+    }
+
+    /// Whether a robot is still active at `now_ms`: less than `2 × interval` has
+    /// elapsed since its last heartbeat. Robots with no liveness info (never set
+    /// an interval) are treated as active.
+    pub fn robot_active_at(&self, robot_id: RobotId, now_ms: u64) -> bool {
+        match self.robot_alive.get(&robot_id) {
+            Some(a) => now_ms.saturating_sub(a.last_seen_ms) <= a.interval_secs * 2_000,
+            None => true,
+        }
+    }
+
+    /// Robots whose last heartbeat is older than `2 × interval` at `now_ms`.
+    pub fn inactive_robots_at(&self, now_ms: u64) -> Vec<RobotId> {
+        self.robot_alive
+            .iter()
+            .filter(|(_, a)| now_ms.saturating_sub(a.last_seen_ms) > a.interval_secs * 2_000)
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     pub fn index(&self) -> Option<&WorkspaceIndex> {
@@ -946,6 +1006,7 @@ impl Coordinator {
         self.robot_states.clear();
         self.robot_keys.clear();
         self.robot_id_by_uuid.clear();
+        self.robot_alive.clear();
         self.next_synthetic_robot_id = SYNTHETIC_ROBOT_ID_BASE;
         self.claim_manager.clear();
     }
@@ -1037,6 +1098,7 @@ impl Coordinator {
             self.robot_states.remove(pos);
             self.robot_keys.remove(&robot_id);
             self.robot_id_by_uuid.retain(|_, v| *v != robot_id);
+            self.robot_alive.remove(&robot_id);
             return true;
         }
         false

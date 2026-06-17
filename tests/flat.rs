@@ -62,16 +62,16 @@ fn build_state() -> ServeState {
 fn register_is_idempotent_deny_on_reuse() {
     let s = build_state();
     // first registration succeeds
-    let r = flat_register(&s, "7", "1234");
+    let r = flat_register(&s, "7", "1234", None);
     assert_eq!((r.decision, r.reason), (1, 0));
     // same id again -> deny "already registered" (reason 2)
-    let r = flat_register(&s, "7", "1234");
+    let r = flat_register(&s, "7", "1234", None);
     assert_eq!((r.decision, r.reason), (0, 2));
     // bad id (not int/uuid) -> reason 3
-    let r = flat_register(&s, "notanid", "1234");
+    let r = flat_register(&s, "notanid", "1234", None);
     assert_eq!((r.decision, r.reason), (0, 3));
     // unsupported key scheme -> reason 4
-    let r = flat_register(&s, "8", "did:key=abc");
+    let r = flat_register(&s, "8", "did:key=abc", None);
     assert_eq!((r.decision, r.reason), (0, 4));
 }
 
@@ -81,7 +81,7 @@ fn heartbeat_requires_registration_and_key() {
     // not registered -> reason 2
     let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None);
     assert_eq!((r.decision, r.reason), (0, 2));
-    flat_register(&s, "7", "1234");
+    flat_register(&s, "7", "1234", None);
     // wrong key -> mismatched key (reason 1)
     let r = flat_heartbeat(&s, "7", "9999", Some(42), None, None);
     assert_eq!((r.decision, r.reason), (0, 1));
@@ -93,8 +93,8 @@ fn heartbeat_requires_registration_and_key() {
 #[test]
 fn claim_conflict_then_release() {
     let s = build_state();
-    flat_register(&s, "7", "1234");
-    flat_register(&s, "8", "5678");
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
 
     // robot 7 claims zone 42 (exclusive) -> grant
     let r = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None);
@@ -156,8 +156,8 @@ fn build_nested_state() -> ServeState {
 #[test]
 fn claiming_zone_blocks_node_inside_it() {
     let s = build_nested_state();
-    flat_register(&s, "7", "1234");
-    flat_register(&s, "8", "5678");
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
 
     // robot 7 claims zone 50 exclusively -> grant
     assert_eq!(
@@ -185,8 +185,8 @@ fn claiming_zone_blocks_node_inside_it() {
 #[test]
 fn claiming_node_blocks_zone_around_it() {
     let s = build_nested_state();
-    flat_register(&s, "7", "1234");
-    flat_register(&s, "8", "5678");
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
 
     // robot 7 claims node 139 exclusively -> grant
     assert_eq!(
@@ -204,8 +204,8 @@ fn claiming_node_blocks_zone_around_it() {
 #[test]
 fn multi_zone_claim_is_atomic() {
     let s = build_state();
-    flat_register(&s, "7", "1234");
-    flat_register(&s, "8", "5678");
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
 
     // robot 8 grabs zone 43 first
     assert_eq!(
@@ -237,7 +237,7 @@ fn multi_zone_claim_is_atomic() {
 #[test]
 fn tier2_submit_claim_requires_key() {
     let s = build_state();
-    flat_register(&s, "7", "1234");
+    flat_register(&s, "7", "1234", None);
 
     let make = |key: Option<&str>| ClaimRequestWire {
         id: ClaimId::new(0),
@@ -269,9 +269,9 @@ fn uuid_robot_id_full_flow() {
     let uuid = "11111111-1111-1111-1111-111111111111";
 
     // register with a UUID id
-    assert_eq!(flat_register(&s, uuid, "1234").decision, 1);
+    assert_eq!(flat_register(&s, uuid, "1234", None).decision, 1);
     // re-registering the same UUID -> already registered (reason 2)
-    let r = flat_register(&s, uuid, "1234");
+    let r = flat_register(&s, uuid, "1234", None);
     assert_eq!((r.decision, r.reason), (0, 2));
 
     // heartbeat by UUID, correct key -> ack
@@ -303,24 +303,24 @@ fn uuid_robot_id_full_flow() {
     );
 
     // a garbage id is rejected at registration (bad id, reason 3)
-    assert_eq!(flat_register(&s, "not-an-id", "1234").reason, 3);
+    assert_eq!(flat_register(&s, "not-an-id", "1234", None).reason, 3);
 }
 
 #[test]
 fn key_is_optional_defaults_to_shared_password() {
     let s = build_state();
     // register with NO key -> uses the default password
-    let r = flat_register(&s, "7", "0");
+    let r = flat_register(&s, "7", "0", None);
     assert_eq!((r.decision, r.reason), (1, 0));
     // a second robot registered the same way also works (each bound to default)
-    assert_eq!(flat_register(&s, "8", "0").decision, 1);
+    assert_eq!(flat_register(&s, "8", "0", None).decision, 1);
     // claim with the default key succeeds for the default-registered robot
     assert_eq!(
         flat_claim(&s, ClaimTargetKind::Zone, "0", "7", &[42], None, None).decision,
         1
     );
     // a robot that registered WITH a real key is NOT satisfied by the default
-    flat_register(&s, "9", "1234");
+    flat_register(&s, "9", "1234", None);
     let r = flat_claim(&s, ClaimTargetKind::Zone, "0", "9", &[43], None, None);
     assert_eq!((r.decision, r.reason), (0, 1)); // mismatched key
 }
@@ -328,7 +328,7 @@ fn key_is_optional_defaults_to_shared_password() {
 #[test]
 fn claim_access_mode_and_lease_time() {
     let s = build_state();
-    flat_register(&s, "7", "1234");
+    flat_register(&s, "7", "1234", None);
     // access_mode 0 (undef) -> exclusive, lease 0 -> unlimited: grant
     assert_eq!(
         flat_claim(
@@ -343,7 +343,7 @@ fn claim_access_mode_and_lease_time() {
         .decision,
         1
     );
-    // access_mode 1 (exclusive) explicit, with a 30-min lease: grant on a free zone
+    // access_mode 1 (exclusive) explicit, with a 30-second lease: grant on a free zone
     assert_eq!(
         flat_claim(
             &s,
@@ -358,7 +358,7 @@ fn claim_access_mode_and_lease_time() {
         1
     );
     // access_mode 2 (reserved/future) -> rejected as bad request (reason 5)
-    flat_register(&s, "8", "5678");
+    flat_register(&s, "8", "5678", None);
     let r = flat_claim(
         &s,
         ClaimTargetKind::Node,
@@ -369,4 +369,47 @@ fn claim_access_mode_and_lease_time() {
         None,
     );
     assert_eq!((r.decision, r.reason), (0, 5));
+}
+
+#[test]
+fn heartbeat_zone_minus_one_is_unknown_location() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+    // -1 = robot hasn't claimed any zone / location unknown -> still a valid ack
+    let r = flat_heartbeat(&s, "7", "1234", Some(-1), None, None);
+    assert_eq!((r.decision, r.reason), (1, 0));
+    // a real zone also acks
+    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None);
+    assert_eq!((r.decision, r.reason), (1, 0));
+    // no position at all acks too
+    let r = flat_heartbeat(&s, "7", "1234", None, None, None);
+    assert_eq!((r.decision, r.reason), (1, 0));
+}
+
+#[test]
+fn alive_interval_marks_robot_inactive_after_2x() {
+    let mut c = Coordinator::new();
+    // robot 7 promises a 2s heartbeat interval, last seen at t=1000ms
+    c.set_alive(RobotId::new(7), 2, 1_000);
+
+    // within 2x (4s) of last heartbeat -> active
+    assert!(c.robot_active_at(RobotId::new(7), 1_000)); // same instant
+    assert!(c.robot_active_at(RobotId::new(7), 5_000)); // +4s exactly
+    assert!(c.inactive_robots_at(5_000).is_empty());
+
+    // past 2x -> inactive
+    assert!(!c.robot_active_at(RobotId::new(7), 5_001)); // +4.001s
+    assert_eq!(c.inactive_robots_at(9_999), vec![RobotId::new(7)]);
+
+    // a heartbeat at t=8000 refreshes -> active again
+    c.touch_robot(RobotId::new(7), 8_000);
+    assert!(c.robot_active_at(RobotId::new(7), 9_999));
+
+    // default interval (2s) when 0 is given
+    c.set_alive(RobotId::new(8), 0, 0);
+    assert!(c.robot_active_at(RobotId::new(8), 4_000));
+    assert!(!c.robot_active_at(RobotId::new(8), 4_001));
+
+    // a robot with no alive info is treated as active
+    assert!(c.robot_active_at(RobotId::new(99), 1_000_000));
 }

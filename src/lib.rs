@@ -73,5 +73,5 @@ pub use crate::coordinator::{
 
 /// Crate version (mirrors the C++ `syncbot::version()`).
 pub const fn version() -> &'static str {
-    "0.0.2"
+    "0.1.0"
 }

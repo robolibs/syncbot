@@ -481,7 +481,7 @@ A complete smoke script in `examples/python_binding/example.py`:
 import syncbot
 
 # version + constants
-print(syncbot.version())                    # "0.0.2"
+print(syncbot.version())                    # "0.1.0"
 print(syncbot.ZONE_POLICY_KINDS)
 print(syncbot.SCHEDULE_DECISION_KINDS)
 

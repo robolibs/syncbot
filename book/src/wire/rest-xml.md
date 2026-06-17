@@ -18,7 +18,7 @@ answers XML when the request sets `Content-Type`/`Accept: application/xml`.
 
 ```toml
 [dependencies]
-syncbot = { version = "0.0.2", features = ["xmlt"] }
+syncbot = { version = "0.1.0", features = ["xmlt"] }
 ```
 
 ```rust
@@ -51,23 +51,24 @@ Reasons: 0 ok · 1 key · 2 already registered · 3 bad id · 4 unsupported key.
 **Heartbeat** — `POST /ares/v1/robots/{id}/heartbeat` (liveness + position; ack only)
 
 ```xml
-<hb><key>1234</key><zone>42</zone></hb>   <!-- or <node>/<edge> -->
+<hb><key>1234</key><zone>42</zone></hb>   <!-- or <node>/<edge>; <zone>-1</zone> = unknown -->
 <reply><decision>1</decision><reason>0</reason></reply>
 ```
-Reasons: 0 ok · 1 key · 2 not registered.
+Reasons: 0 ok · 1 key · 2 not registered. `zone = -1` means the robot holds no
+zone / its location is unknown.
 
 **Claim** — `POST /ares/v1/claims/{zone,node,edge}` (type in path; repeat `<id>`
-for an atomic multi-resource claim). Optional `<AccessMode>` (1 = exclusive
-default; 0 = unspecified; 2+ reserved → rejected) and `<LeaseTime>` (minutes;
+for an atomic multi-resource claim). Optional `<access_mode>` (1 = exclusive
+default; 0 = unspecified; 2+ reserved → rejected) and `<lease_time>` (seconds;
 0 = unlimited).
 
 ```xml
 <claim><key>1234</key><robot>7</robot><id>42</id><id>43</id>
-       <AccessMode>1</AccessMode><LeaseTime>30</LeaseTime></claim>
+       <access_mode>1</access_mode><lease_time>30</lease_time></claim>
 <reply><decision>0</decision><reason>2</reason><blocked>43</blocked></reply>
 ```
 Reasons: 0 granted · 1 key · 2 conflict · 3 capacity · 4 unknown · 5 bad request
-(no id / unsupported AccessMode).
+(no id / unsupported access_mode).
 On denial `<blocked>` names the offending id.
 
 **Release** — `POST /ares/v1/leases/release/{zone,node,edge}`
