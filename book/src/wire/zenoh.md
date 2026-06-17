@@ -13,7 +13,7 @@ natively, which fits on-vehicle clients better than HTTP.
 
 ```toml
 [dependencies]
-syncbot = { version = "0.0.2", features = ["robo"] }
+syncbot = { version = "0.1.0", features = ["robo"] }
 ```
 
 ```rust

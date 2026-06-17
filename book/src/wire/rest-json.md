@@ -12,7 +12,7 @@ for dashboards, tooling, integration tests, and any non-robot client.
 
 ```toml
 [dependencies]
-syncbot = { version = "0.0.2", features = ["rest"] }
+syncbot = { version = "0.1.0", features = ["rest"] }
 ```
 
 ```rust

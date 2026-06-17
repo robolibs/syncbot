@@ -149,7 +149,9 @@ async fn register_robot(
     };
     respond(
         format,
-        Ok(crate::wire::flat_register(&state, &req.robot, &req.key)),
+        Ok(crate::wire::flat_register(
+            &state, &req.robot, &req.key, req.alive,
+        )),
     )
 }
 

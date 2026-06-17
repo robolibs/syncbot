@@ -742,7 +742,14 @@ fn key_ok(coord: &Coordinator, robot_id: RobotId, key_raw: &str) -> bool {
 }
 
 /// Flat registration: bind a key to a robot identified only by its id.
-pub fn flat_register(state: &ServeState, robot_raw: &str, key_raw: &str) -> FlatReply {
+/// `alive_secs` is the heartbeat interval the robot promises (default 2s); the
+/// server marks the robot inactive after `2 ×` that without a heartbeat.
+pub fn flat_register(
+    state: &ServeState,
+    robot_raw: &str,
+    key_raw: &str,
+    alive_secs: Option<u64>,
+) -> FlatReply {
     let mut coord = match write_coord(state) {
         Ok(coord) => coord,
         Err(_) => return FlatReply::deny(reason::MISMATCHED_KEY),
@@ -759,6 +766,8 @@ pub fn flat_register(state: &ServeState, robot_raw: &str, key_raw: &str) -> Flat
         None => return FlatReply::deny(reason::register::BAD_ID),
     };
     if coord.register_with_key(robot_id, key) {
+        let interval = alive_secs.unwrap_or(Coordinator::DEFAULT_ALIVE_SECS);
+        coord.set_alive(robot_id, interval, now_ms());
         FlatReply::ok()
     } else {
         FlatReply::deny(reason::register::ALREADY_REGISTERED)
@@ -766,13 +775,15 @@ pub fn flat_register(state: &ServeState, robot_raw: &str, key_raw: &str) -> Flat
 }
 
 /// Flat heartbeat: liveness + position. Reply is just an ack (decision/reason).
-/// The server stamps the tick. Zone-granular progress is deferred; node/edge
-/// progress updates as before.
+/// The server stamps the tick. `zone` is the coarse position: a non-negative
+/// value is a zone id; `-1` (or any negative) means "unknown / not in any
+/// claimed zone" — still a valid heartbeat, just no known location. Node/edge
+/// progress updates as before (zone-granular progress is deferred).
 pub fn flat_heartbeat(
     state: &ServeState,
     robot_raw: &str,
     key_raw: &str,
-    _zone: Option<u64>,
+    zone: Option<i64>,
     node: Option<u64>,
     edge: Option<u64>,
 ) -> FlatReply {
@@ -790,6 +801,9 @@ pub fn flat_heartbeat(
     if !key_ok(&coord, robot_id, key_raw) {
         return FlatReply::deny(reason::MISMATCHED_KEY);
     }
+    // A negative zone is the "unknown location" sentinel; a non-negative one is
+    // a zone id (informational for now — progress advances from node/edge).
+    let _known_zone = zone.filter(|&z| z >= 0).map(|z| z as u64);
     let tick = coord
         .find_robot_state(robot_id)
         .map_or(1, |s| s.updated_at_tick + 1);
@@ -801,6 +815,7 @@ pub fn flat_heartbeat(
         None => (None, None),
     };
     coord.update_robot_progress(robot_id, node_uuid, edge_uuid, tick);
+    coord.touch_robot(robot_id, now_ms());
     FlatReply::ok()
 }
 
@@ -808,7 +823,7 @@ pub fn flat_heartbeat(
 /// Atomic: all-or-nothing. On denial, `blocked` names the offending id.
 ///
 /// `access_mode`: `None`/0/1 → Exclusive; 2+ is reserved for future modes and
-/// rejected. `lease_minutes`: `None`/0 → unlimited; X → the claim window ends
+/// rejected. `lease_seconds`: `None`/0 → unlimited; X → the claim window ends
 /// X units out (currently the system's tick unit; wall-clock expiry needs a
 /// scheduler — see PLAN.md).
 pub fn flat_claim(
@@ -818,7 +833,7 @@ pub fn flat_claim(
     robot_raw: &str,
     ids: &[u64],
     access_mode: Option<u8>,
-    lease_minutes: Option<u64>,
+    lease_seconds: Option<u64>,
 ) -> FlatReply {
     let mut coord = match write_coord(state) {
         Ok(coord) => coord,
@@ -828,11 +843,11 @@ pub fn flat_claim(
         0 | 1 => ClaimAccessMode::Exclusive,
         _ => return FlatReply::deny(reason::claim::BAD_REQUEST), // 2+ reserved
     };
-    let window = match lease_minutes.unwrap_or(0) {
+    let window = match lease_seconds.unwrap_or(0) {
         0 => ClaimWindow::default(),
-        minutes => ClaimWindow {
+        seconds => ClaimWindow {
             start_tick: None,
-            end_tick: Some(minutes),
+            end_tick: Some(seconds),
         },
     };
     let robot_id = match coord.resolve_robot_id(robot_raw) {
@@ -977,6 +992,14 @@ pub(crate) fn default_key() -> String {
     DEFAULT_KEY.to_string()
 }
 
+/// Wall-clock now as epoch milliseconds, for heartbeat-liveness tracking.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Flat registration request: robot id + optional key (defaults to [`DEFAULT_KEY`]).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FlatRegister {
@@ -984,6 +1007,10 @@ pub struct FlatRegister {
     pub robot: String,
     #[serde(default = "default_key", deserialize_with = "de_scalar_string")]
     pub key: String,
+    /// Optional heartbeat interval in seconds the robot promises to keep. The
+    /// server marks the robot inactive after `2 ×` this. Absent → default (2s).
+    #[serde(default, alias = "Alive")]
+    pub alive: Option<u64>,
 }
 
 /// Flat heartbeat request: key + one of zone / node / edge.
@@ -991,8 +1018,10 @@ pub struct FlatRegister {
 pub struct FlatHeartbeat {
     #[serde(default = "default_key", deserialize_with = "de_scalar_string")]
     pub key: String,
+    /// Coarse position. A non-negative value is a zone id; `-1` (or any
+    /// negative) means "unknown / not in any claimed zone".
     #[serde(default)]
-    pub zone: Option<u64>,
+    pub zone: Option<i64>,
     #[serde(default)]
     pub node: Option<u64>,
     #[serde(default)]
@@ -1014,20 +1043,10 @@ pub struct FlatClaim {
     pub id: Vec<u64>,
     /// Optional access mode: 0 = undef (→ default), 1 = exclusive, 2+ = reserved
     /// for future modes (rejected for now). Absent → exclusive.
-    #[serde(
-        default,
-        rename = "AccessMode",
-        alias = "access_mode",
-        alias = "accessmode"
-    )]
+    #[serde(default, alias = "AccessMode", alias = "accessmode")]
     pub access_mode: Option<u8>,
-    /// Optional lease time in minutes: 0 (or absent) = unlimited, X = X minutes.
-    #[serde(
-        default,
-        rename = "LeaseTime",
-        alias = "lease_time",
-        alias = "leasetime"
-    )]
+    /// Optional lease time in seconds: 0 (or absent) = unlimited, X = X seconds.
+    #[serde(default, alias = "LeaseTime", alias = "leasetime")]
     pub lease_time: Option<u64>,
 }
 

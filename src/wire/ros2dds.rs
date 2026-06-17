@@ -129,7 +129,9 @@ pub async fn serve_ares_json_services(
             state.clone(),
             |state, req| {
                 let r: crate::wire::FlatRegister = from_json(&req)?;
-                to_json(crate::wire::flat_register(&state, &r.robot, &r.key))
+                to_json(crate::wire::flat_register(
+                    &state, &r.robot, &r.key, r.alive,
+                ))
             },
         )
         .await?,

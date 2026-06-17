@@ -200,7 +200,7 @@ fn flat_register_key_optional_xml() {
 #[test]
 fn flat_claim_access_mode_and_lease_xml() {
     let req: FlatClaim = quick_xml::de::from_str(
-        "<m><robot>7</robot><id>42</id><AccessMode>1</AccessMode><LeaseTime>30</LeaseTime></m>",
+        "<m><robot>7</robot><id>42</id><access_mode>1</access_mode><lease_time>30</lease_time></m>",
     )
     .expect("de");
     assert_eq!(req.key, "0"); // omitted -> default
@@ -208,4 +208,22 @@ fn flat_claim_access_mode_and_lease_xml() {
     assert_eq!(req.id, vec![42]);
     assert_eq!(req.access_mode, Some(1));
     assert_eq!(req.lease_time, Some(30));
+}
+
+#[test]
+fn flat_heartbeat_accepts_zone_minus_one_xml() {
+    let req: FlatHeartbeat =
+        quick_xml::de::from_str("<m><key>1234</key><zone>-1</zone></m>").expect("de");
+    assert_eq!(req.zone, Some(-1));
+}
+
+#[test]
+fn flat_register_alive_xml() {
+    let req: FlatRegister =
+        quick_xml::de::from_str("<m><robot>7</robot><key>1234</key><alive>5</alive></m>")
+            .expect("de");
+    assert_eq!(req.alive, Some(5));
+    // absent -> None (server applies the 2s default)
+    let req: FlatRegister = quick_xml::de::from_str("<m><robot>7</robot></m>").expect("de");
+    assert_eq!(req.alive, None);
 }

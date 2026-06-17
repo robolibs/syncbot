@@ -127,7 +127,9 @@ async fn register_robot(
     State(state): State<ServeState>,
     Xml(req): Xml<crate::wire::FlatRegister>,
 ) -> Xml<crate::wire::FlatReply> {
-    Xml(crate::wire::flat_register(&state, &req.robot, &req.key))
+    Xml(crate::wire::flat_register(
+        &state, &req.robot, &req.key, req.alive,
+    ))
 }
 
 fn resolve(state: &ServeState, raw: &str) -> Result<RobotId, (StatusCode, Xml<ApiError>)> {

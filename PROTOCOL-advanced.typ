@@ -122,29 +122,34 @@ carry the same fields (see §5).
 
 == Register — `POST /ares/v1/robots`
 
+Optional `<alive>` = heartbeat interval in seconds (default 2); the server marks
+the robot inactive after `2×` that without a heartbeat.
+
 ```xml
-<reg><robot>7</robot><key>1234</key></reg>     <!-- key optional; robot int or UUID -->
+<reg><robot>7</robot><key>1234</key><alive>2</alive></reg>  <!-- key/alive optional; robot int or UUID -->
 <reply><decision>1</decision><reason>0</reason></reply>
 ```
 
 == Heartbeat — `POST /ares/v1/robots/{id}/heartbeat`
 
-Liveness + position (`zone`/`node`/`edge`); the server stamps the tick.
+Liveness + position (`zone`/`node`/`edge`); the server stamps the tick. A
+non-negative `zone` is a zone id; `zone = -1` means "unknown / not in any
+claimed zone".
 
 ```xml
-<hb><key>1234</key><zone>42</zone></hb>
+<hb><key>1234</key><zone>42</zone></hb>     <!-- or <zone>-1</zone> if unknown -->
 <reply><decision>1</decision><reason>0</reason></reply>
 ```
 
 == Claim — `POST /ares/v1/claims/{zone|node|edge}`
 
 Repeat `<id>` to claim several atomically (all-or-nothing). Optional
-`<AccessMode>` (1 = exclusive default; 0 = unspecified; 2+ reserved → rejected)
-and `<LeaseTime>` (minutes; 0 = unlimited).
+`<access_mode>` (1 = exclusive default; 0 = unspecified; 2+ reserved → rejected)
+and `<lease_time>` (seconds; 0 = unlimited).
 
 ```xml
 <claim><key>1234</key><robot>7</robot><id>42</id><id>43</id>
-       <AccessMode>1</AccessMode><LeaseTime>30</LeaseTime></claim>
+       <access_mode>1</access_mode><lease_time>30</lease_time></claim>
 <reply><decision>0</decision><reason>2</reason><blocked>43</blocked></reply>
 ```
 
@@ -368,7 +373,7 @@ ARES replies with a CDR-encoded `ares_interfaces/srv/Json_Response`:
   table.header([Call], [Reasons (`≥2`)]),
   [register], [2 already registered · 3 bad id (not int/UUID) · 4 unsupported key scheme],
   [heartbeat], [2 not registered],
-  [claim], [2 conflict · 3 capacity exceeded · 4 unknown resource · 5 bad request (no id / unsupported `AccessMode`)],
+  [claim], [2 conflict · 3 capacity exceeded · 4 unknown resource · 5 bad request (no id / unsupported `access_mode`)],
   [release], [2 no such lease · 3 unknown / bad],
 )
 
@@ -380,9 +385,9 @@ a reason code.
 #tbl(
   columns: (44mm, 1fr),
   table.header([Type], [Fields]),
-  [`FlatRegister`], [`robot`, `key?`],
+  [`FlatRegister`], [`robot`, `key?`, `alive?` (heartbeat interval s, default 2)],
   [`FlatHeartbeat`], [`key?`, one of `zone` / `node` / `edge`],
-  [`FlatClaim`], [`key?`, `robot`, `id[]`, `AccessMode?`, `LeaseTime?`],
+  [`FlatClaim`], [`key?`, `robot`, `id[]`, `access_mode?`, `lease_time?`],
   [`FlatRelease`], [`key?`, `robot`, `id`],
   [`FlatReply`], [`decision` (1/0), `reason` (enum), `blocked?`],
   [`PlanRouteRequest`], [`start_node_id`, `goal_node_id`, `use_penalties`],
