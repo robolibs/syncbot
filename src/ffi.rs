@@ -56,7 +56,8 @@ pub unsafe extern "C" fn sb_last_error() -> *const c_char {
 /// Crate version, as a static NUL-terminated string.
 #[unsafe(no_mangle)]
 pub extern "C" fn sb_version() -> *const c_char {
-    static VERSION: &[u8] = b"0.1.0\0";
+    // NUL-terminated, read from Cargo.toml at compile time.
+    const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
     VERSION.as_ptr() as *const c_char
 }
 
@@ -935,7 +936,7 @@ mod tests {
     fn version_is_string() {
         let p = sb_version();
         let s = unsafe { CStr::from_ptr(p) }.to_str().unwrap();
-        assert_eq!(s, "0.1.0");
+        assert_eq!(s, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
