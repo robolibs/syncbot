@@ -11,25 +11,25 @@ In-process — no network. Pass dicts, get dicts.
 
 ```sh
 pip install maturin
-cd timenav
+cd syncbot
 maturin develop --features python-extension
-python -c "import timenav; print(timenav.version())"
+python -c "import syncbot; print(syncbot.version())"
 ```
 
 ## Example
 
 ```python
-import timenav
+import syncbot
 
 # Policy parsing
-policy = timenav.parse_zone_policy({
+policy = syncbot.parse_zone_policy({
     "traffic.policy": "exclusive",
     "traffic.capacity": "2",
 })
 assert policy["kind"] == "ExclusiveAccess"
 
 # ClaimManager
-mgr = timenav.ClaimManager()
+mgr = syncbot.ClaimManager()
 req = {
     "id": 1, "robot_id": 1, "mission_id": 0,
     "access_mode": "Exclusive", "priority": 0,
@@ -41,12 +41,12 @@ mgr.add_request(req)
 print(mgr.evaluate_request(req)["decision"])     # "Grant"
 
 # Coordinator + workspace
-coord = timenav.Coordinator()
+coord = syncbot.Coordinator()
 coord.register_robot({"robot_id": 7})
 
-ws  = timenav.Workspace.load("/path/to/workspace_dir")
-idx = timenav.WorkspaceIndex(ws)
-result = timenav.plan_route(idx, start_uuid, goal_uuid, use_penalties=True)
+ws  = syncbot.Workspace.load("/path/to/workspace_dir")
+idx = syncbot.WorkspaceIndex(ws)
+result = syncbot.plan_route(idx, start_uuid, goal_uuid, use_penalties=True)
 ```
 
 ## Class surface
@@ -64,7 +64,7 @@ Free functions: `plan_route`, `arbitrate_right_of_way`, `parse_zone_policy`,
 
 ## Python vs the wire transports
 
-This binding is for **embedding** timenav in a Python process. If you instead want
-to talk to a *running* timenav server from Python, use the
+This binding is for **embedding** syncbot in a Python process. If you instead want
+to talk to a *running* syncbot server from Python, use the
 [REST / JSON](../wire/rest-json.md) transport over `urllib`/`requests` — see
 `scripts/rest_demo.py` for a dependency-free two-robot simulation.

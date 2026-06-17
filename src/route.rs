@@ -1,6 +1,6 @@
 //! Route planning over a `WorkspaceIndex`.
 //!
-//! Port of `include/timenav/route.hpp`. Three Dijkstra variants share a
+//! Port of `include/syncbot/route.hpp`. Three Dijkstra variants share a
 //! single inner engine — neighbour iteration is wrapped in
 //! `GraphTraversalAdapter`, edge filtering and per-edge extra cost are
 //! supplied as closures.
@@ -20,6 +20,7 @@ use crate::policy::{
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RouteStep {
     pub node_id: Uuid,
     pub incoming_edge_id: Option<Uuid>,
@@ -28,6 +29,7 @@ pub struct RouteStep {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RoutePlan {
     pub start_node_id: Uuid,
     pub goal_node_id: Uuid,

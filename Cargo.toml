@@ -1,6 +1,6 @@
 [package]
-name = "timenav"
-version = "0.0.2"
+name = "syncbot"
+version = "0.1.0"
 edition = "2024"
 description = "Rust multi-robot navigation, claims, and scheduling library on top of zoneout"
 license = "MIT"
@@ -56,7 +56,3 @@ required-features = ["rest"]
 [[example]]
 name = "serve_workspace"
 required-features = ["rest"]
-
-[[example]]
-name = "ros2dds_list_zones"
-required-features = ["robo"]

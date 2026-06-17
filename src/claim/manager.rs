@@ -1,5 +1,5 @@
 //! `ClaimManager` — request and lease lifecycle plus conflict / capacity
-//! evaluation. Port of `include/timenav/claim_manager.hpp`.
+//! evaluation. Port of `include/syncbot/claim_manager.hpp`.
 
 use std::sync::Arc;
 
@@ -111,6 +111,31 @@ impl ClaimManager {
         let before = self.active_requests.len();
         self.active_requests.retain(|r| r.robot_id != robot_id);
         (before - self.active_requests.len()) as u64
+    }
+
+    /// A claim id not currently used by any active request or lease. Used by
+    /// the flat wire, where the server (not the client) mints claim ids.
+    pub fn next_request_id(&self) -> ClaimId {
+        let max_req = self.active_requests.iter().map(|r| r.id.raw()).max();
+        let max_lease = self.active_leases.iter().map(|l| l.claim_id.raw()).max();
+        ClaimId::new(max_req.max(max_lease).map_or(1, |m| m + 1))
+    }
+
+    /// Release (remove) the first active request held by `robot_id` whose
+    /// targets include `resource_id`. Returns whether one was removed. Used by
+    /// the flat release-by-robot+resource path.
+    pub fn release_request_for_robot_target(
+        &mut self,
+        robot_id: RobotId,
+        resource_id: Uuid,
+    ) -> bool {
+        if let Some(pos) = self.active_requests.iter().position(|r| {
+            r.robot_id == robot_id && r.targets.iter().any(|t| t.resource_id == resource_id)
+        }) {
+            self.active_requests.remove(pos);
+            return true;
+        }
+        false
     }
 
     // -- lease lifecycle --------------------------------------------------
@@ -300,7 +325,7 @@ impl ClaimManager {
                 continue;
             }
             if !self.claims_compatible_for_index(request, active) {
-                let conflicts = conflicting_targets(request, active);
+                let conflicts = self.conflicts_including_cross_level(request, active);
                 return ClaimEvaluation {
                     decision: ClaimDecision::Deny,
                     reason: describe_conflict_reason("active request", &conflicts),
@@ -318,7 +343,7 @@ impl ClaimManager {
                 continue;
             }
             if !self.claims_compatible_for_index_with_lease(request, lease) {
-                let conflicts = conflicting_targets_with_lease(request, lease);
+                let conflicts = self.conflicts_including_cross_level_with_lease(request, lease);
                 return ClaimEvaluation {
                     decision: ClaimDecision::Deny,
                     reason: describe_conflict_reason("granted lease", &conflicts),
@@ -674,6 +699,109 @@ impl ClaimManager {
         self.zone_claims_compatible_with_index(lhs, rhs)
             && self.spatial_claims_compatible_with_index(lhs, rhs, ClaimTargetKind::Node)
             && self.spatial_claims_compatible_with_index(lhs, rhs, ClaimTargetKind::Edge)
+            && self.cross_level_compatible_with_index(lhs, rhs)
+    }
+
+    /// Targets of `request` that conflict with `other`, INCLUDING cross-level
+    /// conflicts (a requested zone whose contained node/edge `other` holds, or a
+    /// requested node/edge that lies inside a zone `other` holds). Returns
+    /// request-side targets so callers can map them back to what was asked for.
+    fn conflicts_including_cross_level(
+        &self,
+        request: &ClaimRequest,
+        other: &ClaimRequest,
+    ) -> Vec<ClaimTarget> {
+        let mut out = conflicting_targets(request, other);
+        if let Some(index) = self.index.as_deref() {
+            for rt in &request.targets {
+                let already = out
+                    .iter()
+                    .any(|t| t.kind == rt.kind && t.resource_id == rt.resource_id);
+                if already {
+                    continue;
+                }
+                if other
+                    .targets
+                    .iter()
+                    .any(|ot| targets_conflict_cross_level(index, rt, ot))
+                {
+                    out.push(*rt);
+                }
+            }
+        }
+        out
+    }
+
+    fn conflicts_including_cross_level_with_lease(
+        &self,
+        request: &ClaimRequest,
+        lease: &Lease,
+    ) -> Vec<ClaimTarget> {
+        let view = lease_as_request_view(lease);
+        self.conflicts_including_cross_level(request, &view)
+    }
+
+    /// Cross-level exclusion (the two-level bridge rule): claiming a zone
+    /// reserves every node/edge inside it, so a zone claim conflicts with a
+    /// node/edge claim that lives within that zone (or any descendant), and
+    /// vice versa. Checked both directions.
+    fn cross_level_compatible_with_index(&self, lhs: &ClaimRequest, rhs: &ClaimRequest) -> bool {
+        let Some(index) = self.index.as_deref() else {
+            return true;
+        };
+        self.zone_vs_spatial_compatible(index, lhs, rhs)
+            && self.zone_vs_spatial_compatible(index, rhs, lhs)
+    }
+
+    /// Whether the zone targets of `zside` are compatible with the node/edge
+    /// targets of `sside` — i.e. no node/edge of `sside` lies inside a zone of
+    /// `zside` in a way that conflicts.
+    fn zone_vs_spatial_compatible(
+        &self,
+        index: &WorkspaceIndex,
+        zside: &ClaimRequest,
+        sside: &ClaimRequest,
+    ) -> bool {
+        for zone_t in zside
+            .targets
+            .iter()
+            .filter(|t| t.kind == ClaimTargetKind::Zone)
+        {
+            for res_t in &sside.targets {
+                let res_zones = match res_t.kind {
+                    ClaimTargetKind::Node => index.zones_of_node(res_t.resource_id),
+                    ClaimTargetKind::Edge => index.zones_of_edge(res_t.resource_id),
+                    ClaimTargetKind::Zone => continue,
+                };
+                // node/edge is inside the zone if one of its containing zones
+                // IS the zone or has the zone as an ancestor.
+                let inside = res_zones.iter().any(|z| {
+                    z.id() == zone_t.resource_id
+                        || index
+                            .ancestor_zones(z.id())
+                            .iter()
+                            .any(|a| a.id() == zone_t.resource_id)
+                });
+                if !inside {
+                    continue;
+                }
+                if !claim_windows_overlap(zside.window, sside.window) {
+                    continue;
+                }
+                // Both shared on a zone with explicit capacity > 1 may coexist.
+                let policy = index
+                    .zone(zone_t.resource_id)
+                    .map(|z| parse_zone_policy(z.properties()))
+                    .unwrap_or_default();
+                let both_shared = zside.access_mode == ClaimAccessMode::Shared
+                    && sside.access_mode == ClaimAccessMode::Shared;
+                if both_shared && policy.capacity > 1 {
+                    continue;
+                }
+                return false;
+            }
+        }
+        true
     }
 
     fn claims_compatible_for_index_with_lease(
@@ -898,9 +1026,27 @@ fn conflicting_targets(lhs: &ClaimRequest, rhs: &ClaimRequest) -> Vec<ClaimTarge
     out
 }
 
-fn conflicting_targets_with_lease(request: &ClaimRequest, lease: &Lease) -> Vec<ClaimTarget> {
-    let view = lease_as_request_view(lease);
-    conflicting_targets(request, &view)
+/// Whether targets `a` and `b` conflict across levels: one is a zone and the
+/// other a node/edge that lies inside that zone (the zone IS, or is an ancestor
+/// of, one of the resource's containing zones).
+fn targets_conflict_cross_level(index: &WorkspaceIndex, a: &ClaimTarget, b: &ClaimTarget) -> bool {
+    let (zone_t, res_t) = match (a.kind, b.kind) {
+        (ClaimTargetKind::Zone, ClaimTargetKind::Node | ClaimTargetKind::Edge) => (a, b),
+        (ClaimTargetKind::Node | ClaimTargetKind::Edge, ClaimTargetKind::Zone) => (b, a),
+        _ => return false,
+    };
+    let res_zones = match res_t.kind {
+        ClaimTargetKind::Node => index.zones_of_node(res_t.resource_id),
+        ClaimTargetKind::Edge => index.zones_of_edge(res_t.resource_id),
+        ClaimTargetKind::Zone => return false,
+    };
+    res_zones.iter().any(|z| {
+        z.id() == zone_t.resource_id
+            || index
+                .ancestor_zones(z.id())
+                .iter()
+                .any(|anc| anc.id() == zone_t.resource_id)
+    })
 }
 
 fn target_kind_name(kind: ClaimTargetKind) -> &'static str {

@@ -1,11 +1,11 @@
 //! Per-robot scheduling, arbitration, and rolling-horizon claim builder.
 //!
-//! Port of `include/timenav/coordinator.hpp`. Free helpers map a `RoutePlan`
+//! Port of `include/syncbot/coordinator.hpp`. Free helpers map a `RoutePlan`
 //! into time-windowed reservations and decide `Proceed | Queue | Replan`.
 //! `Coordinator` ties everything together with a list of `RobotState`s plus
 //! its own `ClaimManager`.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,7 @@ use crate::claim::{
     ClaimWindow, LeaseId,
 };
 use crate::core::ids::{MissionId, RobotId};
+use crate::core::key::Key;
 use crate::index::WorkspaceIndex;
 use crate::policy::{ZonePolicyKind, derive_effective_edge_semantics, parse_zone_policy};
 use crate::robot::{RobotProgressState, RobotState};
@@ -867,7 +868,20 @@ pub struct Coordinator {
     index: Option<Arc<WorkspaceIndex>>,
     claim_manager: ClaimManager,
     robot_states: Vec<RobotState>,
+    /// Auth key bound to each robot at registration. Checked on every later
+    /// call. See `src/core/key.rs` and `PLAN.md`.
+    robot_keys: BTreeMap<RobotId, Key>,
+    /// Maps a registered UUID robot identifier (canonical string) to its
+    /// internal numeric `RobotId`. Integer ids map to themselves and are not
+    /// stored here. See `resolve_or_mint_robot_id`.
+    robot_id_by_uuid: BTreeMap<String, RobotId>,
+    /// Next id minted for a previously-unseen UUID robot. Starts high to avoid
+    /// colliding with client-supplied numeric ids.
+    next_synthetic_robot_id: u64,
 }
+
+/// Base for synthetic ids minted for UUID robots (2^56).
+const SYNTHETIC_ROBOT_ID_BASE: u64 = 1 << 56;
 
 impl Default for Coordinator {
     fn default() -> Self {
@@ -875,6 +889,9 @@ impl Default for Coordinator {
             index: None,
             claim_manager: ClaimManager::new(),
             robot_states: Vec::new(),
+            robot_keys: BTreeMap::new(),
+            robot_id_by_uuid: BTreeMap::new(),
+            next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
         }
     }
 }
@@ -889,6 +906,9 @@ impl Coordinator {
             index: Some(Arc::clone(&index)),
             claim_manager: ClaimManager::with_index(index),
             robot_states: Vec::new(),
+            robot_keys: BTreeMap::new(),
+            robot_id_by_uuid: BTreeMap::new(),
+            next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
         }
     }
 
@@ -924,7 +944,72 @@ impl Coordinator {
 
     pub fn clear(&mut self) {
         self.robot_states.clear();
+        self.robot_keys.clear();
+        self.robot_id_by_uuid.clear();
+        self.next_synthetic_robot_id = SYNTHETIC_ROBOT_ID_BASE;
         self.claim_manager.clear();
+    }
+
+    /// Resolve a raw robot identifier (an integer or a UUID string) to an
+    /// internal [`RobotId`], MINTING a stable id for a previously-unseen UUID.
+    /// Integer ids map to themselves. Returns `None` if `raw` is neither an
+    /// integer nor a UUID. Use this at registration time.
+    pub fn resolve_or_mint_robot_id(&mut self, raw: &str) -> Option<RobotId> {
+        let raw = raw.trim();
+        if let Ok(n) = raw.parse::<u64>() {
+            return Some(RobotId::new(n));
+        }
+        let canon = Uuid::parse_str(raw).ok()?.to_string();
+        if let Some(id) = self.robot_id_by_uuid.get(&canon) {
+            return Some(*id);
+        }
+        let id = RobotId::new(self.next_synthetic_robot_id);
+        self.next_synthetic_robot_id += 1;
+        self.robot_id_by_uuid.insert(canon, id);
+        Some(id)
+    }
+
+    /// Resolve a raw robot identifier to an internal [`RobotId`] WITHOUT
+    /// minting: integer ids map to themselves; a UUID resolves only if it was
+    /// already registered. Use this on every non-registration call.
+    pub fn resolve_robot_id(&self, raw: &str) -> Option<RobotId> {
+        let raw = raw.trim();
+        if let Ok(n) = raw.parse::<u64>() {
+            return Some(RobotId::new(n));
+        }
+        let canon = Uuid::parse_str(raw).ok()?.to_string();
+        self.robot_id_by_uuid.get(&canon).copied()
+    }
+
+    /// Flat registration: bind `key` to a fresh robot identified only by
+    /// `robot_id`. The coordinator owns all other state. Returns `false` if the
+    /// id is already registered (caller maps that to the "already registered"
+    /// reason); the existing robot and its key are left untouched.
+    pub fn register_with_key(&mut self, robot_id: RobotId, key: Key) -> bool {
+        if self.robot_keys.contains_key(&robot_id) || self.find_robot_state(robot_id).is_some() {
+            return false;
+        }
+        let state = RobotState {
+            robot_id,
+            ..RobotState::default()
+        };
+        self.robot_states.push(state);
+        self.robot_keys.insert(robot_id, key);
+        true
+    }
+
+    /// Whether `key` authenticates as `robot_id`'s registered key. Returns
+    /// `false` if the robot is not registered or has no bound key.
+    pub fn validate_key(&self, robot_id: RobotId, key: &Key) -> bool {
+        match self.robot_keys.get(&robot_id) {
+            Some(stored) => stored.matches(key),
+            None => false,
+        }
+    }
+
+    /// Whether a robot with this id is registered.
+    pub fn has_robot(&self, robot_id: RobotId) -> bool {
+        self.robot_keys.contains_key(&robot_id) || self.find_robot_state(robot_id).is_some()
     }
 
     pub fn register_robot(&mut self, state: RobotState) {
@@ -950,6 +1035,8 @@ impl Coordinator {
             self.claim_manager
                 .release_leases_for_robot(robot_id, Some(updated_at_tick));
             self.robot_states.remove(pos);
+            self.robot_keys.remove(&robot_id);
+            self.robot_id_by_uuid.retain(|_, v| *v != robot_id);
             return true;
         }
         false

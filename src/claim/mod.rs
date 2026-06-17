@@ -1,6 +1,6 @@
 //! Claim and lease data types.
 //!
-//! Port of `include/timenav/claim.hpp`. The actual lifecycle and conflict
+//! Port of `include/syncbot/claim.hpp`. The actual lifecycle and conflict
 //! evaluation lives in `manager.rs`.
 
 use serde::{Deserialize, Serialize};

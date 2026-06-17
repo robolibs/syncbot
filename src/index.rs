@@ -1,6 +1,6 @@
 //! Fast lookup layer over a `zoneout::Workspace` plus structural validation.
 //!
-//! Port of `include/timenav/workspace_index.hpp`. Maintains by-UUID maps for
+//! Port of `include/syncbot/workspace_index.hpp`. Maintains by-UUID maps for
 //! zones / nodes / edges, parent/child zone relationships, and a
 //! `nodes_by_zone` index. Resolved zone references walk the tree via
 //! `Workspace::find_zone`, which is O(tree-depth) and fine at this scale.

@@ -4,7 +4,7 @@ HTTP over [axum](https://github.com/tokio-rs/axum), JSON bodies. The default doo
 for dashboards, tooling, integration tests, and any non-robot client.
 
 - **Feature:** `rest`
-- **Module:** `timenav::wire::rest`
+- **Module:** `syncbot::wire::rest`
 - **Prefix:** `/ares/v1`
 - **Content type:** `application/json`
 
@@ -12,13 +12,13 @@ for dashboards, tooling, integration tests, and any non-robot client.
 
 ```toml
 [dependencies]
-timenav = { version = "0.0.1", features = ["rest"] }
+syncbot = { version = "0.0.2", features = ["rest"] }
 ```
 
 ```rust
 use std::sync::Arc;
-use timenav::wire::{ServeState, rest};
-use timenav::{Coordinator, WorkspaceIndex};
+use syncbot::wire::{ServeState, rest};
+use syncbot::{Coordinator, WorkspaceIndex};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,24 +47,51 @@ GET     /ares/v1/fleet/snapshot
 POST    /ares/v1/routes/plan
 
 GET     /ares/v1/robots
-POST    /ares/v1/robots                       register
+POST    /ares/v1/robots                       register (flat: robot + key)
 GET     /ares/v1/robots/{id}
 DELETE  /ares/v1/robots/{id}                   unregister
-POST    /ares/v1/robots/{id}/heartbeat
-POST    /ares/v1/robots/{id}/route             assign route plan
-POST    /ares/v1/robots/{id}/schedule
+POST    /ares/v1/robots/{id}/heartbeat         flat: key + zone/node/edge
+POST    /ares/v1/robots/{id}/route             assign route plan (+ key)
+POST    /ares/v1/robots/{id}/schedule          (+ key)
 
 GET     /ares/v1/claims
-POST    /ares/v1/claims                        submit (evaluate, then store if granted)
-POST    /ares/v1/claims/evaluate               evaluate only (read-only)
+POST    /ares/v1/claims                        submit nested (+ key)
+POST    /ares/v1/claims/{zone,node,edge}       flat claim: key + robot + id(s)
+POST    /ares/v1/claims/evaluate               evaluate only (read-only, open)
 
 GET     /ares/v1/leases
 POST    /ares/v1/leases                        add a lease
-POST    /ares/v1/leases/release                release by body
+POST    /ares/v1/leases/release                release by lease id
+POST    /ares/v1/leases/release/{zone,node,edge}  flat release: key + robot + id
 DELETE  /ares/v1/leases/{id}                   release by path
 ```
 
 `{id}` is the numeric robot/lease id (a `u64`).
+
+## Authentication & the flat protocol
+
+Read-only endpoints (health, snapshot, lists, route planning, claim
+*evaluate*) are open. **State-changing** endpoints require a `key` — an integer
+password or `did:pass=<secret>` — validated against the acting robot.
+
+The four robot flows have a **flat** form for simple controllers: type in the
+path, scalar body, `decision` (1/0) + `reason` (enum) reply. `0` = OK and `1` =
+mismatched key on every flat reply.
+
+```sh
+# register (flat)
+curl -X POST .../ares/v1/robots -d '{"robot":"7","key":"1234"}'
+# {"decision":1,"reason":0}
+
+# claim one or more zones atomically (type in path)
+curl -X POST .../ares/v1/claims/zone -d '{"key":"1234","robot":"7","id":[42,43]}'
+
+# heartbeat (liveness + position; ack only)
+curl -X POST .../ares/v1/robots/7/heartbeat -d '{"key":"1234","zone":42}'
+
+# release
+curl -X POST .../ares/v1/leases/release/zone -d '{"key":"1234","robot":"7","id":42}'
+```
 
 ## Worked example: claim a zone
 
@@ -101,14 +128,10 @@ the `blocking_target`.
 
 ## Minimal-field requests
 
-`RobotState`, `Lease`, and `ClaimRequestWire` all deserialise with serde defaults,
-so a client only sends what it cares about:
-
-```sh
-# register a robot
-curl -X POST .../ares/v1/robots -H 'Content-Type: application/json' \
-     -d '{"robot_id": 1}'
-```
+The nested tier-2 bodies (`ClaimRequestWire`, `Lease`) deserialise with serde
+defaults, so a fine-level client only sends what it cares about (plus the `key`
+on state-changing calls). The flat tier-1 bodies are already minimal — see the
+flat protocol above.
 
 ## Errors
 

@@ -1,7 +1,7 @@
 //! VDA 5050-shaped transport structs and adapter helpers.
 //!
-//! Port of `include/timenav/vda/*.hpp`. These types are intentionally
-//! partial — compatibility helpers for `timenav`'s internal model, not a
+//! Port of `include/syncbot/vda/*.hpp`. These types are intentionally
+//! partial — compatibility helpers for `syncbot`'s internal model, not a
 //! full schema clone.
 
 pub mod adapter;

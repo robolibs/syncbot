@@ -3,7 +3,7 @@
 use datapod::{Geo, Point, Polygon};
 use graphix::vertex::EdgeType;
 use std::collections::BTreeMap as OMap;
-use timenav::{RobotProgressState, RobotState, WorkspaceIndex, plan_route, vda};
+use syncbot::{RobotProgressState, RobotState, WorkspaceIndex, plan_route, vda};
 use zoneout::{NodeData, Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {

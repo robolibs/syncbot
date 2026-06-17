@@ -1,5 +1,5 @@
 [book]
-title = "timenav"
+title = "syncbot"
 description = "Multi-robot navigation, claims, and scheduling — and the wire transports that expose it."
 authors = ["Trim Bresilla"]
 language = "en"

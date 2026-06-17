@@ -4,7 +4,7 @@
 use datapod::{Geo, Point, Polygon};
 use graphix::vertex::EdgeType;
 use std::collections::BTreeMap as OMap;
-use timenav::{
+use syncbot::{
     RouteCostModel, RouteFailureKind, WorkspaceIndex, accumulate_route_cost,
     diagnose_route_failure, plan_route, shortest_path_search, shortest_path_search_with_blocking,
     validate_route_plan_shape,

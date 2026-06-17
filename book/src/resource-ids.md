@@ -2,7 +2,7 @@
 
 Every workspace resource has a **UUID** — its canonical identity. But many
 integrators (PLCs, legacy controllers) address resources by small **integers**.
-timenav accepts both, on every transport, anywhere a `resource_id` appears.
+syncbot accepts both, on every transport, anywhere a `resource_id` appears.
 
 ## The numeric alias
 

@@ -4,7 +4,7 @@ use std::collections::BTreeMap as OMap;
 
 use datapod::{Geo, Point, Polygon};
 use graphix::vertex::EdgeType;
-use timenav::{WorkspaceIndex, plan_route};
+use syncbot::{WorkspaceIndex, plan_route};
 use zoneout::{NodeData, Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {

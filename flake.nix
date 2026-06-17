@@ -89,6 +89,7 @@
             pkgs.rust-cbindgen
             pkgs.trunk
             pkgs.maturin
+            pkgs.typst
             (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli pip ]))
 
             nixGLAlias

@@ -9,7 +9,7 @@ endif
 TOP_DIR := $(CURDIR)
 CARGO := cargo
 EXAMPLE ?= serve_workspace
-RUN_FEATURES ?= rest robo
+RUN_FEATURES ?= rest robo xmlt
 RUN_ARGS ?= examples/fixed
 RUN_FEATURE_ARGS := $(if $(strip $(RUN_FEATURES)),--features "$(RUN_FEATURES)",)
 

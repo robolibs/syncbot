@@ -1,6 +1,6 @@
 //! Zone policy and edge traffic semantics.
 //!
-//! Port of `include/timenav/zone_policy.hpp`. Parses, validates, merges, and
+//! Port of `include/syncbot/zone_policy.hpp`. Parses, validates, merges, and
 //! derives traffic-typed views over the `traffic.*` string properties on
 //! zones and edges.
 

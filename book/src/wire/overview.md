@@ -1,7 +1,7 @@
 # Wire transports — overview
 
 A transport is a thin adapter: parse a request, resolve resource IDs, call the
-core, serialise the result. All transports live under `timenav::wire` and share
+core, serialise the result. All transports live under `syncbot::wire` and share
 one piece of state.
 
 ## Shared state: `ServeState`
@@ -10,7 +10,7 @@ Every adapter is constructed from a `ServeState`, which wraps an
 `Arc<RwLock<Coordinator>>`:
 
 ```rust
-use timenav::wire::ServeState;
+use syncbot::wire::ServeState;
 let state = ServeState::new(coordinator);          // owns it
 let state = ServeState::shared(arc_rwlock_coord);  // shares an existing one
 ```

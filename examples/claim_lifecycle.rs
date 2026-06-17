@@ -1,7 +1,7 @@
 //! Demonstrate request → grant → release on an exclusive zone.
 
 use datapod::{Geo, Point, Polygon};
-use timenav::{
+use syncbot::{
     ClaimAccessMode, ClaimDecision, ClaimId, ClaimManager, ClaimRequest, ClaimTarget,
     ClaimTargetKind, Lease, LeaseId, RobotId, WorkspaceIndex,
 };

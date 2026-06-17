@@ -1,7 +1,7 @@
 //! ClaimManager integration tests — port of `test/claim_module_test.cpp`.
 
 use datapod::{Geo, Point, Polygon};
-use timenav::{
+use syncbot::{
     ClaimAccessMode, ClaimDecision, ClaimId, ClaimManager, ClaimRequest, ClaimTarget,
     ClaimTargetKind, ClaimWindow, Lease, LeaseId, MissionId, RobotId, WorkspaceIndex,
 };

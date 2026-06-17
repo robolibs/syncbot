@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two-robot zone-claim simulation against the timenav REST adapter.
+"""Two-robot zone-claim simulation against the syncbot REST adapter.
 
 The companion Rust server (`examples/rest_server.rs`) boots a workspace
 with three exclusive zones (numeric IDs 100/101/102). This script drives
@@ -168,12 +168,12 @@ def main():
         if status != 200:
             raise urllib.error.URLError(f"health returned {status}")
     except (urllib.error.URLError, ConnectionRefusedError):
-        print(f"could not reach timenav server at {BASE}")
+        print(f"could not reach syncbot server at {BASE}")
         print("start it first:")
         print("    cargo run --example rest_server --features rest")
         sys.exit(1)
 
-    print(f"connected to timenav at {BASE}")
+    print(f"connected to syncbot at {BASE}")
     print("registering robots...")
     register(1, "robot 1")
     register(2, "robot 2")

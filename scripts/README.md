@@ -1,6 +1,6 @@
 # scripts
 
-External-client demos that hit timenav over the network — no FFI,
+External-client demos that hit syncbot over the network — no FFI,
 no PyO3.
 
 ## rest_demo.py
@@ -33,7 +33,7 @@ No `pip install` needed.
 ### Expected output
 
 ```
-connected to timenav at http://127.0.0.1:8080/ares/v1
+connected to syncbot at http://127.0.0.1:8080/ares/v1
 registering robots...
   registered robot 1 (robot_id=1)  HTTP 200
   registered robot 2 (robot_id=2)  HTTP 200

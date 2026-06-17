@@ -1,6 +1,6 @@
-# timenav
+# syncbot
 
-`timenav` plans robot routes through a shared workspace, then turns those routes
+`syncbot` plans robot routes through a shared workspace, then turns those routes
 into time-windowed reservations so multiple robots can use the same map without
 colliding. It answers four questions for a fleet:
 
@@ -18,7 +18,7 @@ checks, capacity rules, or arbitration.
 
 ```text
                  ┌───────────────────────────────────────┐
-                 │              timenav core             │
+                 │              syncbot core             │
                  │  route · policy · claims · schedule   │
                  └───────────────────────────────────────┘
                        ▲            ▲            ▲

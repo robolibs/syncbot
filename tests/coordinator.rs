@@ -1,6 +1,6 @@
 //! Coordinator integration tests.
 
-use timenav::{
+use syncbot::{
     ArbitrationContext, ArbitrationDecision, RobotProgressState, RobotState,
     arbitrate_right_of_way, robot_missed_schedule_slot,
 };

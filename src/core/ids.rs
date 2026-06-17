@@ -1,4 +1,4 @@
-//! Strong-typed IDs. Mirrors `include/timenav/ids.hpp` — each id is a u64
+//! Strong-typed IDs. Mirrors `include/syncbot/ids.hpp` — each id is a u64
 //! tagged by name, with `From<u64>` and `raw()` for round-tripping.
 
 use serde::{Deserialize, Serialize};

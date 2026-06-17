@@ -1,7 +1,7 @@
-//! Wire transport adapters for `timenav`.
+//! Wire transport adapters for `syncbot`.
 //!
 //! Each submodule is a thin adapter that translates an external wire
-//! protocol (REST/JSON, REST/XML, Zenoh) into calls on the real timenav
+//! protocol (REST/JSON, REST/XML, Zenoh) into calls on the real syncbot
 //! core (`Coordinator`, `ClaimManager`, `plan_route`) and serialises core
 //! results back to the wire.
 
@@ -16,6 +16,7 @@ use crate::claim::{
 };
 use crate::coordinator::{Coordinator, ScheduleDecision};
 use crate::core::ids::RobotId;
+use crate::core::key::{Key, KeyError};
 use crate::index::{NUMERIC_ID_PROPERTY, ResourceRef, WorkspaceIndex};
 use crate::robot::RobotState;
 use crate::route::{RouteFailure, RoutePlan, plan_route};
@@ -145,6 +146,9 @@ pub struct ScheduleRobotRouteRequest {
     pub start_tick: u64,
     pub ticks_per_cost_unit: f64,
     pub access_mode: ClaimAccessMode,
+    /// Mandatory auth key (state-changing endpoint). See [`require_key`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +156,9 @@ pub struct AssignRouteRequest {
     pub route_plan: RoutePlan,
     pub horizon: u64,
     pub updated_at_tick: u64,
+    /// Mandatory auth key (state-changing endpoint). See [`require_key`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +210,10 @@ pub struct ClaimRequestWire {
     pub requested_at_tick: Option<u64>,
     pub window: ClaimWindow,
     pub targets: Vec<ClaimTargetWire>,
+    /// Mandatory auth key when SUBMITTING (state-changing). Ignored by the
+    /// read-only `evaluate` (dry-run) path. See [`require_key`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl ClaimRequestWire {
@@ -435,6 +446,7 @@ pub fn assign_route(
     request: AssignRouteRequest,
 ) -> ApiResult<RobotState> {
     let mut coord = write_coord(state)?;
+    require_key(&coord, robot_id, &request.key)?;
     if !coord.assign_route_plan(
         robot_id,
         request.route_plan,
@@ -455,6 +467,7 @@ pub fn schedule_robot_route(
     request: ScheduleRobotRouteRequest,
 ) -> ApiResult<ScheduleDecision> {
     let mut coord = write_coord(state)?;
+    require_key(&coord, robot_id, &request.key)?;
     if coord.find_robot_state(robot_id).is_none() {
         return Err(ApiError::new(format!("robot {robot_id} is not registered")));
     }
@@ -520,8 +533,33 @@ pub fn evaluate_claim(state: &ServeState, request: ClaimRequestWire) -> ApiResul
     Ok(coord.claim_manager().evaluate_request(&resolved))
 }
 
+/// Resolve a raw robot identifier (integer or UUID string) from a per-robot URL
+/// route to its internal [`RobotId`]. Errors if the robot is unknown.
+pub fn resolve_robot(state: &ServeState, raw: &str) -> ApiResult<RobotId> {
+    read_coord(state)?
+        .resolve_robot_id(raw)
+        .ok_or_else(|| ApiError::new(format!("unknown robot id {raw:?}")))
+}
+
+/// Validate the mandatory auth key on a state-changing tier-2 request against
+/// the acting robot. Returns a `mismatched key` error if missing/wrong.
+/// Read-only endpoints (snapshot, lists, plan, evaluate) do NOT call this —
+/// they stay open by design (see `PLAN.md`).
+fn require_key(coord: &Coordinator, robot_id: RobotId, key: &Option<String>) -> ApiResult<()> {
+    let raw = key
+        .as_deref()
+        .ok_or_else(|| ApiError::new("mismatched key: missing key"))?;
+    let parsed = Key::parse(raw).map_err(|_| ApiError::new("mismatched key: bad key"))?;
+    if coord.validate_key(robot_id, &parsed) {
+        Ok(())
+    } else {
+        Err(ApiError::new("mismatched key"))
+    }
+}
+
 pub fn submit_claim(state: &ServeState, request: ClaimRequestWire) -> ApiResult<ClaimEvaluation> {
     let mut coord = write_coord(state)?;
+    require_key(&coord, request.robot_id, &request.key)?;
     let resolved = {
         let idx = coord
             .index()
@@ -618,4 +656,387 @@ fn numeric_id(properties: &BTreeMap<String, String>) -> Option<u64> {
     properties
         .get(NUMERIC_ID_PROPERTY)
         .and_then(|raw| raw.trim().parse::<u64>().ok())
+}
+
+// ===========================================================================
+// Flat (tier-1) wire — PLC / coarse robots.
+//
+// Transport-neutral. Key on every call, replies are decision + reason (enum).
+// REST/XML/Zenoh adapters call these; the resource TYPE comes from the address
+// (path / key-expr), never the body. See PLAN.md.
+// ===========================================================================
+
+/// Reason codes for the flat replies. `0` = OK and `1` = mismatched key are
+/// reserved with the same meaning on every endpoint; endpoint-specific codes
+/// start at `2`.
+pub mod reason {
+    pub const OK: u8 = 0;
+    pub const MISMATCHED_KEY: u8 = 1;
+
+    pub mod register {
+        pub const ALREADY_REGISTERED: u8 = 2;
+        pub const BAD_ID: u8 = 3;
+        pub const UNSUPPORTED_KEY: u8 = 4;
+    }
+    pub mod heartbeat {
+        pub const NOT_REGISTERED: u8 = 2;
+    }
+    pub mod claim {
+        pub const CONFLICT: u8 = 2;
+        pub const CAPACITY: u8 = 3;
+        pub const UNKNOWN_RESOURCE: u8 = 4;
+        pub const BAD_REQUEST: u8 = 5;
+    }
+    pub mod release {
+        pub const NO_SUCH_LEASE: u8 = 2;
+        pub const UNKNOWN_OR_BAD: u8 = 3;
+    }
+}
+
+/// Flat reply shared by all tier-1 endpoints. `decision` is `1` (ok/grant) or
+/// `0` (deny); `reason` is the per-endpoint enum (see [`reason`]); `blocked`
+/// (claim only) names the offending resource id on denial.
+///
+/// `#[serde(rename = "reply")]` controls the XML root element: quick-xml uses
+/// the type's serde name as the root, so without this the wire would leak the
+/// Rust name `<FlatReply>`. JSON object output is unaffected (no type name).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename = "reply")]
+pub struct FlatReply {
+    pub decision: u8,
+    pub reason: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<u64>,
+}
+
+impl FlatReply {
+    pub fn ok() -> Self {
+        Self {
+            decision: 1,
+            reason: reason::OK,
+            blocked: None,
+        }
+    }
+    pub fn deny(reason: u8) -> Self {
+        Self {
+            decision: 0,
+            reason,
+            blocked: None,
+        }
+    }
+    pub fn deny_blocked(reason: u8, blocked: u64) -> Self {
+        Self {
+            decision: 0,
+            reason,
+            blocked: Some(blocked),
+        }
+    }
+}
+
+/// Whether `key_raw` authenticates as `robot_id`'s bound key.
+fn key_ok(coord: &Coordinator, robot_id: RobotId, key_raw: &str) -> bool {
+    match Key::parse(key_raw) {
+        Ok(k) => coord.validate_key(robot_id, &k),
+        Err(_) => false,
+    }
+}
+
+/// Flat registration: bind a key to a robot identified only by its id.
+pub fn flat_register(state: &ServeState, robot_raw: &str, key_raw: &str) -> FlatReply {
+    let mut coord = match write_coord(state) {
+        Ok(coord) => coord,
+        Err(_) => return FlatReply::deny(reason::MISMATCHED_KEY),
+    };
+    let key = match Key::parse(key_raw) {
+        Ok(k) => k,
+        Err(KeyError::Unsupported(_)) => return FlatReply::deny(reason::register::UNSUPPORTED_KEY),
+        Err(KeyError::Malformed) => return FlatReply::deny(reason::MISMATCHED_KEY),
+    };
+    // Robot id may be an integer or a UUID string; a new UUID mints a stable
+    // internal id.
+    let robot_id = match coord.resolve_or_mint_robot_id(robot_raw) {
+        Some(id) => id,
+        None => return FlatReply::deny(reason::register::BAD_ID),
+    };
+    if coord.register_with_key(robot_id, key) {
+        FlatReply::ok()
+    } else {
+        FlatReply::deny(reason::register::ALREADY_REGISTERED)
+    }
+}
+
+/// Flat heartbeat: liveness + position. Reply is just an ack (decision/reason).
+/// The server stamps the tick. Zone-granular progress is deferred; node/edge
+/// progress updates as before.
+pub fn flat_heartbeat(
+    state: &ServeState,
+    robot_raw: &str,
+    key_raw: &str,
+    _zone: Option<u64>,
+    node: Option<u64>,
+    edge: Option<u64>,
+) -> FlatReply {
+    let mut coord = match write_coord(state) {
+        Ok(coord) => coord,
+        Err(_) => return FlatReply::deny(reason::MISMATCHED_KEY),
+    };
+    let robot_id = match coord.resolve_robot_id(robot_raw) {
+        Some(id) => id,
+        None => return FlatReply::deny(reason::heartbeat::NOT_REGISTERED),
+    };
+    if !coord.has_robot(robot_id) {
+        return FlatReply::deny(reason::heartbeat::NOT_REGISTERED);
+    }
+    if !key_ok(&coord, robot_id, key_raw) {
+        return FlatReply::deny(reason::MISMATCHED_KEY);
+    }
+    let tick = coord
+        .find_robot_state(robot_id)
+        .map_or(1, |s| s.updated_at_tick + 1);
+    let (node_uuid, edge_uuid) = match coord.index_arc() {
+        Some(index) => (
+            node.and_then(|n| ResourceRef::Numeric(n).resolve_node(&index)),
+            edge.and_then(|e| ResourceRef::Numeric(e).resolve_edge(&index)),
+        ),
+        None => (None, None),
+    };
+    coord.update_robot_progress(robot_id, node_uuid, edge_uuid, tick);
+    FlatReply::ok()
+}
+
+/// Flat claim over one or more resources of `kind` (type from the address).
+/// Atomic: all-or-nothing. On denial, `blocked` names the offending id.
+///
+/// `access_mode`: `None`/0/1 → Exclusive; 2+ is reserved for future modes and
+/// rejected. `lease_minutes`: `None`/0 → unlimited; X → the claim window ends
+/// X units out (currently the system's tick unit; wall-clock expiry needs a
+/// scheduler — see PLAN.md).
+pub fn flat_claim(
+    state: &ServeState,
+    kind: ClaimTargetKind,
+    key_raw: &str,
+    robot_raw: &str,
+    ids: &[u64],
+    access_mode: Option<u8>,
+    lease_minutes: Option<u64>,
+) -> FlatReply {
+    let mut coord = match write_coord(state) {
+        Ok(coord) => coord,
+        Err(_) => return FlatReply::deny(reason::MISMATCHED_KEY),
+    };
+    let access = match access_mode.unwrap_or(1) {
+        0 | 1 => ClaimAccessMode::Exclusive,
+        _ => return FlatReply::deny(reason::claim::BAD_REQUEST), // 2+ reserved
+    };
+    let window = match lease_minutes.unwrap_or(0) {
+        0 => ClaimWindow::default(),
+        minutes => ClaimWindow {
+            start_tick: None,
+            end_tick: Some(minutes),
+        },
+    };
+    let robot_id = match coord.resolve_robot_id(robot_raw) {
+        Some(id) => id,
+        None => return FlatReply::deny(reason::MISMATCHED_KEY),
+    };
+    if !key_ok(&coord, robot_id, key_raw) {
+        return FlatReply::deny(reason::MISMATCHED_KEY);
+    }
+    if ids.is_empty() {
+        return FlatReply::deny(reason::claim::BAD_REQUEST);
+    }
+    let Some(index) = coord.index_arc() else {
+        return FlatReply::deny(reason::claim::BAD_REQUEST);
+    };
+    // Resolve every id up front; keep uuid -> original numeric for `blocked`.
+    let mut targets = Vec::with_capacity(ids.len());
+    let mut numeric_by_uuid: BTreeMap<uuid::Uuid, u64> = BTreeMap::new();
+    for &id in ids {
+        let rref = ResourceRef::Numeric(id);
+        let resolved = match kind {
+            ClaimTargetKind::Zone => rref.resolve_zone(&index),
+            ClaimTargetKind::Node => rref.resolve_node(&index),
+            ClaimTargetKind::Edge => rref.resolve_edge(&index),
+        };
+        let Some(resource_id) = resolved else {
+            return FlatReply::deny_blocked(reason::claim::UNKNOWN_RESOURCE, id);
+        };
+        numeric_by_uuid.insert(resource_id, id);
+        targets.push(ClaimTarget { kind, resource_id });
+    }
+    let request = ClaimRequest {
+        id: coord.claim_manager().next_request_id(),
+        robot_id,
+        mission_id: MissionId::default(),
+        access_mode: access,
+        priority: 0,
+        requested_at_tick: None,
+        window,
+        targets,
+    };
+    let evaluation = coord.claim_manager().evaluate_request(&request);
+    if evaluation.decision == ClaimDecision::Grant {
+        coord.claim_manager_mut().add_request(request);
+        return FlatReply::ok();
+    }
+    let blocked = evaluation
+        .blocking_target
+        .and_then(|t| numeric_by_uuid.get(&t.resource_id).copied());
+    let code =
+        if evaluation.conflicting_claim_id.is_some() || evaluation.conflicting_lease_id.is_some() {
+            reason::claim::CONFLICT
+        } else {
+            reason::claim::CAPACITY
+        };
+    match blocked {
+        Some(b) => FlatReply::deny_blocked(code, b),
+        None => FlatReply::deny(code),
+    }
+}
+
+/// Flat release by robot + resource (mirrors the flat claim). Removes the
+/// robot's active claim on that resource.
+pub fn flat_release(
+    state: &ServeState,
+    kind: ClaimTargetKind,
+    key_raw: &str,
+    robot_raw: &str,
+    id: u64,
+) -> FlatReply {
+    let mut coord = match write_coord(state) {
+        Ok(coord) => coord,
+        Err(_) => return FlatReply::deny(reason::MISMATCHED_KEY),
+    };
+    let robot_id = match coord.resolve_robot_id(robot_raw) {
+        Some(id) => id,
+        None => return FlatReply::deny(reason::MISMATCHED_KEY),
+    };
+    if !key_ok(&coord, robot_id, key_raw) {
+        return FlatReply::deny(reason::MISMATCHED_KEY);
+    }
+    let Some(index) = coord.index_arc() else {
+        return FlatReply::deny(reason::release::UNKNOWN_OR_BAD);
+    };
+    let rref = ResourceRef::Numeric(id);
+    let resolved = match kind {
+        ClaimTargetKind::Zone => rref.resolve_zone(&index),
+        ClaimTargetKind::Node => rref.resolve_node(&index),
+        ClaimTargetKind::Edge => rref.resolve_edge(&index),
+    };
+    let Some(resource_id) = resolved else {
+        return FlatReply::deny(reason::release::UNKNOWN_OR_BAD);
+    };
+    if coord
+        .claim_manager_mut()
+        .release_request_for_robot_target(robot_id, resource_id)
+    {
+        FlatReply::ok()
+    } else {
+        FlatReply::deny(reason::release::NO_SUCH_LEASE)
+    }
+}
+
+// --- Shared flat request envelopes (used by REST/XML and Zenoh/ROS) --------
+
+/// Accept a scalar that may arrive as a JSON string or number (XML is always
+/// text); yield it as a `String` for the transport-neutral flat functions.
+pub(crate) fn de_scalar_string<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Visitor (not `#[serde(untagged)]`, which fails under quick-xml). Accepts
+    // a text token (XML leaf body / JSON string) or a JSON number, yielding a
+    // `String` for the transport-neutral flat functions.
+    struct V;
+    impl serde::de::Visitor<'_> for V {
+        type Value = String;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string or integer scalar")
+        }
+        fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<String, E> {
+            Ok(s.trim().to_string())
+        }
+        fn visit_string<E: serde::de::Error>(self, s: String) -> Result<String, E> {
+            Ok(s.trim().to_string())
+        }
+        fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<String, E> {
+            Ok(n.to_string())
+        }
+        fn visit_i64<E: serde::de::Error>(self, n: i64) -> Result<String, E> {
+            Ok(n.to_string())
+        }
+    }
+    d.deserialize_string(V)
+}
+
+/// Default key used when a flat request omits `key`. UNSAFE — every robot that
+/// skips the key shares this password. See `PLAN.md`.
+pub(crate) const DEFAULT_KEY: &str = "0";
+
+pub(crate) fn default_key() -> String {
+    DEFAULT_KEY.to_string()
+}
+
+/// Flat registration request: robot id + optional key (defaults to [`DEFAULT_KEY`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlatRegister {
+    #[serde(deserialize_with = "de_scalar_string")]
+    pub robot: String,
+    #[serde(default = "default_key", deserialize_with = "de_scalar_string")]
+    pub key: String,
+}
+
+/// Flat heartbeat request: key + one of zone / node / edge.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlatHeartbeat {
+    #[serde(default = "default_key", deserialize_with = "de_scalar_string")]
+    pub key: String,
+    #[serde(default)]
+    pub zone: Option<u64>,
+    #[serde(default)]
+    pub node: Option<u64>,
+    #[serde(default)]
+    pub edge: Option<u64>,
+}
+
+/// Flat claim request: key + robot + one or more ids (type from the address).
+/// `id` is a list: JSON sends an array (`"id":[42,43]`, or `[42]` for one);
+/// XML repeats the `<id>` element (`<id>42</id><id>43</id>`, or a single
+/// `<id>42</id>`). Both map to `Vec<u64>` via the format's native sequence
+/// handling.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlatClaim {
+    #[serde(default = "default_key", deserialize_with = "de_scalar_string")]
+    pub key: String,
+    #[serde(deserialize_with = "de_scalar_string")]
+    pub robot: String,
+    #[serde(default)]
+    pub id: Vec<u64>,
+    /// Optional access mode: 0 = undef (→ default), 1 = exclusive, 2+ = reserved
+    /// for future modes (rejected for now). Absent → exclusive.
+    #[serde(
+        default,
+        rename = "AccessMode",
+        alias = "access_mode",
+        alias = "accessmode"
+    )]
+    pub access_mode: Option<u8>,
+    /// Optional lease time in minutes: 0 (or absent) = unlimited, X = X minutes.
+    #[serde(
+        default,
+        rename = "LeaseTime",
+        alias = "lease_time",
+        alias = "leasetime"
+    )]
+    pub lease_time: Option<u64>,
+}
+
+/// Flat release request: key + robot + resource id (type from the address).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlatRelease {
+    #[serde(default = "default_key", deserialize_with = "de_scalar_string")]
+    pub key: String,
+    #[serde(deserialize_with = "de_scalar_string")]
+    pub robot: String,
+    pub id: u64,
 }
