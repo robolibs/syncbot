@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.0] - 2026-06-17
+
+### <!-- 0 -->⛰️  Features
+
+- Rename project
+- Xml symetry wit others
+- Xml symetry wit others
+- All-ros-services
+
 ## [0.0.2] - 2026-06-06
 
 ### <!-- 0 -->⛰️  Features
