@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-06-17
+
+### <!-- 0 -->⛰️  Features
+
+- Dynamically load package version
+
 ## [0.1.0] - 2026-06-17
 
 ### <!-- 0 -->⛰️  Features
