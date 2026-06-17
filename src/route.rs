@@ -1,6 +1,6 @@
 //! Route planning over a `WorkspaceIndex`.
 //!
-//! Port of `include/timenav/route.hpp`. Three Dijkstra variants share a
+//! Port of `include/syncbot/route.hpp`. Three Dijkstra variants share a
 //! single inner engine — neighbour iteration is wrapped in
 //! `GraphTraversalAdapter`, edge filtering and per-edge extra cost are
 //! supplied as closures.

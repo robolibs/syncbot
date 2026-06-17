@@ -1,7 +1,7 @@
 //! Small REST server for the `scripts/rest_demo.py` simulation.
 //!
 //! Boots a workspace with three exclusive zones (numeric IDs 100/101/102)
-//! and serves the timenav REST API on 127.0.0.1:8080. Run with:
+//! and serves the syncbot REST API on 127.0.0.1:8080. Run with:
 //!
 //! ```sh
 //! cargo run --example rest_server --features rest
@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use datapod::{Geo, Point, Polygon};
-use timenav::wire::{ServeState, rest};
-use timenav::{Coordinator, NUMERIC_ID_PROPERTY, WorkspaceIndex};
+use syncbot::wire::{ServeState, rest};
+use syncbot::{Coordinator, NUMERIC_ID_PROPERTY, WorkspaceIndex};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 use uuid::{Uuid, uuid};
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "127.0.0.1:8080";
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    println!("timenav REST demo server");
+    println!("syncbot REST demo server");
     println!("  listening on http://{addr}");
     println!();
     println!("zones (all exclusive):");
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,timenav=debug,tower_http=debug"));
+        .unwrap_or_else(|_| EnvFilter::new("info,syncbot=debug,tower_http=debug"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(true)

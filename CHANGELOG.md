@@ -69,8 +69,8 @@ the sibling Rust [`zoneout`](../zoneout) port.
 - `vda` — partial VDA 5050 transport structs (`Order`, `OrderNode`,
   `OrderEdge`, `State`, `Connection`, `Factsheet`, `InstantAction`,
   `Response`) + `Adapter` mapping `RoutePlan` / `RobotState` to VDA.
-- `ffi` — full C ABI with opaque handles (`TnWorkspace`,
-  `TnWorkspaceIndex`, `TnClaimManager`, `TnCoordinator`) and JSON
+- `ffi` — full C ABI with opaque handles (`SbWorkspace`,
+  `SbWorkspaceIndex`, `SbClaimManager`, `SbCoordinator`) and JSON
   marshaling for complex inputs/outputs. Covers workspace load, route
   planning, claim lifecycle, coordinator scheduling, VDA mapping,
   arbitration, traffic parsing/validation.
@@ -94,7 +94,7 @@ the sibling Rust [`zoneout`](../zoneout) port.
 - 7 integration suites in `tests/`: `index`, `route`, `claim_manager`,
   `coordinator`, `vda`, `ffi` — 31 integration tests.
 - 3 Rust examples: `simple`, `route_planning`, `claim_lifecycle`.
-- C ABI demo: `examples/c_abi/demo.c` (links against `libtimenav.so`).
+- C ABI demo: `examples/c_abi/demo.c` (links against `libsyncbot.so`).
 - Python smoke script: `examples/python_binding/example.py` (built via
   `maturin develop --features python-extension`).
 

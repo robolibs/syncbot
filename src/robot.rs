@@ -1,4 +1,4 @@
-//! Per-robot navigation state. Port of `include/timenav/robot_state.hpp`.
+//! Per-robot navigation state. Port of `include/syncbot/robot_state.hpp`.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

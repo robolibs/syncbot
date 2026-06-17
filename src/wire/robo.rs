@@ -1,4 +1,4 @@
-//! Zenoh robotics adapter for the timenav core.
+//! Zenoh robotics adapter for the syncbot core.
 //!
 //! Enabled with `--features robo`.
 
@@ -7,11 +7,12 @@ use serde::de::DeserializeOwned;
 use tokio::task::JoinHandle;
 use zenoh::query::Query;
 
+use crate::claim::ClaimTargetKind;
 use crate::core::ids::{ClaimId, RobotId};
 use crate::index::ResourceRef;
 use crate::wire::{
-    ApiError, AssignRouteRequest, ClaimRequestWire, HeartbeatRequest, Lease, PlanRouteRequest,
-    ReleaseLeaseRequest, ScheduleRobotRouteRequest, ServeState,
+    ApiError, AssignRouteRequest, ClaimRequestWire, Lease, PlanRouteRequest, ReleaseLeaseRequest,
+    ScheduleRobotRouteRequest, ServeState,
 };
 
 /// Zenoh key-expression prefix used by `PRESENTATION.md`.
@@ -46,7 +47,7 @@ impl Drop for ZenohServeHandle {
     }
 }
 
-/// Install timenav queryables on an existing Zenoh session.
+/// Install syncbot queryables on an existing Zenoh session.
 pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result<ZenohServeHandle> {
     let mut tasks = Vec::new();
 
@@ -123,8 +124,8 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
             "robots/register",
             state.clone(),
             |state, payload| {
-                let robot: crate::robot::RobotState = decode_required(payload)?;
-                crate::wire::register_robot(&state, robot)
+                let req: crate::wire::FlatRegister = decode_required(payload)?;
+                Ok(crate::wire::flat_register(&state, &req.robot, &req.key))
             },
         )
         .await?,
@@ -164,8 +165,15 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
             "robots/heartbeat",
             state.clone(),
             |state, payload| {
-                let request: RobotHeartbeatEnvelope = decode_required(payload)?;
-                crate::wire::heartbeat(&state, request.robot_id, request.heartbeat)
+                let req: FlatHeartbeatEnvelope = decode_required(payload)?;
+                Ok(crate::wire::flat_heartbeat(
+                    &state,
+                    &req.robot,
+                    &req.hb.key,
+                    req.hb.zone,
+                    req.hb.node,
+                    req.hb.edge,
+                ))
             },
         )
         .await?,
@@ -262,12 +270,56 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
     );
 
     tasks.push(
-        spawn_queryable(session, "leases/release", state, |state, payload| {
-            let request: ReleaseLeaseRequest = decode_required(payload)?;
-            crate::wire::release_lease(&state, request)
-        })
+        spawn_queryable(
+            session,
+            "leases/release",
+            state.clone(),
+            |state, payload| {
+                let request: ReleaseLeaseRequest = decode_required(payload)?;
+                crate::wire::release_lease(&state, request)
+            },
+        )
         .await?,
     );
+
+    // Flat (tier-1) services — type from the key-expression, flat JSON body,
+    // decision/reason reply. Mirror the REST `/claims/{kind}` etc.
+    for (path, kind) in [
+        ("claims/zone", ClaimTargetKind::Zone),
+        ("claims/node", ClaimTargetKind::Node),
+        ("claims/edge", ClaimTargetKind::Edge),
+    ] {
+        tasks.push(
+            spawn_queryable(session, path, state.clone(), move |state, payload| {
+                let req: crate::wire::FlatClaim = decode_required(payload)?;
+                Ok(crate::wire::flat_claim(
+                    &state,
+                    kind,
+                    &req.key,
+                    &req.robot,
+                    &req.id,
+                    req.access_mode,
+                    req.lease_time,
+                ))
+            })
+            .await?,
+        );
+    }
+    for (path, kind) in [
+        ("leases/release/zone", ClaimTargetKind::Zone),
+        ("leases/release/node", ClaimTargetKind::Node),
+        ("leases/release/edge", ClaimTargetKind::Edge),
+    ] {
+        tasks.push(
+            spawn_queryable(session, path, state.clone(), move |state, payload| {
+                let req: crate::wire::FlatRelease = decode_required(payload)?;
+                Ok(crate::wire::flat_release(
+                    &state, kind, &req.key, &req.robot, req.id,
+                ))
+            })
+            .await?,
+        );
+    }
 
     Ok(ZenohServeHandle { tasks })
 }
@@ -338,10 +390,13 @@ fn encode<T: Serialize>(value: &T) -> String {
         .unwrap_or_else(|_| "{\"message\":\"internal serialization error\"}".into())
 }
 
+/// Flat heartbeat over Zenoh: robot id lives in the body (no URL here).
 #[derive(serde::Deserialize)]
-struct RobotHeartbeatEnvelope {
-    robot_id: RobotId,
-    heartbeat: HeartbeatRequest,
+struct FlatHeartbeatEnvelope {
+    #[serde(deserialize_with = "crate::wire::de_scalar_string")]
+    robot: String,
+    #[serde(flatten)]
+    hb: crate::wire::FlatHeartbeat,
 }
 
 #[derive(serde::Deserialize)]

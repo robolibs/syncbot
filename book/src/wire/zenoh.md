@@ -5,7 +5,7 @@ wireless / edge deployments. Zenoh handles discovery, reconnect, and multicast
 natively, which fits on-vehicle clients better than HTTP.
 
 - **Feature:** `robo` (robotics transport)
-- **Module:** `timenav::wire::robo`
+- **Module:** `syncbot::wire::robo`
 - **Key prefix:** `ares/v1`
 - **Payload:** JSON
 
@@ -13,11 +13,11 @@ natively, which fits on-vehicle clients better than HTTP.
 
 ```toml
 [dependencies]
-timenav = { version = "0.0.1", features = ["robo"] }
+syncbot = { version = "0.0.2", features = ["robo"] }
 ```
 
 ```rust
-use timenav::wire::{ServeState, robo};
+use syncbot::wire::{ServeState, robo};
 
 // `session` is an open `zenoh::Session` you own.
 let handle = robo::serve(&session, state).await?;   // installs queryables
@@ -54,31 +54,39 @@ ares/v1/leases/release
 A queryable that needs a body expects a JSON payload; query it with the payload
 attached. The reply is JSON (or a Zenoh error reply carrying `ApiError`).
 
-## Envelopes for per-robot calls
+## Flat (tier-1) services
 
-Where the REST path puts the robot id in the URL (`/robots/{id}/heartbeat`), the
-Zenoh key is flat (`ares/v1/robots/heartbeat`), so the robot id travels **in the
-body** via a small envelope:
+The four robot flows are flat and key-authenticated, same contract as REST —
+the resource *type* is a key-expression segment, the robot id travels in the
+body (no URL here), and the reply is `decision`/`reason`:
+
+```text
+query  ares/v1/robots/register     {"robot":"7","key":"1234"}     -> {"decision":1,"reason":0}
+query  ares/v1/robots/heartbeat    {"robot":"7","key":"1234","node":"139"}
+query  ares/v1/claims/zone         {"key":"1234","robot":"7","id":[42,43]}
+query  ares/v1/leases/release/zone {"key":"1234","robot":"7","id":42}
+```
+
+## Envelopes for fine-level per-robot calls
+
+The tier-2 per-robot endpoints (`assign_route`, `schedule`) put the robot id
+**in the body** via a small envelope, and carry the `key` on the inner
+request (they are state-changing):
 
 ```json
 {
   "robot_id": 1,
-  "heartbeat": {
-    "current_node_id": "139",
-    "current_edge_id": null,
-    "updated_at_tick": 42
-  }
+  "assignment": { "route_plan": { /* ... */ }, "horizon": 100, "updated_at_tick": 10, "key": "1234" }
 }
 ```
 
-The envelopes are `RobotHeartbeatEnvelope`, `RobotAssignRouteEnvelope`, and
-`RobotScheduleEnvelope`, wrapping the same `HeartbeatRequest` /
-`AssignRouteRequest` / `ScheduleRobotRouteRequest` the REST handlers use.
+The envelopes are `RobotAssignRouteEnvelope` and `RobotScheduleEnvelope`,
+wrapping `AssignRouteRequest` / `ScheduleRobotRouteRequest`.
 
 ## Worked example (concept)
 
 ```text
-query  ares/v1/claims/evaluate
+query  ares/v1/claims/evaluate   (read-only, open — no key)
        payload: {"id":1,"robot_id":1,"access_mode":"Exclusive",
                  "targets":[{"kind":"Zone","resource_id":"205"}]}
 reply  {"decision":"Grant", ...}

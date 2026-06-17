@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "timenav"
+name = "syncbot"
 version = "0.0.1"
 description = "Multi-robot navigation, claims, and scheduling on top of zoneout"
 readme = "README.md"
@@ -12,4 +12,4 @@ license = { text = "MIT" }
 
 [tool.maturin]
 features = ["python"]
-module-name = "timenav"
+module-name = "syncbot"

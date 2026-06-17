@@ -1,10 +1,10 @@
-# timenav
+# syncbot
 
 Multi-robot navigation, claims, and scheduling on top of
 [`zoneout`](../zoneout). Rust port of the C++
 [`timenav`](https://github.com/robolibs/timenav) library.
 
-`timenav` answers four questions for a fleet of robots moving through a
+`syncbot` answers four questions for a fleet of robots moving through a
 shared workspace:
 
 1. **Where can I go?** — route planning over a workspace graph with
@@ -71,7 +71,7 @@ use std::collections::BTreeMap as OMap;
 
 use datapod::{Geo, Point, Polygon};
 use graphix::vertex::EdgeType;
-use timenav::{WorkspaceIndex, plan_route};
+use syncbot::{WorkspaceIndex, plan_route};
 use zoneout::{NodeData, Workspace, ZoneBuilder};
 
 fn rectangle(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
@@ -167,7 +167,7 @@ The Dijkstra engine drops illegal traversals (`forward` on a back-edge);
 ### 4. Exclusive claim conflict
 
 ```rust
-use timenav::{ClaimManager, ClaimRequest, ClaimTarget, ClaimTargetKind,
+use syncbot::{ClaimManager, ClaimRequest, ClaimTarget, ClaimTargetKind,
               ClaimAccessMode, ClaimDecision, ClaimId, RobotId};
 
 let idx = std::sync::Arc::new(WorkspaceIndex::new(Arc::new(ws)));
@@ -217,7 +217,7 @@ in `eval.blocking_target`.
 ### 6. Lease lifecycle: grant → refresh → expire
 
 ```rust
-use timenav::{Lease, LeaseId};
+use syncbot::{Lease, LeaseId};
 
 let lease = Lease {
     id: LeaseId::new(11), claim_id: ClaimId::new(1),
@@ -241,7 +241,7 @@ Other endpoints: `release_lease(id, tick)`, `revoke_lease(id, reason, tick)`,
 ### 7. Coordinator + rolling-horizon claims
 
 ```rust
-use timenav::{Coordinator, RobotState, RobotProgressState, RouteCostModel};
+use syncbot::{Coordinator, RobotState, RobotProgressState, RouteCostModel};
 
 let mut coord = Coordinator::with_index(Arc::clone(&idx));
 coord.register_robot(RobotState {
@@ -271,12 +271,12 @@ let decision = coord.schedule_robot_route(
     ClaimAccessMode::Exclusive,
 );
 match decision.kind {
-    timenav::ScheduleDecisionKind::Proceed => println!("clear to go"),
-    timenav::ScheduleDecisionKind::Queue   => println!(
+    syncbot::ScheduleDecisionKind::Proceed => println!("clear to go"),
+    syncbot::ScheduleDecisionKind::Queue   => println!(
         "wait until tick {}; queue position {}",
         decision.start_tick, decision.queue_position
     ),
-    timenav::ScheduleDecisionKind::Replan  => println!(
+    syncbot::ScheduleDecisionKind::Replan  => println!(
         "must replan: {} conflicts on corridors / blocked / no-stop resources",
         decision.conflicts.len()
     ),
@@ -291,7 +291,7 @@ The decision automatically applies to the robot state (sets `wait_ticks`,
 When two robots simultaneously want the same intersection, decide who waits:
 
 ```rust
-use timenav::{ArbitrationContext, ArbitrationDecision, arbitrate_right_of_way};
+use syncbot::{ArbitrationContext, ArbitrationDecision, arbitrate_right_of_way};
 
 let ctx = ArbitrationContext {
     self_priority: 5.0, other_priority: 3.0,
@@ -342,11 +342,11 @@ println!("released {} stale leases", released);
 ### 12. VDA 5050 mapping
 
 ```rust
-let order = timenav::vda::map_route_plan(&plan);
+let order = syncbot::vda::map_route_plan(&plan);
 // order.nodes.len() == plan.traversed_node_ids.len()
 // order.version == "3.0.0"
 
-let agv_state = timenav::vda::map_robot_state(&robot_state);
+let agv_state = syncbot::vda::map_robot_state(&robot_state);
 // agv_state.driving_state == "DRIVING" while FollowingRoute
 ```
 
@@ -357,7 +357,7 @@ schema clone): `Order`, `OrderNode`, `OrderEdge`, `State`, `Connection`,
 ### 13. Zone policy validation
 
 ```rust
-let issues = timenav::validate_zone_traffic_properties(&zone.properties());
+let issues = syncbot::validate_zone_traffic_properties(&zone.properties());
 for i in &issues {
     println!("[{:?}] {}: {}", i.severity, i.key, i.message);
 }
@@ -370,7 +370,7 @@ Catches unknown traffic keys, malformed bool/u64/f64 values, conflicts like
 
 ## C ABI
 
-The crate builds a `cdylib` (`libtimenav.so` / `.dylib` / `.dll`) plus a
+The crate builds a `cdylib` (`libsyncbot.so` / `.dylib` / `.dll`) plus a
 header-free C ABI. Pattern: opaque handles for stateful types, JSON strings
 for everything else.
 
@@ -379,20 +379,20 @@ for everything else.
 #include <stdint.h>
 #include <stdlib.h>
 
-extern const char *tn_version(void);
-extern const char *tn_last_error(void);
-extern void tn_string_free(char *s);
+extern const char *sb_version(void);
+extern const char *sb_last_error(void);
+extern void sb_string_free(char *s);
 
-typedef struct TnClaimManager TnClaimManager;
-extern TnClaimManager *tn_claim_manager_new(void);
-extern void tn_claim_manager_free(TnClaimManager *);
-extern int  tn_claim_manager_add_request(TnClaimManager *, const char *json);
-extern char *tn_claim_manager_evaluate(const TnClaimManager *, const char *json);
+typedef struct SbClaimManager SbClaimManager;
+extern SbClaimManager *sb_claim_manager_new(void);
+extern void sb_claim_manager_free(SbClaimManager *);
+extern int  sb_claim_manager_add_request(SbClaimManager *, const char *json);
+extern char *sb_claim_manager_evaluate(const SbClaimManager *, const char *json);
 
 int main(void) {
-    printf("timenav %s\n", tn_version());
+    printf("syncbot %s\n", sb_version());
 
-    TnClaimManager *m = tn_claim_manager_new();
+    SbClaimManager *m = sb_claim_manager_new();
     const char *req =
         "{\"id\":1,\"robot_id\":1,\"mission_id\":0,"
         "\"access_mode\":\"Exclusive\",\"priority\":0,"
@@ -400,11 +400,11 @@ int main(void) {
         "\"window\":{\"start_tick\":null,\"end_tick\":null},"
         "\"targets\":[{\"kind\":\"Zone\","
         "\"resource_id\":\"00000000-0000-0000-0000-000000000001\"}]}";
-    tn_claim_manager_add_request(m, req);
-    char *eval = tn_claim_manager_evaluate(m, req);
+    sb_claim_manager_add_request(m, req);
+    char *eval = sb_claim_manager_evaluate(m, req);
     printf("eval: %s\n", eval);
-    tn_string_free(eval);
-    tn_claim_manager_free(m);
+    sb_string_free(eval);
+    sb_claim_manager_free(m);
     return 0;
 }
 ```
@@ -418,47 +418,47 @@ cd examples/c_abi && make run
 ### C ABI surface (selected)
 
 ```
-tn_version(), tn_last_error(), tn_string_free(*)
+sb_version(), sb_last_error(), sb_string_free(*)
 
 # Workspace + Index (opaque handles)
-tn_workspace_load(path) -> *TnWorkspace
-tn_workspace_free(*)
-tn_workspace_index_new(*) -> *TnWorkspaceIndex
-tn_workspace_index_validation_issues(*) -> json
-tn_workspace_index_root_zone_id(*) -> uuid string
+sb_workspace_load(path) -> *SbWorkspace
+sb_workspace_free(*)
+sb_workspace_index_new(*) -> *SbWorkspaceIndex
+sb_workspace_index_validation_issues(*) -> json
+sb_workspace_index_root_zone_id(*) -> uuid string
 
 # Route planning
-tn_plan_route(idx, start_uuid, goal_uuid, use_penalties) -> json
+sb_plan_route(idx, start_uuid, goal_uuid, use_penalties) -> json
 
 # ClaimManager
-tn_claim_manager_new() / _with_index(idx) / _free(*)
-tn_claim_manager_add_request / _remove_request
-tn_claim_manager_add_lease / _release_lease / _expire_leases
-tn_claim_manager_refresh_lease / _revoke_lease
-tn_claim_manager_evaluate(*, request_json) -> json
-tn_claim_manager_requests / _leases (json)
+sb_claim_manager_new() / _with_index(idx) / _free(*)
+sb_claim_manager_add_request / _remove_request
+sb_claim_manager_add_lease / _release_lease / _expire_leases
+sb_claim_manager_refresh_lease / _revoke_lease
+sb_claim_manager_evaluate(*, request_json) -> json
+sb_claim_manager_requests / _leases (json)
 
 # Coordinator
-tn_coordinator_new() / _with_index(idx) / _free(*)
-tn_coordinator_register_robot / _unregister_robot
-tn_coordinator_assign_route_plan
-tn_coordinator_schedule_robot_route -> json (ScheduleDecision)
-tn_coordinator_handle_missed_schedule_slot
-tn_coordinator_robot_state(robot_id) -> json
+sb_coordinator_new() / _with_index(idx) / _free(*)
+sb_coordinator_register_robot / _unregister_robot
+sb_coordinator_assign_route_plan
+sb_coordinator_schedule_robot_route -> json (ScheduleDecision)
+sb_coordinator_handle_missed_schedule_slot
+sb_coordinator_robot_state(robot_id) -> json
 
 # VDA
-tn_vda_order_from_route(plan_json) -> json
-tn_vda_state_from_robot(state_json) -> json
+sb_vda_order_from_route(plan_json) -> json
+sb_vda_state_from_robot(state_json) -> json
 
 # Helpers
-tn_arbitrate_right_of_way(*ctx) -> 0/1/2
-tn_parse_traffic_bool/u64/f64
-tn_parse_zone_policy(props_json) -> json
-tn_validate_zone_traffic / _validate_edge_traffic
+sb_arbitrate_right_of_way(*ctx) -> 0/1/2
+sb_parse_traffic_bool/u64/f64
+sb_parse_zone_policy(props_json) -> json
+sb_validate_zone_traffic / _validate_edge_traffic
 ```
 
-All `char *` returns must be freed with `tn_string_free`. On error, a
-function returns `NULL` / `-1` and `tn_last_error()` describes the cause
+All `char *` returns must be freed with `sb_string_free`. On error, a
+function returns `NULL` / `-1` and `sb_last_error()` describes the cause
 (thread-local).
 
 ---
@@ -470,37 +470,37 @@ The same surface, idiomatic Python, gated behind the `python` /
 
 ```sh
 pip install maturin
-cd timenav
+cd syncbot
 maturin develop --features python
-python -c "import timenav; print(timenav.version())"
+python -c "import syncbot; print(syncbot.version())"
 ```
 
 A complete smoke script in `examples/python_binding/example.py`:
 
 ```python
-import timenav
+import syncbot
 
 # version + constants
-print(timenav.version())                    # "0.0.1"
-print(timenav.ZONE_POLICY_KINDS)
-print(timenav.SCHEDULE_DECISION_KINDS)
+print(syncbot.version())                    # "0.0.2"
+print(syncbot.ZONE_POLICY_KINDS)
+print(syncbot.SCHEDULE_DECISION_KINDS)
 
 # Policy
-policy = timenav.parse_zone_policy({
+policy = syncbot.parse_zone_policy({
     "traffic.policy": "exclusive",
     "traffic.capacity": "2",
 })
 assert policy["kind"] == "ExclusiveAccess"
 
 # Validation
-issues = timenav.validate_zone_traffic_properties({"traffic.bogus": "x"})
+issues = syncbot.validate_zone_traffic_properties({"traffic.bogus": "x"})
 print(issues)  # [{"severity": "Warning", "key": "traffic.bogus", ...}]
 
 # Arbitration
-print(timenav.arbitrate_right_of_way(self_is_emergency=True))   # "proceed"
+print(syncbot.arbitrate_right_of_way(self_is_emergency=True))   # "proceed"
 
 # ClaimManager
-mgr = timenav.ClaimManager()
+mgr = syncbot.ClaimManager()
 mgr.add_request({
     "id": 1, "robot_id": 1, "mission_id": 0,
     "access_mode": "Exclusive", "priority": 0,
@@ -513,7 +513,7 @@ eval_result = mgr.evaluate_request(req)
 print(eval_result["decision"])               # "Grant"
 
 # Coordinator
-coord = timenav.Coordinator()
+coord = syncbot.Coordinator()
 coord.register_robot({
     "robot_id": 7, "mission_id": 0, ...
 })
@@ -523,13 +523,13 @@ decision = coord.schedule_robot_route(7, claim_id=1, start_tick=0,
                                        access_mode="exclusive")
 
 # Workspace from disk
-ws = timenav.Workspace.load("/path/to/workspace_dir")
-idx = timenav.WorkspaceIndex(ws)
-result = timenav.plan_route(idx, start_uuid, goal_uuid, use_penalties=True)
+ws = syncbot.Workspace.load("/path/to/workspace_dir")
+idx = syncbot.WorkspaceIndex(ws)
+result = syncbot.plan_route(idx, start_uuid, goal_uuid, use_penalties=True)
 
 # VDA
-order = timenav.vda_order_from_route(route_plan_dict)
-state = timenav.vda_state_from_robot(robot_state_dict)
+order = syncbot.vda_order_from_route(route_plan_dict)
+state = syncbot.vda_state_from_robot(robot_state_dict)
 ```
 
 ### Python class surface
@@ -597,7 +597,7 @@ src/
 
 - [`PLAN.md`](./PLAN.md) — design rationale and conversion roadmap
 - [`CHANGELOG.md`](./CHANGELOG.md) — release notes
-- C++ source: [`../../robolibs_cpp/timenav`](../../robolibs_cpp/timenav)
+- C++ source: [`../../robolibs_cpp/syncbot`](../../robolibs_cpp/syncbot)
 - Sibling Rust port: [`../zoneout`](../zoneout)
 
 ## License

@@ -1,6 +1,6 @@
 .PHONY: build run clean
 
-# Build the timenav Python extension with maturin and run the smoke script.
+# Build the syncbot Python extension with maturin and run the smoke script.
 # Requires `maturin` (pip install maturin) and `python3.9+`.
 
 build:

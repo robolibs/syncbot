@@ -1,8 +1,8 @@
-//! timenav — multi-robot navigation, claims, and scheduling on top of
+//! syncbot — multi-robot navigation, claims, and scheduling on top of
 //! `zoneout`.
 //!
 //! See `PLAN.md` at the crate root for the design overview. The public
-//! surface is kept flat at `timenav::*` via re-exports below.
+//! surface is kept flat at `syncbot::*` via re-exports below.
 
 // Crate-wide lint policy. The explicit form of these lints is clearer for a
 // straight C++ port; collapsing them obscures the original control flow.
@@ -32,6 +32,7 @@ pub mod wire;
 
 pub use crate::core::error::{Error, Result};
 pub use crate::core::ids::{ClaimId, LeaseId, MissionId, RobotId};
+pub use crate::core::key::{Key, KeyError};
 
 pub use crate::policy::{
     EdgeTrafficSemantics, TrafficIssueSeverity, TrafficParseIssue, ZonePolicy, ZonePolicyKind,
@@ -70,7 +71,7 @@ pub use crate::coordinator::{
     schedule_route_request, scheduled_target_windows_from_route,
 };
 
-/// Crate version (mirrors the C++ `timenav::version()`).
+/// Crate version (mirrors the C++ `syncbot::version()`).
 pub const fn version() -> &'static str {
-    "0.0.1"
+    "0.0.2"
 }

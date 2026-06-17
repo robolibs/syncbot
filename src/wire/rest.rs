@@ -1,4 +1,4 @@
-//! Axum REST adapter for the timenav core.
+//! Axum REST adapter for the syncbot core.
 //!
 //! Enabled with `--features rest`.
 //! With `--features xmlt`, the same routes also accept/return XML when the
@@ -14,11 +14,13 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tower_http::trace::TraceLayer;
 
-use crate::core::ids::{ClaimId, RobotId};
+use crate::claim::ClaimTargetKind;
+use crate::core::ids::ClaimId;
 use crate::index::ResourceRef;
 use crate::wire::{
-    ApiError, AssignRouteRequest, ClaimRequest, ClaimRequestWire, HeartbeatRequest, Lease,
-    PlanRouteRequest, ReleaseLeaseRequest, ScheduleRobotRouteRequest, ServeState,
+    ApiError, AssignRouteRequest, ClaimRequest, ClaimRequestWire, FlatClaim, FlatHeartbeat,
+    FlatRegister, FlatRelease, Lease, PlanRouteRequest, ReleaseLeaseRequest,
+    ScheduleRobotRouteRequest, ServeState,
 };
 
 /// REST API prefix used by `PRESENTATION.md`.
@@ -51,10 +53,16 @@ pub fn router(state: ServeState) -> Router {
         .route("/ares/v1/robots/{id}/route", post(assign_route))
         .route("/ares/v1/robots/{id}/schedule", post(schedule_robot_route))
         .route("/ares/v1/claims", get(list_claims).post(submit_claim))
-        .route("/ares/v1/claims/{id}", get(claim).delete(remove_claim))
         .route("/ares/v1/claims/evaluate", post(evaluate_claim))
+        .route("/ares/v1/claims/zone", post(flat_claim_zone))
+        .route("/ares/v1/claims/node", post(flat_claim_node))
+        .route("/ares/v1/claims/edge", post(flat_claim_edge))
+        .route("/ares/v1/claims/{id}", get(claim).delete(remove_claim))
         .route("/ares/v1/leases", get(list_leases).post(add_lease))
         .route("/ares/v1/leases/release", post(release_lease))
+        .route("/ares/v1/leases/release/zone", post(flat_release_zone))
+        .route("/ares/v1/leases/release/node", post(flat_release_node))
+        .route("/ares/v1/leases/release/edge", post(flat_release_edge))
         .route("/ares/v1/leases/{id}", delete(release_lease_by_path))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
@@ -135,83 +143,97 @@ async fn register_robot(
     body: Bytes,
 ) -> Response {
     let format = request_format(&headers);
-    let robot = match parse_body::<crate::robot::RobotState>(format, &body) {
-        Ok(robot) => robot,
+    let req = match parse_body::<FlatRegister>(format, &body) {
+        Ok(req) => req,
         Err(err) => return respond::<()>(format, Err(err)),
     };
-    respond(format, crate::wire::register_robot(&state, robot))
+    respond(
+        format,
+        Ok(crate::wire::flat_register(&state, &req.robot, &req.key)),
+    )
 }
 
 async fn unregister_robot(
     headers: HeaderMap,
     State(state): State<ServeState>,
-    Path(id): Path<u64>,
+    Path(id): Path<String>,
 ) -> Response {
-    respond(
-        preferred_format(&headers),
-        crate::wire::unregister_robot(&state, RobotId::new(id)),
-    )
+    let format = preferred_format(&headers);
+    let robot_id = match crate::wire::resolve_robot(&state, &id) {
+        Ok(r) => r,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(format, crate::wire::unregister_robot(&state, robot_id))
 }
 
 async fn robot_state(
     headers: HeaderMap,
     State(state): State<ServeState>,
-    Path(id): Path<u64>,
+    Path(id): Path<String>,
 ) -> Response {
-    respond(
-        preferred_format(&headers),
-        crate::wire::robot_state(&state, RobotId::new(id)),
-    )
+    let format = preferred_format(&headers);
+    let robot_id = match crate::wire::resolve_robot(&state, &id) {
+        Ok(r) => r,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(format, crate::wire::robot_state(&state, robot_id))
 }
 
 async fn heartbeat(
     headers: HeaderMap,
     State(state): State<ServeState>,
-    Path(id): Path<u64>,
+    Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
     let format = request_format(&headers);
-    let request = match parse_body::<HeartbeatRequest>(format, &body) {
-        Ok(request) => request,
+    let req = match parse_body::<FlatHeartbeat>(format, &body) {
+        Ok(req) => req,
         Err(err) => return respond::<()>(format, Err(err)),
     };
     respond(
         format,
-        crate::wire::heartbeat(&state, RobotId::new(id), request),
+        Ok(crate::wire::flat_heartbeat(
+            &state, &id, &req.key, req.zone, req.node, req.edge,
+        )),
     )
 }
 
 async fn assign_route(
     headers: HeaderMap,
     State(state): State<ServeState>,
-    Path(id): Path<u64>,
+    Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
     let format = request_format(&headers);
+    let robot_id = match crate::wire::resolve_robot(&state, &id) {
+        Ok(r) => r,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
     let request = match parse_body::<AssignRouteRequest>(format, &body) {
         Ok(request) => request,
         Err(err) => return respond::<()>(format, Err(err)),
     };
-    respond(
-        format,
-        crate::wire::assign_route(&state, RobotId::new(id), request),
-    )
+    respond(format, crate::wire::assign_route(&state, robot_id, request))
 }
 
 async fn schedule_robot_route(
     headers: HeaderMap,
     State(state): State<ServeState>,
-    Path(id): Path<u64>,
+    Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
     let format = request_format(&headers);
+    let robot_id = match crate::wire::resolve_robot(&state, &id) {
+        Ok(r) => r,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
     let request = match parse_body::<ScheduleRobotRouteRequest>(format, &body) {
         Ok(request) => request,
         Err(err) => return respond::<()>(format, Err(err)),
     };
     respond(
         format,
-        crate::wire::schedule_robot_route(&state, RobotId::new(id), request),
+        crate::wire::schedule_robot_route(&state, robot_id, request),
     )
 }
 
@@ -447,4 +469,98 @@ fn parse_resource_ref(raw: &str) -> crate::wire::ApiResult<ResourceRef> {
     Err(ApiError::new(format!(
         "resource id {raw:?} is neither a UUID nor an unsigned integer"
     )))
+}
+
+// ---------------------------------------------------------------------------
+// Flat (tier-1) endpoints — PLC / coarse robots. JSON + XML via negotiation.
+// Request envelopes (`FlatRegister`/`FlatHeartbeat`/`FlatClaim`/`FlatRelease`)
+// are shared with the Zenoh/ROS adapter; see `crate::wire`.
+// ---------------------------------------------------------------------------
+
+async fn flat_claim_zone(
+    headers: HeaderMap,
+    State(state): State<ServeState>,
+    body: Bytes,
+) -> Response {
+    flat_claim(headers, state, body, ClaimTargetKind::Zone).await
+}
+async fn flat_claim_node(
+    headers: HeaderMap,
+    State(state): State<ServeState>,
+    body: Bytes,
+) -> Response {
+    flat_claim(headers, state, body, ClaimTargetKind::Node).await
+}
+async fn flat_claim_edge(
+    headers: HeaderMap,
+    State(state): State<ServeState>,
+    body: Bytes,
+) -> Response {
+    flat_claim(headers, state, body, ClaimTargetKind::Edge).await
+}
+
+async fn flat_claim(
+    headers: HeaderMap,
+    state: ServeState,
+    body: Bytes,
+    kind: ClaimTargetKind,
+) -> Response {
+    let format = request_format(&headers);
+    let req = match parse_body::<FlatClaim>(format, &body) {
+        Ok(req) => req,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(
+        format,
+        Ok(crate::wire::flat_claim(
+            &state,
+            kind,
+            &req.key,
+            &req.robot,
+            &req.id,
+            req.access_mode,
+            req.lease_time,
+        )),
+    )
+}
+
+async fn flat_release_zone(
+    headers: HeaderMap,
+    State(state): State<ServeState>,
+    body: Bytes,
+) -> Response {
+    flat_release(headers, state, body, ClaimTargetKind::Zone).await
+}
+async fn flat_release_node(
+    headers: HeaderMap,
+    State(state): State<ServeState>,
+    body: Bytes,
+) -> Response {
+    flat_release(headers, state, body, ClaimTargetKind::Node).await
+}
+async fn flat_release_edge(
+    headers: HeaderMap,
+    State(state): State<ServeState>,
+    body: Bytes,
+) -> Response {
+    flat_release(headers, state, body, ClaimTargetKind::Edge).await
+}
+
+async fn flat_release(
+    headers: HeaderMap,
+    state: ServeState,
+    body: Bytes,
+    kind: ClaimTargetKind,
+) -> Response {
+    let format = request_format(&headers);
+    let req = match parse_body::<FlatRelease>(format, &body) {
+        Ok(req) => req,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(
+        format,
+        Ok(crate::wire::flat_release(
+            &state, kind, &req.key, &req.robot, req.id,
+        )),
+    )
 }

@@ -1,4 +1,4 @@
-//! PyO3 bindings — full coverage of the public timenav surface.
+//! PyO3 bindings — full coverage of the public syncbot surface.
 //!
 //! Pattern: every Rust struct that crosses the boundary becomes either
 //! - a `#[pyclass]` for stateful types (`Workspace`, `WorkspaceIndex`,
@@ -744,6 +744,6 @@ pub fn register_python_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[pymodule]
-fn timenav(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn syncbot(m: &Bound<'_, PyModule>) -> PyResult<()> {
     register_python_module(m)
 }

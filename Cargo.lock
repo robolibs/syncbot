@@ -3345,6 +3345,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 
 [[package]]
+name = "syncbot"
+version = "0.0.2"
+dependencies = [
+ "axum",
+ "concord",
+ "datapod",
+ "graphix",
+ "pyo3",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zenoh",
+ "zoneout",
+]
+
+[[package]]
 name = "synstructure"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3450,28 +3472,6 @@ checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
-]
-
-[[package]]
-name = "timenav"
-version = "0.0.2"
-dependencies = [
- "axum",
- "concord",
- "datapod",
- "graphix",
- "pyo3",
- "quick-xml",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "zenoh",
- "zoneout",
 ]
 
 [[package]]

@@ -4,1395 +4,216 @@
 #let pale = rgb("#eff6ff")
 #let warn = rgb("#f59e0b")
 
-#set document(
-  title: "ARES Protocol",
-  author: "robolibs / ARES",
-)
+#set document(title: "ARES Protocol — Quick Start", author: "robolibs / ARES")
 #set page(
   paper: "a4",
   margin: (x: 18mm, y: 17mm),
-  header: align(right, text(size: 8pt, fill: muted)[ARES protocol]),
+  header: align(right, text(size: 8pt, fill: muted)[ARES protocol — quick start]),
   footer: context align(center, text(size: 8pt, fill: muted)[page #counter(page).display("1")]),
 )
 #set text(size: 9.5pt, fill: dark)
 #set heading(numbering: "1.1")
 #set par(justify: true, leading: 0.62em)
-#show heading: it => [
-  #v(0.7em)
-  #it
-  #v(0.25em)
-]
+#show heading: it => [ #v(0.6em) #it #v(0.2em) ]
 #show raw.where(block: true): it => block(
-  fill: rgb("#f8fafc"),
-  stroke: rgb("#e2e8f0"),
-  radius: 4pt,
-  inset: 6pt,
-  width: 100%,
-  it,
+  fill: rgb("#f8fafc"), stroke: rgb("#e2e8f0"), radius: 4pt, inset: 6pt, width: 100%, it,
 )
 #show raw.where(block: false): it => box(
-  fill: rgb("#f8fafc"),
-  stroke: rgb("#dbe3ef"),
-  radius: 2pt,
-  inset: (x: 2.5pt, y: 1pt),
-  outset: (y: 0.5pt),
-  it,
+  fill: rgb("#f8fafc"), stroke: rgb("#dbe3ef"), radius: 2pt,
+  inset: (x: 2.5pt, y: 1pt), outset: (y: 0.5pt), it,
 )
-
 #let tag(body, color: accent) = box(
-  fill: color.lighten(78%),
-  stroke: color.lighten(25%),
-  radius: 3pt,
-  inset: (x: 5pt, y: 2pt),
-  text(size: 7.5pt, weight: "bold", fill: color.darken(20%), body),
-)
-
-#let call(method, path, body, response) = table(
-  columns: (18mm, 45mm, 1fr, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header(
-    text(weight: "bold")[Method],
-    text(weight: "bold")[Path / Key],
-    text(weight: "bold")[Request],
-    text(weight: "bold")[Response],
-  ),
-  method, path, body, response,
+  fill: color.lighten(78%), stroke: color.lighten(25%), radius: 3pt,
+  inset: (x: 5pt, y: 2pt), text(size: 7.5pt, weight: "bold", fill: color.darken(20%), body),
 )
 
 #align(center)[
-  #text(size: 24pt, weight: "bold", fill: accent)[ARES Protocol]
-
+  #text(size: 24pt, weight: "bold", fill: accent)[ARES Protocol — Quick Start]
   #v(0.4em)
-  #text(size: 11pt, fill: muted)[Connection and operating guide for REST/JSON, XML, Zenoh, and ROS2DDS]
-
+  #text(size: 11pt, fill: muted)[How a robot connects to ARES: register, heartbeat, claim, release]
   #v(1em)
-  #tag[REST/JSON] #h(0.5em) #tag[XML] #h(0.5em) #tag[Zenoh] #h(0.5em) #tag[ROS2DDS]
+  #tag[REST/XML] #h(0.5em) #tag[ROS2DDS]
 ]
 
 #v(1em)
 #block(fill: pale, stroke: accent.lighten(45%), radius: 6pt, inset: 9pt)[
-  This document describes how clients connect to an already-running ARES server.
-  It documents the external protocol only: URLs, keys, payloads, and expected responses.
+  A robot does exactly four things: *register* once, *heartbeat* while it runs,
+  *claim* the space it needs, and *release* when done. Each call carries a *key*
+  and gets back a tiny *decision + reason*. That is the whole protocol — this
+  page is all most integrations need.
+
+  REST/XML and ROS2DDS are shown here. JSON, native Zenoh, route planning,
+  scheduling, snapshots and the fine-level "tier-2" calls live in
+  *`PROTOCOL-advanced.typ`*.
 ]
 
-#outline(title: "Contents", depth: 2)
-#pagebreak()
-
-= Connection points
-
-The operator running ARES should provide these values.
+= Connect
 
 #table(
-  columns: (32mm, 55mm, 1fr),
-  inset: 6pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Name], [Example], [Used for]),
-  [`REST_BASE`], [`http://84.22.103.80:8080/ares/v1`], [REST/JSON calls.],
-  [`XML_BASE`], [`http://84.22.103.80:8080/ares/v1`], [XML calls, if the XML adapter is exposed.],
-  [`ZENO_ENDPOINT`], [`tcp/84.22.103.80:7447`], [Zenoh bridge or peer connection.],
-  [`ROS2_SERVICE`], [`/ares/v1/health`], [ARES JSON service through `zenoh-bridge-ros2dds`.],
+  columns: (30mm, 1fr),
+  inset: 6pt, stroke: rgb("#e2e8f0"),
+  table.header([Transport], [Address]),
+  [REST / XML], [`http://<host>:8080/ares/v1/...` — send/accept `application/xml`.],
+  [ROS2DDS], [ROS2 service `/ares/v1/...`, type `ares_interfaces/srv/Json` (a JSON string in, a JSON string out), via `zenoh-bridge-ros2dds`.],
 )
 
-#block(fill: rgb("#fffbeb"), stroke: warn.lighten(20%), radius: 5pt, inset: 8pt)[
-  *Zenoh endpoint syntax:* use `tcp/84.22.103.80:7447`. Do not use `tcp://84.22.103.80:7447`.
-]
+Check the server is up (no key needed):
 
-= Shared data rules
-
-== Resource identifiers
-
-Zones, nodes, and edges are UUID-based internally, but client-facing calls can
-use either a UUID or a numeric alias. Numeric aliases should be sent as strings
-to keep JSON and XML compatible.
-
-```json
-"100"
+```sh
+curl http://<host>:8080/ares/v1/health
+# {"status":"ok","version":"0.0.2"}
 ```
 
-```json
-"00000000-0000-0000-0000-000000000100"
-```
+= The key
 
-== Common enum values
+Each call may carry a `key`. Two forms:
 
 #table(
-  columns: (38mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Field], [Allowed values]),
-  [Claim target kind], [`Zone`, `Node`, `Edge`],
-  [Claim access mode], [`Shared`, `Exclusive`],
-  [Robot progress], [`Idle`, `FollowingRoute`, `Waiting`, `Queued`, `Blocked`, `Replanning`],
-  [Lease disposition], [`Active`, `Released`, `Expired`, `Revoked`],
+  columns: (34mm, 1fr),
+  inset: 5pt, stroke: rgb("#e2e8f0"),
+  table.header([Key], [Meaning]),
+  [an integer, e.g. `1234`], [a simple numeric password],
+  [`did:pass=<secret>`], [a password in DID form],
 )
 
-== Error response
+The key is set at *register* and bound to the robot. Every later call resends it;
+a wrong key is rejected with reason `1` (*mismatched key*).
 
-REST and XML API errors return HTTP `400`. JSON error body:
+*The key is optional.* If you omit it the server uses a shared default password
+— convenient but insecure (anyone can act as a robot that skipped the key). If a
+robot registers *with* a key, it must keep sending that same key.
 
-```json
-{"message":"what went wrong"}
-```
+= The reply
 
-= Symmetric ARES call catalog
+Every call answers with the same two fields:
 
-The four protocol surfaces are symmetric. HTTP transports use paths. Zenoh and
-ROS2 use service names/keys. For `GET /.../{id}` style HTTP calls, Zenoh and
-ROS2 use a tiny JSON request object such as `{"id":"100"}`,
-`{"robot_id":1}`, or `{"claim_id":10}`.
+- `decision` — `1` = ok / granted, `0` = denied.
+- `reason` — `0` = ok and `1` = mismatched key on *every* call; other values are
+  listed per call below.
 
-#table(
-  columns: (30mm, 35mm, 35mm, 39mm, 42mm),
-  inset: 4pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Operation], [REST JSON], [XML], [Zenoh key], [ROS2 service]),
-  [Health], [`GET /health`], [`GET /health`], [`ares/v1/health`], [`/ares/v1/health`],
-  [Snapshot], [`GET /fleet/snapshot`], [`GET /fleet/snapshot`], [`ares/v1/fleet/snapshot`], [`/ares/v1/fleet/snapshot`],
-  [List zones], [`GET /zones`], [`GET /zones`], [`ares/v1/zones/list`], [`/ares/v1/zones/list`],
-  [Get zone], [`GET /zones/{id}`], [`GET /zones/{id}`], [`ares/v1/zones/get`], [`/ares/v1/zones/get`],
-  [List nodes], [`GET /nodes`], [`GET /nodes`], [`ares/v1/nodes/list`], [`/ares/v1/nodes/list`],
-  [Get node], [`GET /nodes/{id}`], [`GET /nodes/{id}`], [`ares/v1/nodes/get`], [`/ares/v1/nodes/get`],
-  [List edges], [`GET /edges`], [`GET /edges`], [`ares/v1/edges/list`], [`/ares/v1/edges/list`],
-  [Get edge], [`GET /edges/{id}`], [`GET /edges/{id}`], [`ares/v1/edges/get`], [`/ares/v1/edges/get`],
-  [Plan route], [`POST /routes/plan`], [`POST /routes/plan`], [`ares/v1/routes/plan`], [`/ares/v1/routes/plan`],
-  [Register robot], [`POST /robots`], [`POST /robots`], [`ares/v1/robots/register`], [`/ares/v1/robots/register`],
-  [List robots], [`GET /robots`], [`GET /robots`], [`ares/v1/robots/list`], [`/ares/v1/robots/list`],
-  [Get robot], [`GET /robots/{id}`], [`GET /robots/{id}`], [`ares/v1/robots/get`], [`/ares/v1/robots/get`],
-  [Unregister robot], [`DELETE /robots/{id}`], [`DELETE /robots/{id}`], [`ares/v1/robots/unregister`], [`/ares/v1/robots/unregister`],
-  [Heartbeat], [`POST /robots/{id}/heartbeat`], [`POST /robots/{id}/heartbeat`], [`ares/v1/robots/heartbeat`], [`/ares/v1/robots/heartbeat`],
-  [Assign route], [`POST /robots/{id}/route`], [`POST /robots/{id}/route`], [`ares/v1/robots/assign_route`], [`/ares/v1/robots/assign_route`],
-  [Schedule], [`POST /robots/{id}/schedule`], [`POST /robots/{id}/schedule`], [`ares/v1/robots/schedule`], [`/ares/v1/robots/schedule`],
-  [List claims], [`GET /claims`], [`GET /claims`], [`ares/v1/claims/list`], [`/ares/v1/claims/list`],
-  [Get claim], [`GET /claims/{id}`], [`GET /claims/{id}`], [`ares/v1/claims/get`], [`/ares/v1/claims/get`],
-  [Remove claim], [`DELETE /claims/{id}`], [`DELETE /claims/{id}`], [`ares/v1/claims/remove`], [`/ares/v1/claims/remove`],
-  [Evaluate claim], [`POST /claims/evaluate`], [`POST /claims/evaluate`], [`ares/v1/claims/evaluate`], [`/ares/v1/claims/evaluate`],
-  [Submit claim], [`POST /claims`], [`POST /claims`], [`ares/v1/claims/request`], [`/ares/v1/claims/request`],
-  [List leases], [`GET /leases`], [`GET /leases`], [`ares/v1/leases/list`], [`/ares/v1/leases/list`],
-  [Add lease], [`POST /leases`], [`POST /leases`], [`ares/v1/leases/add`], [`/ares/v1/leases/add`],
-  [Release lease], [`POST /leases/release` or `DELETE /leases/{id}`], [`POST /leases/release` or `DELETE /leases/{id}`], [`ares/v1/leases/release`], [`/ares/v1/leases/release`],
-)
+In XML the reply root is always `<reply>`. (On input the request's outer tag
+name is ignored — only the inner fields matter.)
 
-= Operating story
+= The four calls
 
-This is the normal ARES flow: check the server, read the map, register the
-robot, plan movement, ask for access to a zone, then keep the server updated as
-the robot moves.
+Each call shows the XML body and the equivalent ROS2 service call. The robot id
+may be an *integer or a UUID string*.
 
-== Story overview
+== Register
 
-#table(
-  columns: (12mm, 42mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Step], [Action], [Why]),
-  [1], [Health check], [Confirm that the ARES server is reachable.],
-  [2], [Read map resources], [Find zone, node, and edge IDs. XML does not expose map lookup yet, so use REST for this step.],
-  [3], [Register robot], [Tell ARES the robot exists and where it starts.],
-  [4], [Plan route], [Ask ARES for a graph route between nodes.],
-  [5], [Evaluate claim], [Dry-run zone/node/edge access before committing.],
-  [6], [Submit claim], [Store the request if ARES grants it.],
-  [7], [Move / heartbeat], [Update robot progress while it moves.],
-  [8], [Release / cleanup], [Remove claims or release leases when finished.],
-  [9], [Snapshot], [Read robots, active claims, and leases in one response.],
-)
-
-== Full REST story: robot claims dock A
-
-Set the base URL:
-
-```sh
-REST_BASE=http://84.22.103.80:8080/ares/v1
-```
-
-1. Check health:
-
-```sh
-curl $REST_BASE/health
-```
-
-2. Read zones and nodes. In the fixed example, zone `100` is `dock_a`, node
-`1001` is the dock entry, node `1003` is the other side of the map.
-
-```sh
-curl $REST_BASE/zones
-```
-
-```sh
-curl $REST_BASE/nodes
-```
-
-3. Register robot `1` at node `1001`.
-
-```sh
-curl -X POST $REST_BASE/robots -H 'content-type: application/json' -d '{"robot_id":1,"mission_id":9001,"current_node_id":"00000000-0000-0000-0000-000000001001","progress_state":"Idle","updated_at_tick":1}'
-```
-
-4. Plan a route from node `1001` to node `1003`.
-
-```sh
-curl -X POST $REST_BASE/routes/plan -H 'content-type: application/json' -d '{"start_node_id":"1001","goal_node_id":"1003","use_penalties":false}'
-```
-
-5. Dry-run an exclusive claim on zone `100`.
-
-```sh
-curl -X POST $REST_BASE/claims/evaluate -H 'content-type: application/json' -d '{"id":10,"robot_id":1,"mission_id":9001,"access_mode":"Exclusive","priority":10,"requested_at_tick":10,"window":{"start_tick":10,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}'
-```
-
-If the response contains `"decision":"Grant"`, submit the claim.
-
-6. Submit/store the granted claim.
-
-```sh
-curl -X POST $REST_BASE/claims -H 'content-type: application/json' -d '{"id":10,"robot_id":1,"mission_id":9001,"access_mode":"Exclusive","priority":10,"requested_at_tick":10,"window":{"start_tick":10,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}'
-```
-
-7. Confirm the claim is active.
-
-```sh
-curl $REST_BASE/claims
-```
-
-8. Update robot progress as it moves.
-
-```sh
-curl -X POST $REST_BASE/robots/1/heartbeat -H 'content-type: application/json' -d '{"current_node_id":"1002","current_edge_id":null,"updated_at_tick":70}'
-```
-
-9. Read the whole fleet state.
-
-```sh
-curl $REST_BASE/fleet/snapshot
-```
-
-10. When done, remove the active claim.
-
-```sh
-curl -X DELETE $REST_BASE/claims/10
-```
-
-== Contention story: second robot is denied until release
-
-Robot `2` tries to claim the same exclusive zone while robot `1` still owns
-claim `10`.
-
-```sh
-curl -X POST $REST_BASE/robots -H 'content-type: application/json' -d '{"robot_id":2,"mission_id":9002,"current_node_id":"00000000-0000-0000-0000-000000001003","progress_state":"Idle","updated_at_tick":1}'
-```
-
-```sh
-curl -X POST $REST_BASE/claims/evaluate -H 'content-type: application/json' -d '{"id":11,"robot_id":2,"mission_id":9002,"access_mode":"Exclusive","priority":5,"requested_at_tick":11,"window":{"start_tick":10,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}'
-```
-
-Expected decision while claim `10` is active:
-
-```json
-{"decision":"Deny", "...":"..."}
-```
-
-Release robot `1` claim:
-
-```sh
-curl -X DELETE $REST_BASE/claims/10
-```
-
-Now robot `2` can submit:
-
-```sh
-curl -X POST $REST_BASE/claims -H 'content-type: application/json' -d '{"id":11,"robot_id":2,"mission_id":9002,"access_mode":"Exclusive","priority":5,"requested_at_tick":12,"window":{"start_tick":12,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}'
-```
-
-== Shared-zone story: capacity
-
-For shared zones, more than one robot may be granted if the zone policy allows
-capacity. In the fixed example, zone `101` is shared.
-
-```sh
-curl -X POST $REST_BASE/claims -H 'content-type: application/json' -d '{"id":20,"robot_id":1,"mission_id":9101,"access_mode":"Shared","priority":1,"requested_at_tick":20,"window":{"start_tick":20,"end_tick":120},"targets":[{"kind":"Zone","resource_id":"101"}]}'
-```
-
-```sh
-curl -X POST $REST_BASE/claims -H 'content-type: application/json' -d '{"id":21,"robot_id":2,"mission_id":9102,"access_mode":"Shared","priority":1,"requested_at_tick":21,"window":{"start_tick":20,"end_tick":120},"targets":[{"kind":"Zone","resource_id":"101"}]}'
-```
-
-If capacity is full, another overlapping claim is denied:
-
-```sh
-curl -X POST $REST_BASE/claims/evaluate -H 'content-type: application/json' -d '{"id":22,"robot_id":3,"mission_id":9103,"access_mode":"Shared","priority":1,"requested_at_tick":22,"window":{"start_tick":20,"end_tick":120},"targets":[{"kind":"Zone","resource_id":"101"}]}'
-```
-
-== Full XML story: same claim flow
-
-Set:
-
-```sh
-XML_BASE=http://84.22.103.80:8080/ares/v1
-```
-
-XML has the claim/robot/route/lease calls. For map lookup, use REST first
-because XML map lookup is not exposed yet.
-
-1. Check health:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/health
-```
-
-2. Register robot:
-
-```sh
-curl -X POST $XML_BASE/robots -H 'content-type: application/xml' -d '<RobotState><robot_id>1</robot_id><mission_id>9001</mission_id><current_node_id>00000000-0000-0000-0000-000000001001</current_node_id><progress_state>Idle</progress_state><updated_at_tick>1</updated_at_tick></RobotState>'
-```
-
-3. Plan route:
-
-```sh
-curl -X POST $XML_BASE/routes/plan -H 'content-type: application/xml' -d '<PlanRouteRequest><start_node_id>1001</start_node_id><goal_node_id>1003</goal_node_id><use_penalties>false</use_penalties></PlanRouteRequest>'
-```
-
-4. Dry-run claim:
-
-```sh
-curl -X POST $XML_BASE/claims/evaluate -H 'content-type: application/xml' -d '<ClaimRequestWire><id>10</id><robot_id>1</robot_id><mission_id>9001</mission_id><access_mode>Exclusive</access_mode><priority>10</priority><requested_at_tick>10</requested_at_tick><window><start_tick>10</start_tick><end_tick>100</end_tick></window><targets><kind>Zone</kind><resource_id>100</resource_id></targets></ClaimRequestWire>'
-```
-
-5. Submit claim:
-
-```sh
-curl -X POST $XML_BASE/claims -H 'content-type: application/xml' -d '<ClaimRequestWire><id>10</id><robot_id>1</robot_id><mission_id>9001</mission_id><access_mode>Exclusive</access_mode><priority>10</priority><requested_at_tick>10</requested_at_tick><window><start_tick>10</start_tick><end_tick>100</end_tick></window><targets><kind>Zone</kind><resource_id>100</resource_id></targets></ClaimRequestWire>'
-```
-
-6. Heartbeat:
-
-```sh
-curl -X POST $XML_BASE/robots/1/heartbeat -H 'content-type: application/xml' -d '<HeartbeatRequest><current_node_id>1002</current_node_id><updated_at_tick>70</updated_at_tick></HeartbeatRequest>'
-```
-
-7. Snapshot:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/fleet/snapshot
-```
-
-8. Add a lease directly if the integration uses leases:
-
-```sh
-curl -X POST $XML_BASE/leases -H 'content-type: application/xml' -d '<Lease><id>501</id><claim_id>10</claim_id><robot_id>1</robot_id><access_mode>Exclusive</access_mode><targets><kind>Zone</kind><resource_id>00000000-0000-0000-0000-000000000100</resource_id></targets><granted_at_tick>12</granted_at_tick><expires_at_tick>200</expires_at_tick><disposition>Active</disposition><active>true</active></Lease>'
-```
-
-9. Release lease:
-
-```sh
-curl -X POST $XML_BASE/leases/release -H 'content-type: application/xml' -d '<ReleaseLeaseRequest><lease_id>501</lease_id><released_at_tick>50</released_at_tick></ReleaseLeaseRequest>'
-```
-
-= REST / JSON protocol
-
-Set the base URL:
-
-```sh
-REST_BASE=http://84.22.103.80:8080/ares/v1
-```
-
-All REST request bodies are JSON. All successful responses are JSON.
-
-== Health
-
-#call([GET], [`/health`], [none], [`Health`])
-
-```sh
-curl $REST_BASE/health
-```
-
-```json
-{"status":"ok","version":"0.0.2"}
-```
-
-== Map lookup
-
-#table(
-  columns: (20mm, 45mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Method], [Path], [Meaning]),
-  [GET], [`/zones`], [List zones.],
-  [GET], [`/zones/{id}`], [Get zone by UUID or numeric alias.],
-  [GET], [`/nodes`], [List graph nodes.],
-  [GET], [`/nodes/{id}`], [Get node by UUID or numeric alias.],
-  [GET], [`/edges`], [List graph edges.],
-  [GET], [`/edges/{id}`], [Get edge by UUID or numeric alias.],
-)
-
-```sh
-curl $REST_BASE/zones
-curl $REST_BASE/zones/100
-curl $REST_BASE/nodes
-curl $REST_BASE/nodes/1001
-curl $REST_BASE/edges
-curl $REST_BASE/edges/2001
-```
-
-Zone shape:
-
-```json
-{
-  "id": "00000000-0000-0000-0000-000000000100",
-  "numeric_id": 100,
-  "name": "dock_a",
-  "kind": "zone",
-  "parent_id": "00000000-0000-0000-0000-000000000001",
-  "child_ids": [],
-  "node_ids": [],
-  "properties": {"traffic.policy": "exclusive"}
-}
-```
-
-== Route planning
-
-#call([POST], [`/routes/plan`], [`PlanRouteRequest`], [`PlanRouteResponse`])
-
-```sh
-curl -X POST $REST_BASE/routes/plan -H 'content-type: application/json' -d '{"start_node_id":"1001","goal_node_id":"1003","use_penalties":false}'
-```
-
-```json
-{
-  "start_node_id": "1001",
-  "goal_node_id": "1003",
-  "use_penalties": false
-}
-```
-
-Response fields:
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [`found`], [Whether a route was found.],
-  [`distance`], [Graph distance / cost.],
-  [`plan`], [Route plan if found.],
-  [`failure`], [Failure diagnostics if not found.],
-)
-
-== Robots
-
-#table(
-  columns: (20mm, 52mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Method], [Path], [Meaning]),
-  [GET], [`/robots`], [List registered robots.],
-  [POST], [`/robots`], [Register or replace robot state.],
-  [GET], [`/robots/{id}`], [Get robot state.],
-  [DELETE], [`/robots/{id}`], [Unregister robot.],
-  [POST], [`/robots/{id}/heartbeat`], [Update current node/edge and tick.],
-  [POST], [`/robots/{id}/route`], [Assign a route plan.],
-  [POST], [`/robots/{id}/schedule`], [Schedule from an existing claim.],
-)
-
-Register:
-
-```sh
-curl -X POST $REST_BASE/robots -H 'content-type: application/json' -d '{"robot_id":1,"mission_id":9001,"current_node_id":"00000000-0000-0000-0000-000000001001","progress_state":"Idle","updated_at_tick":1}'
-```
-
-Heartbeat:
-
-```sh
-curl -X POST $REST_BASE/robots/1/heartbeat -H 'content-type: application/json' -d '{"current_node_id":"1002","current_edge_id":null,"updated_at_tick":70}'
-```
-
-Schedule:
-
-```sh
-curl -X POST $REST_BASE/robots/1/schedule -H 'content-type: application/json' -d '{"claim_id":10,"start_tick":20,"ticks_per_cost_unit":1.0,"access_mode":"Exclusive"}'
-```
-
-== Claims
-
-#table(
-  columns: (20mm, 52mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Method], [Path], [Meaning]),
-  [GET], [`/claims`], [List active claim requests.],
-  [POST], [`/claims/evaluate`], [Dry-run claim; does not store it.],
-  [POST], [`/claims`], [Evaluate and store only if granted.],
-  [GET], [`/claims/{id}`], [Get active claim request.],
-  [DELETE], [`/claims/{id}`], [Remove active claim request.],
-)
-
-Submit claim:
-
-```sh
-curl -X POST $REST_BASE/claims -H 'content-type: application/json' -d '{"id":10,"robot_id":1,"mission_id":9001,"access_mode":"Exclusive","priority":10,"requested_at_tick":10,"window":{"start_tick":10,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}'
-```
-
-Claim body:
-
-```json
-{
-  "id": 10,
-  "robot_id": 1,
-  "mission_id": 9001,
-  "access_mode": "Exclusive",
-  "priority": 10,
-  "requested_at_tick": 10,
-  "window": {"start_tick": 10, "end_tick": 100},
-  "targets": [{"kind": "Zone", "resource_id": "100"}]
-}
-```
-
-== Leases and snapshot
-
-#table(
-  columns: (20mm, 52mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Method], [Path], [Meaning]),
-  [GET], [`/leases`], [List leases.],
-  [POST], [`/leases`], [Add lease directly.],
-  [POST], [`/leases/release`], [Release lease by body.],
-  [DELETE], [`/leases/{id}`], [Release lease by path.],
-  [GET], [`/fleet/snapshot`], [Robots, active claim requests, and leases.],
-)
-
-```sh
-curl $REST_BASE/fleet/snapshot
-```
-
-= XML protocol
-
-Set the XML base URL:
-
-```sh
-XML_BASE=http://84.22.103.80:8080/ares/v1
-```
-
-XML uses the same `/ares/v1` prefix as REST. The server selects XML when:
-
-- a `GET` request sends `Accept: application/xml`
-- a request with a body sends `Content-Type: application/xml`
-
-Body requests return XML automatically when their body was XML.
-
-List responses are wrapped as `<Response>` with repeated `<item>` children:
+Bind a robot id to a key. Do this once.
 
 ```xml
-<Response><item>...</item><item>...</item></Response>
+POST /ares/v1/robots
+  <reg><robot>7</robot><key>1234</key></reg>
+  <reply><decision>1</decision><reason>0</reason></reply>
 ```
 
-== XML endpoint table
+```sh
+ros2 service call /ares/v1/robots/register ares_interfaces/srv/Json \
+  "{request: '{\"robot\":\"7\",\"key\":\"1234\"}'}"
+```
 
-#table(
-  columns: (20mm, 52mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Method], [Path], [Request root]),
-  [GET], [`/health`], [none],
-  [GET], [`/fleet/snapshot`], [none],
-  [POST], [`/routes/plan`], [`<PlanRouteRequest>`],
-  [GET], [`/zones`], [none],
-  [GET], [`/zones/{id}`], [none],
-  [GET], [`/nodes`], [none],
-  [GET], [`/nodes/{id}`], [none],
-  [GET], [`/edges`], [none],
-  [GET], [`/edges/{id}`], [none],
-  [GET], [`/robots`], [none],
-  [POST], [`/robots`], [`<RobotState>`],
-  [GET], [`/robots/{id}`], [none],
-  [DELETE], [`/robots/{id}`], [none],
-  [POST], [`/robots/{id}/heartbeat`], [`<HeartbeatRequest>`],
-  [POST], [`/robots/{id}/route`], [`<AssignRouteRequest>`],
-  [POST], [`/robots/{id}/schedule`], [`<ScheduleRobotRouteRequest>`],
-  [GET], [`/claims`], [none],
-  [POST], [`/claims`], [`<ClaimRequestWire>`],
-  [POST], [`/claims/evaluate`], [`<ClaimRequestWire>`],
-  [GET], [`/claims/{id}`], [none],
-  [DELETE], [`/claims/{id}`], [none],
-  [GET], [`/leases`], [none],
-  [POST], [`/leases`], [`<Lease>`],
-  [POST], [`/leases/release`], [`<ReleaseLeaseRequest>`],
-  [DELETE], [`/leases/{id}`], [none],
+#table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
+  table.header([reason], [meaning]),
+  [0], [registered], [1], [mismatched key], [2], [already registered],
+  [3], [bad id (not an integer or UUID)], [4], [unsupported key scheme],
 )
 
-== XML calls
+== Heartbeat
 
-Health:
+Liveness + where the robot is. The reply is just an ack; the server timestamps
+it. Send one of `zone` / `node` / `edge`.
 
-```sh
-curl -H 'accept: application/xml' $XML_BASE/health
+```xml
+POST /ares/v1/robots/7/heartbeat
+  <hb><key>1234</key><zone>42</zone></hb>
+  <reply><decision>1</decision><reason>0</reason></reply>
 ```
 
-Zones:
-
 ```sh
-curl -H 'accept: application/xml' $XML_BASE/zones
+ros2 service call /ares/v1/robots/heartbeat ares_interfaces/srv/Json \
+  "{request: '{\"robot\":\"7\",\"key\":\"1234\",\"zone\":42}'}"
 ```
 
-Get zone:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/zones/100
-```
-
-Nodes:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/nodes
-```
-
-Get node:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/nodes/1001
-```
-
-Edges:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/edges
-```
-
-Get edge:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/edges/2001
-```
-
-Route:
-
-```sh
-curl -X POST $XML_BASE/routes/plan -H 'content-type: application/xml' -d '<PlanRouteRequest><start_node_id>1001</start_node_id><goal_node_id>1003</goal_node_id><use_penalties>false</use_penalties></PlanRouteRequest>'
-```
-
-Register robot:
-
-```sh
-curl -X POST $XML_BASE/robots -H 'content-type: application/xml' -d '<RobotState><robot_id>1</robot_id><mission_id>9001</mission_id><current_node_id>00000000-0000-0000-0000-000000001001</current_node_id><progress_state>Idle</progress_state><updated_at_tick>1</updated_at_tick></RobotState>'
-```
-
-List robots:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/robots
-```
-
-Get robot:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/robots/1
-```
-
-Unregister robot:
-
-```sh
-curl -X DELETE -H 'accept: application/xml' $XML_BASE/robots/1
-```
-
-Heartbeat:
-
-```sh
-curl -X POST $XML_BASE/robots/1/heartbeat -H 'content-type: application/xml' -d '<HeartbeatRequest><current_node_id>1002</current_node_id><updated_at_tick>70</updated_at_tick></HeartbeatRequest>'
-```
-
-Assign route:
-
-```sh
-curl -X POST $XML_BASE/robots/1/route -H 'content-type: application/xml' -d '<AssignRouteRequest><route_plan><start_node_id>00000000-0000-0000-0000-000000001001</start_node_id><goal_node_id>00000000-0000-0000-0000-000000001003</goal_node_id><total_cost>0</total_cost></route_plan><horizon>100</horizon><updated_at_tick>10</updated_at_tick></AssignRouteRequest>'
-```
-
-Schedule:
-
-```sh
-curl -X POST $XML_BASE/robots/1/schedule -H 'content-type: application/xml' -d '<ScheduleRobotRouteRequest><claim_id>10</claim_id><start_tick>20</start_tick><ticks_per_cost_unit>1.0</ticks_per_cost_unit><access_mode>Exclusive</access_mode></ScheduleRobotRouteRequest>'
-```
-
-Claim evaluate:
-
-```sh
-curl -X POST $XML_BASE/claims/evaluate -H 'content-type: application/xml' -d '<ClaimRequestWire><id>10</id><robot_id>1</robot_id><mission_id>9001</mission_id><access_mode>Exclusive</access_mode><priority>10</priority><requested_at_tick>10</requested_at_tick><window><start_tick>10</start_tick><end_tick>100</end_tick></window><targets><kind>Zone</kind><resource_id>100</resource_id></targets></ClaimRequestWire>'
-```
-
-Submit claim:
-
-```sh
-curl -X POST $XML_BASE/claims -H 'content-type: application/xml' -d '<ClaimRequestWire><id>10</id><robot_id>1</robot_id><mission_id>9001</mission_id><access_mode>Exclusive</access_mode><priority>10</priority><requested_at_tick>10</requested_at_tick><window><start_tick>10</start_tick><end_tick>100</end_tick></window><targets><kind>Zone</kind><resource_id>100</resource_id></targets></ClaimRequestWire>'
-```
-
-List claims:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/claims
-```
-
-Get claim:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/claims/10
-```
-
-Remove claim:
-
-```sh
-curl -X DELETE -H 'accept: application/xml' $XML_BASE/claims/10
-```
-
-List leases:
-
-```sh
-curl -H 'accept: application/xml' $XML_BASE/leases
-```
-
-Add lease:
-
-```sh
-curl -X POST $XML_BASE/leases -H 'content-type: application/xml' -d '<Lease><id>501</id><claim_id>10</claim_id><robot_id>1</robot_id><access_mode>Exclusive</access_mode><targets><kind>Zone</kind><resource_id>00000000-0000-0000-0000-000000000100</resource_id></targets><granted_at_tick>12</granted_at_tick><expires_at_tick>200</expires_at_tick><disposition>Active</disposition><active>true</active></Lease>'
-```
-
-Lease release:
-
-```sh
-curl -X POST $XML_BASE/leases/release -H 'content-type: application/xml' -d '<ReleaseLeaseRequest><lease_id>501</lease_id><released_at_tick>50</released_at_tick></ReleaseLeaseRequest>'
-```
-
-Release lease by path:
-
-```sh
-curl -X DELETE -H 'accept: application/xml' $XML_BASE/leases/501
-```
-
-= Zenoh and ROS2DDS
-
-The ARES server stays pure Zenoh. It does not link ROS2. ROS2 machines call it
-through `zenoh-bridge-ros2dds`, which translates a ROS2 service request into a
-Zenoh query.
-
-== ROS2 service catalog
-
-This is the complete ROS2DDS service surface currently exposed by ARES.
-
-#table(
-  columns: (42mm, 38mm, 42mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([ROS2 service], [ROS2 type], [Zenoh key], [Meaning]),
-  [`/ares/v1/health`], [`ares_interfaces/srv/Json`], [`ares/v1/health`], [Health/version as JSON.],
-  [`/ares/v1/fleet/snapshot`], [`ares_interfaces/srv/Json`], [`ares/v1/fleet/snapshot`], [Robots, claims, and leases.],
-  [`/ares/v1/zones/list`], [`ares_interfaces/srv/Json`], [`ares/v1/zones/list`], [List zones.],
-  [`/ares/v1/zones/get`], [`ares_interfaces/srv/Json`], [`ares/v1/zones/get`], [Get zone by id.],
-  [`/ares/v1/nodes/list`], [`ares_interfaces/srv/Json`], [`ares/v1/nodes/list`], [List nodes.],
-  [`/ares/v1/nodes/get`], [`ares_interfaces/srv/Json`], [`ares/v1/nodes/get`], [Get node by id.],
-  [`/ares/v1/edges/list`], [`ares_interfaces/srv/Json`], [`ares/v1/edges/list`], [List edges.],
-  [`/ares/v1/edges/get`], [`ares_interfaces/srv/Json`], [`ares/v1/edges/get`], [Get edge by id.],
-  [`/ares/v1/routes/plan`], [`ares_interfaces/srv/Json`], [`ares/v1/routes/plan`], [Plan route from JSON request.],
-  [`/ares/v1/robots/register`], [`ares_interfaces/srv/Json`], [`ares/v1/robots/register`], [Register robot from JSON request.],
-  [`/ares/v1/robots/list`], [`ares_interfaces/srv/Json`], [`ares/v1/robots/list`], [List robots.],
-  [`/ares/v1/robots/get`], [`ares_interfaces/srv/Json`], [`ares/v1/robots/get`], [Get robot.],
-  [`/ares/v1/robots/unregister`], [`ares_interfaces/srv/Json`], [`ares/v1/robots/unregister`], [Unregister robot.],
-  [`/ares/v1/robots/heartbeat`], [`ares_interfaces/srv/Json`], [`ares/v1/robots/heartbeat`], [Update robot progress.],
-  [`/ares/v1/robots/assign_route`], [`ares_interfaces/srv/Json`], [`ares/v1/robots/assign_route`], [Assign route plan.],
-  [`/ares/v1/robots/schedule`], [`ares_interfaces/srv/Json`], [`ares/v1/robots/schedule`], [Schedule robot from claim.],
-  [`/ares/v1/claims/list`], [`ares_interfaces/srv/Json`], [`ares/v1/claims/list`], [List active claims.],
-  [`/ares/v1/claims/get`], [`ares_interfaces/srv/Json`], [`ares/v1/claims/get`], [Get active claim.],
-  [`/ares/v1/claims/remove`], [`ares_interfaces/srv/Json`], [`ares/v1/claims/remove`], [Remove active claim.],
-  [`/ares/v1/claims/evaluate`], [`ares_interfaces/srv/Json`], [`ares/v1/claims/evaluate`], [Dry-run claim.],
-  [`/ares/v1/claims/request`], [`ares_interfaces/srv/Json`], [`ares/v1/claims/request`], [Submit claim if granted.],
-  [`/ares/v1/leases/list`], [`ares_interfaces/srv/Json`], [`ares/v1/leases/list`], [List leases.],
-  [`/ares/v1/leases/add`], [`ares_interfaces/srv/Json`], [`ares/v1/leases/add`], [Add lease.],
-  [`/ares/v1/leases/release`], [`ares_interfaces/srv/Json`], [`ares/v1/leases/release`], [Release lease.],
+#table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
+  table.header([reason], [meaning]),
+  [0], [ok], [1], [mismatched key], [2], [not registered],
 )
 
-The `/ares/v1/...` services are the real ARES ROS2DDS service surface.
+== Claim
 
-== `ares_interfaces/srv/Json`
+Reserve a zone (or node/edge — the type is in the path). To reserve several at
+once, repeat `<id>`; it is *all-or-nothing*. On denial, `<blocked>` names the id
+that stopped it. Two optional fields:
 
-The full ARES ROS2 service surface uses one generic JSON service type:
-
-```text
-string request
----
-bool success
-string response
-```
-
-The `.srv` file is included in this repository at:
-
-```text
-ros/ares_interfaces/srv/Json.srv
-```
-
-Rules:
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [`request`], [JSON request object encoded as a string. Use `{}` for no-input services.],
-  [`success`], [`true` when the call succeeded; `false` when ARES returned an error.],
-  [`response`], [On success: JSON response encoded as a string. On error: error text.],
+#table(columns: (24mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
+  table.header([Field], [Meaning]),
+  [`<AccessMode>`], [`1` = exclusive (default), `0` = unspecified (→ exclusive); `2`+ reserved for future modes and rejected for now.],
+  [`<LeaseTime>`], [minutes the claim should hold: `0` (default) = unlimited, `X` = X minutes.],
 )
 
-Example call:
+```xml
+POST /ares/v1/claims/zone
+  <claim><key>1234</key><robot>7</robot><id>42</id></claim>
+  <reply><decision>1</decision><reason>0</reason></reply>
 
-```sh
-ros2 service call /ares/v1/health ares_interfaces/srv/Json "{request: '{}'}"
+  <!-- several zones, atomic, exclusive, 30-minute lease -->
+  <claim><key>1234</key><robot>7</robot><id>42</id><id>43</id>
+         <AccessMode>1</AccessMode><LeaseTime>30</LeaseTime></claim>
+  <reply><decision>0</decision><reason>2</reason><blocked>43</blocked></reply>
 ```
 
-== Full ROS2 JSON services
-
-Health:
-
 ```sh
-ros2 service call /ares/v1/health ares_interfaces/srv/Json "{request: '{}'}"
+ros2 service call /ares/v1/claims/zone ares_interfaces/srv/Json \
+  "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":[42]}'}"
 ```
 
-Fleet snapshot:
-
-```sh
-ros2 service call /ares/v1/fleet/snapshot ares_interfaces/srv/Json "{request: '{}'}"
-```
-
-List zones:
-
-```sh
-ros2 service call /ares/v1/zones/list ares_interfaces/srv/Json "{request: '{}'}"
-```
-
-Get zone:
-
-```sh
-ros2 service call /ares/v1/zones/get ares_interfaces/srv/Json "{request: '{\"id\":\"100\"}'}"
-```
-
-List nodes:
-
-```sh
-ros2 service call /ares/v1/nodes/list ares_interfaces/srv/Json "{request: '{}'}"
-```
-
-Get node:
-
-```sh
-ros2 service call /ares/v1/nodes/get ares_interfaces/srv/Json "{request: '{\"id\":\"1001\"}'}"
-```
-
-List edges:
-
-```sh
-ros2 service call /ares/v1/edges/list ares_interfaces/srv/Json "{request: '{}'}"
-```
-
-Get edge:
-
-```sh
-ros2 service call /ares/v1/edges/get ares_interfaces/srv/Json "{request: '{\"id\":\"2001\"}'}"
-```
-
-Route planning:
-
-```sh
-ros2 service call /ares/v1/routes/plan ares_interfaces/srv/Json "{request: '{\"start_node_id\":\"1001\",\"goal_node_id\":\"1003\",\"use_penalties\":false}'}"
-```
-
-Register robot:
-
-```sh
-ros2 service call /ares/v1/robots/register ares_interfaces/srv/Json "{request: '{\"robot_id\":1,\"mission_id\":9001,\"current_node_id\":\"00000000-0000-0000-0000-000000001001\",\"progress_state\":\"Idle\",\"updated_at_tick\":1}'}"
-```
-
-List robots:
-
-```sh
-ros2 service call /ares/v1/robots/list ares_interfaces/srv/Json "{request: '{}'}"
-```
-
-Get robot:
-
-```sh
-ros2 service call /ares/v1/robots/get ares_interfaces/srv/Json "{request: '{\"robot_id\":1}'}"
-```
-
-Unregister robot:
-
-```sh
-ros2 service call /ares/v1/robots/unregister ares_interfaces/srv/Json "{request: '{\"robot_id\":1}'}"
-```
-
-Heartbeat:
-
-```sh
-ros2 service call /ares/v1/robots/heartbeat ares_interfaces/srv/Json "{request: '{\"robot_id\":1,\"heartbeat\":{\"current_node_id\":\"1002\",\"current_edge_id\":null,\"updated_at_tick\":70}}'}"
-```
-
-Assign route:
-
-```sh
-ros2 service call /ares/v1/robots/assign_route ares_interfaces/srv/Json "{request: '{\"robot_id\":1,\"assignment\":{\"route_plan\":{\"start_node_id\":\"00000000-0000-0000-0000-000000001001\",\"goal_node_id\":\"00000000-0000-0000-0000-000000001003\",\"steps\":[],\"traversed_node_ids\":[],\"traversed_edge_ids\":[],\"traversed_zone_ids\":[],\"traversed_node_zone_ids\":[],\"traversed_edge_zone_ids\":[],\"total_cost\":0.0},\"horizon\":100,\"updated_at_tick\":10}}'}"
-```
-
-Schedule:
-
-```sh
-ros2 service call /ares/v1/robots/schedule ares_interfaces/srv/Json "{request: '{\"robot_id\":1,\"schedule\":{\"claim_id\":10,\"start_tick\":20,\"ticks_per_cost_unit\":1.0,\"access_mode\":\"Exclusive\"}}'}"
-```
-
-List claims:
-
-```sh
-ros2 service call /ares/v1/claims/list ares_interfaces/srv/Json "{request: '{}'}"
-```
-
-Get claim:
-
-```sh
-ros2 service call /ares/v1/claims/get ares_interfaces/srv/Json "{request: '{\"claim_id\":10}'}"
-```
-
-Remove claim:
-
-```sh
-ros2 service call /ares/v1/claims/remove ares_interfaces/srv/Json "{request: '{\"claim_id\":10}'}"
-```
-
-Evaluate claim:
-
-```sh
-ros2 service call /ares/v1/claims/evaluate ares_interfaces/srv/Json "{request: '{\"id\":10,\"robot_id\":1,\"mission_id\":9001,\"access_mode\":\"Exclusive\",\"priority\":10,\"requested_at_tick\":10,\"window\":{\"start_tick\":10,\"end_tick\":100},\"targets\":[{\"kind\":\"Zone\",\"resource_id\":\"100\"}]}'}"
-```
-
-Submit claim:
-
-```sh
-ros2 service call /ares/v1/claims/request ares_interfaces/srv/Json "{request: '{\"id\":10,\"robot_id\":1,\"mission_id\":9001,\"access_mode\":\"Exclusive\",\"priority\":10,\"requested_at_tick\":10,\"window\":{\"start_tick\":10,\"end_tick\":100},\"targets\":[{\"kind\":\"Zone\",\"resource_id\":\"100\"}]}'}"
-```
-
-List leases:
-
-```sh
-ros2 service call /ares/v1/leases/list ares_interfaces/srv/Json "{request: '{}'}"
-```
-
-Add lease:
-
-```sh
-ros2 service call /ares/v1/leases/add ares_interfaces/srv/Json "{request: '{\"id\":501,\"claim_id\":10,\"robot_id\":1,\"access_mode\":\"Exclusive\",\"targets\":[{\"kind\":\"Zone\",\"resource_id\":\"00000000-0000-0000-0000-000000000100\"}],\"granted_at_tick\":12,\"expires_at_tick\":200,\"disposition\":\"Active\",\"active\":true}'}"
-```
-
-Release lease:
-
-```sh
-ros2 service call /ares/v1/leases/release ares_interfaces/srv/Json "{request: '{\"lease_id\":501,\"released_at_tick\":50}'}"
-```
-
-== ROS2 connection story
-
-On the ARES machine, the server listens for Zenoh peers on `tcp/0.0.0.0:7447`.
-On the ROS2 machine, connect the bridge to the ARES machine:
-
-```sh
-zenoh-bridge-ros2dds -e tcp/TIMENAV_IP:7447
-```
-
-Use `tcp/TIMENAV_IP:7447`, not `tcp://TIMENAV_IP:7447`.
-
-In another ROS2 terminal, source ROS and call the service:
-
-```sh
-ros2 service call /ares/v1/health ares_interfaces/srv/Json "{request: '{}'}"
-```
-
-Expected CLI shape:
-
-```text
-requester: making request: ares_interfaces.srv.Json_Request(request='{}')
-
-response:
-ares_interfaces.srv.Json_Response(
-  success=true,
-  response='{"status":"ok","version":"0.0.2"}'
+#table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
+  table.header([reason], [meaning]),
+  [0], [granted], [1], [mismatched key], [2], [conflict — someone holds it],
+  [3], [capacity exceeded (shared zone full)], [4], [unknown id],
+  [5], [bad request (no id, or unsupported `AccessMode`)],
 )
+
+Claiming a zone reserves everything inside it — so a zone claim and a claim on a
+node/edge within that zone conflict with each other.
+
+== Release
+
+Give back what this robot holds on a resource.
+
+```xml
+POST /ares/v1/leases/release/zone
+  <rel><key>1234</key><robot>7</robot><id>42</id></rel>
+  <reply><decision>1</decision><reason>0</reason></reply>
 ```
 
-If the bridge logs a route like this, the ROS2-to-Zenoh path is working:
-
-```text
-Route Service Client (ROS:/ares/v1/health <-> Zenoh:ares/v1/health) created
+```sh
+ros2 service call /ares/v1/leases/release/zone ares_interfaces/srv/Json \
+  "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":42}'}"
 ```
 
-#block(fill: rgb("#f8fafc"), stroke: rgb("#cbd5e1"), radius: 5pt, inset: 8pt)[
-  `ros2 service list` may not show the ARES services. That is expected in
-  the pure-Zenoh setup. The call works because the bridge creates the route
-  dynamically when the request is made.
+#table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
+  table.header([reason], [meaning]),
+  [0], [released], [1], [mismatched key], [2], [no such lease (robot holds nothing there)],
+  [3], [unknown id],
+)
+
+= A full run
+
+```sh
+B=http://<host>:8080/ares/v1
+xml() { curl -s -X POST "$B$1" -H 'content-type: application/xml' -d "$2"; echo; }
+
+xml /robots            '<reg><robot>7</robot><key>1234</key></reg>'
+xml /claims/zone       '<claim><key>1234</key><robot>7</robot><id>42</id></claim>'
+xml /robots/7/heartbeat '<hb><key>1234</key><zone>42</zone></hb>'
+xml /leases/release/zone '<rel><key>1234</key><robot>7</robot><id>42</id></rel>'
+```
+
+#block(fill: rgb("#fffbeb"), stroke: warn.lighten(20%), radius: 5pt, inset: 8pt)[
+  *JSON note.* On JSON the claim `id` is an array — `{"id":[42]}` for one,
+  `{"id":[42,43]}` for several. (XML just repeats `<id>`.) Numeric `robot`/`key`
+  may be quoted strings. See `PROTOCOL-advanced.typ` for the JSON transport.
 ]
-
-== ROS2 troubleshooting
-
-#table(
-  columns: (55mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Symptom], [Fix / explanation]),
-  [`Unicast not supported for tcp: protocol`], [The endpoint used `tcp://...`. Use `tcp/...` instead.],
-  [`ros2 service list` does not show the service], [Expected for this pure-Zenoh setup. Call the `/ares/v1/...` service directly.],
-  [`waiting for service to become available...`], [Keep the bridge running, then call directly. The bridge creates the route when it sees the client.],
-  [`received invalid request ... less than 20 bytes`], [Use CycloneDDS on the ROS2 side: `export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`.],
-  [No response], [Check firewall/NAT and confirm the bridge can reach `tcp/TIMENAV_IP:7447`.],
-)
-
-== Internal ROS2DDS response encoding
-
-ARES replies with a CDR-encoded `ares_interfaces/srv/Json_Response`:
-
-```text
-00 01 00 00                 CDR little-endian header
-01                           bool success
-00 00 00                     padding to 4 bytes
-<u32 len including NUL>       string length
-<UTF-8 JSON bytes>
-00                           trailing NUL
-<padding to 4 bytes>
-```
-
-= ARES native Zenoh services
-
-These are the ARES native Zenoh services from the `robo` adapter. They are JSON
-queryables under the `ares/v1` prefix. Request payloads are JSON strings where
-the table says a payload is required. Replies are JSON. Errors are Zenoh error
-replies with `{"message":"..."}`.
-
-== Complete Zenoh service catalog
-
-#table(
-  columns: (58mm, 1fr, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Key], [Payload], [Response]),
-  [`ares/v1/health`], [none], [`Health`],
-  [`ares/v1/fleet/snapshot`], [none], [`FleetSnapshot`],
-  [`ares/v1/zones/list`], [none], [`ZoneView[]`],
-  [`ares/v1/zones/get`], [`{"id":"100"}`], [`ZoneView`],
-  [`ares/v1/nodes/list`], [none], [`NodeView[]`],
-  [`ares/v1/nodes/get`], [`{"id":"1001"}`], [`NodeView`],
-  [`ares/v1/edges/list`], [none], [`EdgeView[]`],
-  [`ares/v1/edges/get`], [`{"id":"2001"}`], [`EdgeView`],
-  [`ares/v1/routes/plan`], [`PlanRouteRequest` JSON], [`PlanRouteResponse`],
-  [`ares/v1/robots/register`], [`RobotState` JSON], [`RobotState`],
-  [`ares/v1/robots/list`], [none], [`RobotState[]`],
-  [`ares/v1/robots/get`], [`{"robot_id":1}`], [`RobotState`],
-  [`ares/v1/robots/unregister`], [`{"robot_id":1}`], [`bool`],
-  [`ares/v1/robots/heartbeat`], [`{"robot_id":1,"heartbeat":...}`], [`RobotState`],
-  [`ares/v1/robots/assign_route`], [`{"robot_id":1,"assignment":...}`], [`RobotState`],
-  [`ares/v1/robots/schedule`], [`{"robot_id":1,"schedule":...}`], [`ScheduleDecision`],
-  [`ares/v1/claims/list`], [none], [`ClaimRequest[]`],
-  [`ares/v1/claims/get`], [`{"claim_id":10}`], [`ClaimRequest`],
-  [`ares/v1/claims/remove`], [`{"claim_id":10}`], [`bool`],
-  [`ares/v1/claims/evaluate`], [`ClaimRequestWire` JSON], [`ClaimEvaluation`],
-  [`ares/v1/claims/request`], [`ClaimRequestWire` JSON], [`ClaimEvaluation`],
-  [`ares/v1/leases/list`], [none], [`Lease[]`],
-  [`ares/v1/leases/add`], [`Lease` JSON], [`Lease`],
-  [`ares/v1/leases/release`], [`ReleaseLeaseRequest` JSON], [`bool`],
-)
-
-=== `ares/v1/health`
-
-Checks that the ARES service is alive.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [none],
-  [Response], [`Health`: `{"status":"ok","version":"0.0.2"}`],
-)
-
-=== `ares/v1/fleet/snapshot`
-
-Returns the whole live coordination state: robots, active claim requests, and
-leases.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [none],
-  [Response], [`FleetSnapshot`: `{"robots":[],"requests":[],"leases":[]}`],
-)
-
-=== `ares/v1/zones/list`
-
-Lists zones.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [none], [Response], [`ZoneView[]` JSON])
-
-=== `ares/v1/zones/get`
-
-Gets one zone by UUID or numeric alias.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [`{"id":"100"}`], [Response], [`ZoneView` JSON])
-
-=== `ares/v1/nodes/list`
-
-Lists nodes.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [none], [Response], [`NodeView[]` JSON])
-
-=== `ares/v1/nodes/get`
-
-Gets one node by UUID or numeric alias.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [`{"id":"1001"}`], [Response], [`NodeView` JSON])
-
-=== `ares/v1/edges/list`
-
-Lists edges.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [none], [Response], [`EdgeView[]` JSON])
-
-=== `ares/v1/edges/get`
-
-Gets one edge by UUID or numeric alias.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [`{"id":"2001"}`], [Response], [`EdgeView` JSON])
-
-=== `ares/v1/routes/plan`
-
-Plans a route between two graph nodes.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [`PlanRouteRequest` JSON],
-  [Response], [`PlanRouteResponse` JSON],
-)
-
-```json
-{"start_node_id":"1001","goal_node_id":"1003","use_penalties":false}
-```
-
-=== `ares/v1/robots/register`
-
-Registers or replaces a robot state.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [`RobotState` JSON],
-  [Response], [`RobotState` JSON],
-)
-
-```json
-{"robot_id":1,"mission_id":9001,"current_node_id":"00000000-0000-0000-0000-000000001001","progress_state":"Idle","updated_at_tick":1}
-```
-
-=== `ares/v1/robots/list`
-
-Lists all registered robots.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [none],
-  [Response], [`RobotState[]` JSON],
-)
-
-=== `ares/v1/robots/get`
-
-Gets one robot.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [`{"robot_id":1}`], [Response], [`RobotState` JSON])
-
-=== `ares/v1/robots/unregister`
-
-Unregisters one robot.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [`{"robot_id":1}`], [Response], [`bool`])
-
-=== `ares/v1/robots/heartbeat`
-
-Updates the robot's current node/edge and timestamp.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [`RobotHeartbeatEnvelope` JSON],
-  [Response], [`RobotState` JSON],
-)
-
-```json
-{"robot_id":1,"heartbeat":{"current_node_id":"1002","current_edge_id":null,"updated_at_tick":70}}
-```
-
-=== `ares/v1/robots/assign_route`
-
-Assigns an already computed route plan to a robot.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [`RobotAssignRouteEnvelope` JSON],
-  [Response], [`RobotState` JSON],
-)
-
-```json
-{
-  "robot_id": 1,
-  "assignment": {
-    "route_plan": {
-      "start_node_id": "00000000-0000-0000-0000-000000001001",
-      "goal_node_id": "00000000-0000-0000-0000-000000001003",
-      "steps": [],
-      "traversed_node_ids": [],
-      "traversed_edge_ids": [],
-      "traversed_zone_ids": [],
-      "traversed_node_zone_ids": [],
-      "traversed_edge_zone_ids": [],
-      "total_cost": 0.0
-    },
-    "horizon": 100,
-    "updated_at_tick": 10
-  }
-}
-```
-
-=== `ares/v1/robots/schedule`
-
-Schedules a robot from an existing claim.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [`RobotScheduleEnvelope` JSON],
-  [Response], [`ScheduleDecision` JSON],
-)
-
-```json
-{"robot_id":1,"schedule":{"claim_id":10,"start_tick":20,"ticks_per_cost_unit":1.0,"access_mode":"Exclusive"}}
-```
-
-=== `ares/v1/claims/list`
-
-Lists active claim requests.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [none],
-  [Response], [`ClaimRequest[]` JSON],
-)
-
-=== `ares/v1/claims/get`
-
-Gets one active claim request.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [`{"claim_id":10}`], [Response], [`ClaimRequest` JSON])
-
-=== `ares/v1/claims/remove`
-
-Removes one active claim request.
-
-#table(columns: (35mm, 1fr), inset: 5pt, stroke: rgb("#e2e8f0"), [Payload], [`{"claim_id":10}`], [Response], [`bool`])
-
-=== `ares/v1/claims/evaluate`
-
-Dry-runs a claim without storing it.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [`ClaimRequestWire` JSON],
-  [Response], [`ClaimEvaluation` JSON],
-)
-
-```json
-{"id":10,"robot_id":1,"mission_id":9001,"access_mode":"Exclusive","priority":10,"requested_at_tick":10,"window":{"start_tick":10,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}
-```
-
-=== `ares/v1/claims/request`
-
-Evaluates a claim and stores it if the decision is `Grant`.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [`ClaimRequestWire` JSON],
-  [Response], [`ClaimEvaluation` JSON],
-)
-
-```json
-{"id":10,"robot_id":1,"mission_id":9001,"access_mode":"Exclusive","priority":10,"requested_at_tick":10,"window":{"start_tick":10,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}
-```
-
-=== `ares/v1/leases/list`
-
-Lists leases.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [none],
-  [Response], [`Lease[]` JSON],
-)
-
-=== `ares/v1/leases/add`
-
-Adds a lease directly.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [`Lease` JSON],
-  [Response], [`Lease` JSON],
-)
-
-```json
-{"id":501,"claim_id":10,"robot_id":1,"access_mode":"Exclusive","targets":[{"kind":"Zone","resource_id":"00000000-0000-0000-0000-000000000100"}],"granted_at_tick":12,"expires_at_tick":200,"disposition":"Active","active":true}
-```
-
-=== `ares/v1/leases/release`
-
-Releases a lease.
-
-#table(
-  columns: (35mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  [Payload], [`ReleaseLeaseRequest` JSON],
-  [Response], [`bool`],
-)
-
-```json
-{"lease_id":501,"released_at_tick":50}
-```
-
-== Native Zenoh operating sequence
-
-The native Zenoh story mirrors REST:
-
-#table(
-  columns: (12mm, 55mm, 1fr),
-  inset: 5pt,
-  stroke: rgb("#e2e8f0"),
-  table.header([Step], [Zenoh key], [Payload]),
-  [1], [`ares/v1/health`], [none],
-  [2], [`ares/v1/robots/register`], [`RobotState`],
-  [3], [`ares/v1/routes/plan`], [`PlanRouteRequest`],
-  [4], [`ares/v1/claims/evaluate`], [`ClaimRequestWire` dry-run],
-  [5], [`ares/v1/claims/request`], [`ClaimRequestWire` store-if-granted],
-  [6], [`ares/v1/robots/heartbeat`], [`RobotHeartbeatEnvelope`],
-  [7], [`ares/v1/fleet/snapshot`], [none],
-  [8], [`ares/v1/leases/release`], [`ReleaseLeaseRequest`, if leases are used],
-)

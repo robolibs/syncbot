@@ -1,4 +1,4 @@
-//! Serve the timenav REST API over a workspace loaded from disk.
+//! Serve the syncbot REST API over a workspace loaded from disk.
 //!
 //! Unlike `rest_server.rs` (which builds a fixed in-memory workspace), this
 //! takes a zoneout workspace **directory** as input and serves whatever zones
@@ -21,7 +21,7 @@
 //!
 //! ```sh
 //! # by default the server listens on tcp/0.0.0.0:7447
-//! TIMENAV_ZENOH_LISTEN=tcp/0.0.0.0:7448
+//! SYNCBOT_ZENOH_LISTEN=tcp/0.0.0.0:7448
 //! ```
 //!
 //! A workspace directory is what `zoneout::Workspace::save(dir)` writes:
@@ -36,9 +36,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 #[cfg(feature = "robo")]
-use timenav::wire::ros2dds::{Ros2DdsAresJsonHandle, serve_ares_json_services};
-use timenav::wire::{ServeState, rest};
-use timenav::{Coordinator, NUMERIC_ID_PROPERTY, ValidationSeverity, WorkspaceIndex};
+use syncbot::wire::ros2dds::{Ros2DdsAresJsonHandle, serve_ares_json_services};
+use syncbot::wire::{ServeState, rest};
+use syncbot::{Coordinator, NUMERIC_ID_PROPERTY, ValidationSeverity, WorkspaceIndex};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use zoneout::Workspace;
@@ -108,7 +108,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    println!("\ntimenav serving workspace '{dir}' on http://{addr}");
+    println!("\nsyncbot serving workspace '{dir}' on http://{addr}");
     println!("try: curl http://{addr}/ares/v1/health");
     info!(addr = %addr, workspace = %dir, "REST server listening");
 
@@ -164,7 +164,7 @@ async fn start_ros2dds(state: ServeState) -> Option<(zenoh::Session, Ros2DdsAres
         ares_json_handle.task_count()
     );
     let listen =
-        std::env::var("TIMENAV_ZENOH_LISTEN").unwrap_or_else(|_| DEFAULT_ZENOH_LISTEN.to_string());
+        std::env::var("SYNCBOT_ZENOH_LISTEN").unwrap_or_else(|_| DEFAULT_ZENOH_LISTEN.to_string());
     println!("Zenoh listening for bridge/peer connections on {listen}");
     println!(
         "ROS2 test: ros2 service call /ares/v1/health ares_interfaces/srv/Json \"{{request: '{{}}'}}\""
@@ -177,22 +177,22 @@ async fn start_ros2dds(state: ServeState) -> Option<(zenoh::Session, Ros2DdsAres
 fn zenoh_config_from_env() -> Result<zenoh::Config, String> {
     let mut config = zenoh::Config::default();
 
-    if let Ok(raw) = std::env::var("TIMENAV_ZENOH_CONNECT") {
+    if let Ok(raw) = std::env::var("SYNCBOT_ZENOH_CONNECT") {
         let endpoints = split_env_list(&raw);
         if !endpoints.is_empty() {
             config
                 .insert_json5("connect/endpoints", &json_array(&endpoints))
-                .map_err(|err| format!("TIMENAV_ZENOH_CONNECT: {err}"))?;
+                .map_err(|err| format!("SYNCBOT_ZENOH_CONNECT: {err}"))?;
         }
     }
 
     let listen_raw =
-        std::env::var("TIMENAV_ZENOH_LISTEN").unwrap_or_else(|_| DEFAULT_ZENOH_LISTEN.to_string());
+        std::env::var("SYNCBOT_ZENOH_LISTEN").unwrap_or_else(|_| DEFAULT_ZENOH_LISTEN.to_string());
     let listen_endpoints = split_env_list(&listen_raw);
     if !listen_endpoints.is_empty() {
         config
             .insert_json5("listen/endpoints", &json_array(&listen_endpoints))
-            .map_err(|err| format!("TIMENAV_ZENOH_LISTEN: {err}"))?;
+            .map_err(|err| format!("SYNCBOT_ZENOH_LISTEN: {err}"))?;
     }
 
     Ok(config)
@@ -218,7 +218,7 @@ fn json_array(values: &[String]) -> String {
 
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,timenav=debug,tower_http=debug"));
+        .unwrap_or_else(|_| EnvFilter::new("info,syncbot=debug,tower_http=debug"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(true)

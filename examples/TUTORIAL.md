@@ -1,4 +1,4 @@
-# timenav REST tutorial
+# syncbot REST tutorial
 
 Start the server:
 
@@ -64,16 +64,19 @@ curl $BASE/edges/2001
 
 ## Register robots
 
-Register robot `1` at node `1001`:
+Registration is flat — just an id and an auth `key` (an integer password or
+`did:pass=<secret>`). The reply is `{"decision":1,"reason":0}` on success.
+
+Register robot `1` with key `1234`:
 
 ```sh
-curl -X POST $BASE/robots -H 'content-type: application/json' -d '{"robot_id":1,"mission_id":9001,"current_node_id":"00000000-0000-0000-0000-000000001001","progress_state":"Idle","updated_at_tick":1}'
+curl -X POST $BASE/robots -H 'content-type: application/json' -d '{"robot":"1","key":"1234"}'
 ```
 
-Register robot `2` at node `1003`:
+Register robot `2` with key `5678`:
 
 ```sh
-curl -X POST $BASE/robots -H 'content-type: application/json' -d '{"robot_id":2,"mission_id":9002,"current_node_id":"00000000-0000-0000-0000-000000001003","progress_state":"Idle","updated_at_tick":1}'
+curl -X POST $BASE/robots -H 'content-type: application/json' -d '{"robot":"2","key":"5678"}'
 ```
 
 List robots:
@@ -84,10 +87,14 @@ curl $BASE/robots
 
 ## Claim a zone
 
+Claims are flat — the type is in the path (`/claims/zone`), the body is the key,
+the robot, and the id(s). The reply is `decision` + `reason` (`2` = conflict),
+plus `blocked` naming the offending id on denial.
+
 Robot `1` claims zone `100` exclusively:
 
 ```sh
-curl -X POST $BASE/claims -H 'content-type: application/json' -d '{"id":10,"robot_id":1,"mission_id":9001,"access_mode":"Exclusive","priority":10,"requested_at_tick":10,"window":{"start_tick":10,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}'
+curl -X POST $BASE/claims/zone -H 'content-type: application/json' -d '{"key":"1234","robot":"1","id":[100]}'
 ```
 
 List active claims:
@@ -96,41 +103,40 @@ List active claims:
 curl $BASE/claims
 ```
 
-Check if robot `2` can claim the same zone. This should be denied while claim `10` is active:
+Robot `2` tries the same zone — denied while robot `1` holds it
+(`{"decision":0,"reason":2,"blocked":100}`):
 
 ```sh
-curl -X POST $BASE/claims/evaluate -H 'content-type: application/json' -d '{"id":11,"robot_id":2,"mission_id":9002,"access_mode":"Exclusive","priority":5,"requested_at_tick":11,"window":{"start_tick":10,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}'
+curl -X POST $BASE/claims/zone -H 'content-type: application/json' -d '{"key":"5678","robot":"2","id":[100]}'
 ```
 
-Remove/release claim `10`:
+Robot `1` releases zone `100`:
 
 ```sh
-curl -X DELETE $BASE/claims/10
+curl -X POST $BASE/leases/release/zone -H 'content-type: application/json' -d '{"key":"1234","robot":"1","id":100}'
 ```
 
 Now robot `2` can claim zone `100`:
 
 ```sh
-curl -X POST $BASE/claims -H 'content-type: application/json' -d '{"id":11,"robot_id":2,"mission_id":9002,"access_mode":"Exclusive","priority":5,"requested_at_tick":12,"window":{"start_tick":12,"end_tick":100},"targets":[{"kind":"Zone","resource_id":"100"}]}'
+curl -X POST $BASE/claims/zone -H 'content-type: application/json' -d '{"key":"5678","robot":"2","id":[100]}'
 ```
 
 ## Shared zone capacity
 
 Zone `101` is shared and has capacity `2`.
 
-Robot `1` shared claim:
+The flat `/claims/zone` uses an exclusive claim by default. To use shared
+capacity, fine-level clients submit the nested `POST /claims` body with
+`"access_mode":"Shared"` and a `"key"` (state-changing, so the key is required):
 
 ```sh
-curl -X POST $BASE/claims -H 'content-type: application/json' -d '{"id":20,"robot_id":1,"mission_id":9101,"access_mode":"Shared","priority":1,"requested_at_tick":20,"window":{"start_tick":20,"end_tick":120},"targets":[{"kind":"Zone","resource_id":"101"}]}'
+curl -X POST $BASE/claims -H 'content-type: application/json' -d '{"id":20,"robot_id":1,"key":"1234","mission_id":9101,"access_mode":"Shared","priority":1,"requested_at_tick":20,"window":{"start_tick":20,"end_tick":120},"targets":[{"kind":"Zone","resource_id":"101"}]}'
+curl -X POST $BASE/claims -H 'content-type: application/json' -d '{"id":21,"robot_id":2,"key":"5678","mission_id":9102,"access_mode":"Shared","priority":1,"requested_at_tick":21,"window":{"start_tick":20,"end_tick":120},"targets":[{"kind":"Zone","resource_id":"101"}]}'
 ```
 
-Robot `2` shared claim:
-
-```sh
-curl -X POST $BASE/claims -H 'content-type: application/json' -d '{"id":21,"robot_id":2,"mission_id":9102,"access_mode":"Shared","priority":1,"requested_at_tick":21,"window":{"start_tick":20,"end_tick":120},"targets":[{"kind":"Zone","resource_id":"101"}]}'
-```
-
-A third overlapping shared claim should be denied because capacity is already full:
+A third overlapping shared claim is denied once capacity is full. The dry-run
+`evaluate` is read-only and needs no key:
 
 ```sh
 curl -X POST $BASE/claims/evaluate -H 'content-type: application/json' -d '{"id":22,"robot_id":3,"mission_id":9103,"access_mode":"Shared","priority":1,"requested_at_tick":22,"window":{"start_tick":20,"end_tick":120},"targets":[{"kind":"Zone","resource_id":"101"}]}'
@@ -138,10 +144,11 @@ curl -X POST $BASE/claims/evaluate -H 'content-type: application/json' -d '{"id"
 
 ## Heartbeat
 
-Move robot `1` to node `1002`:
+Heartbeat is flat: key + position (zone, node, or edge). The server stamps the
+tick; the reply is just an ack. Move robot `1` to node `1002`:
 
 ```sh
-curl -X POST $BASE/robots/1/heartbeat -H 'content-type: application/json' -d '{"current_node_id":"1002","current_edge_id":null,"updated_at_tick":70}'
+curl -X POST $BASE/robots/1/heartbeat -H 'content-type: application/json' -d '{"key":"1234","node":"1002"}'
 ```
 
 Read robot `1`:
@@ -174,21 +181,17 @@ curl -X POST $BASE/leases/release -H 'content-type: application/json' -d '{"leas
 
 ## Cleanup
 
-Delete active claims:
+Release robot `2`'s zone `100` (flat, by robot + resource):
 
 ```sh
-curl -X DELETE $BASE/claims/10
+curl -X POST $BASE/leases/release/zone -H 'content-type: application/json' -d '{"key":"5678","robot":"2","id":100}'
 ```
 
-```sh
-curl -X DELETE $BASE/claims/11
-```
+The shared claims were submitted with explicit ids `20`/`21`, so a fine-level
+client can also remove them by id:
 
 ```sh
 curl -X DELETE $BASE/claims/20
-```
-
-```sh
 curl -X DELETE $BASE/claims/21
 ```
 

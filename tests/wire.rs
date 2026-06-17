@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use datapod::{Geo, Point, Polygon};
 use graphix::vertex::EdgeType;
-use timenav::wire::{
+use syncbot::wire::{
     ClaimRequestWire, ClaimTargetWire, HeartbeatRequest, PlanRouteRequest, ServeState,
     evaluate_claim, heartbeat, plan_route_request, register_robot,
 };
-use timenav::{
+use syncbot::{
     ClaimAccessMode, ClaimDecision, ClaimId, ClaimTargetKind, ClaimWindow, Coordinator, MissionId,
     NUMERIC_ID_PROPERTY, ResourceRef, RobotId, RobotState, WorkspaceIndex,
 };
@@ -78,6 +78,7 @@ fn evaluate_claim_resolves_numeric_resource_id() {
             kind: ClaimTargetKind::Zone,
             resource_id: ResourceRef::Numeric(205),
         }],
+        key: None,
     };
 
     let eval = evaluate_claim(&state, req).expect("evaluate");
@@ -102,6 +103,7 @@ fn evaluate_claim_rejects_unknown_numeric_id() {
             kind: ClaimTargetKind::Zone,
             resource_id: ResourceRef::Numeric(9999),
         }],
+        key: None,
     };
     let err = evaluate_claim(&state, req).expect_err("should fail");
     assert!(err.message.contains("9999"), "got: {}", err.message);

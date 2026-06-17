@@ -4,7 +4,7 @@
 use datapod::{Geo, Point, Polygon};
 use graphix::vertex::EdgeType;
 use std::collections::BTreeMap as OMap;
-use timenav::WorkspaceIndex;
+use syncbot::WorkspaceIndex;
 use zoneout::{Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
@@ -56,7 +56,7 @@ fn lookup_root_zone_and_validate() {
     let issues = idx.validation_issues();
     let errors = issues
         .iter()
-        .filter(|i| i.severity == timenav::ValidationSeverity::Error)
+        .filter(|i| i.severity == syncbot::ValidationSeverity::Error)
         .count();
     assert_eq!(errors, 0);
 }
@@ -94,7 +94,7 @@ fn edge_between_finds_undirected_edge() {
 
 #[test]
 fn numeric_id_property_resolves_to_uuid() {
-    use timenav::{NUMERIC_ID_PROPERTY, ResourceRef};
+    use syncbot::{NUMERIC_ID_PROPERTY, ResourceRef};
 
     let mut root = ZoneBuilder::new()
         .with_name("root")

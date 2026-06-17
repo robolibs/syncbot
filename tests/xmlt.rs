@@ -4,8 +4,8 @@
 
 #![cfg(feature = "xmlt")]
 
-use timenav::wire::{AssignRouteRequest, ClaimRequestWire, ClaimTargetWire, PlanRouteRequest};
-use timenav::{
+use syncbot::wire::{AssignRouteRequest, ClaimRequestWire, ClaimTargetWire, PlanRouteRequest};
+use syncbot::{
     ClaimAccessMode, ClaimId, ClaimTargetKind, ClaimWindow, MissionId, ResourceRef, RobotId,
 };
 
@@ -23,6 +23,7 @@ fn claim_request_wire_xml_roundtrip_numeric_target() {
             kind: ClaimTargetKind::Zone,
             resource_id: ResourceRef::Numeric(205),
         }],
+        key: None,
     };
 
     let xml = quick_xml::se::to_string(&req).expect("serialise");
@@ -123,4 +124,88 @@ fn assign_route_request_accepts_minimal_route_plan_xml() {
     assert_eq!(req.route_plan.steps.len(), 0);
     assert_eq!(req.route_plan.traversed_zone_ids.len(), 0);
     assert_eq!(req.horizon, 100);
+}
+
+// --- Flat (tier-1) envelope XML parsing ------------------------------------
+
+use syncbot::wire::{FlatClaim, FlatHeartbeat, FlatRegister, FlatRelease, FlatReply};
+
+#[test]
+fn flat_register_parses_xml() {
+    let req: FlatRegister =
+        quick_xml::de::from_str("<m><robot>7</robot><key>1234</key></m>").expect("de");
+    assert_eq!(req.robot, "7");
+    assert_eq!(req.key, "1234");
+    // did:pass key survives as a string
+    let req: FlatRegister =
+        quick_xml::de::from_str("<m><robot>7</robot><key>did:pass=secret</key></m>").expect("de");
+    assert_eq!(req.key, "did:pass=secret");
+}
+
+#[test]
+fn flat_heartbeat_parses_xml_zone_or_node() {
+    let req: FlatHeartbeat =
+        quick_xml::de::from_str("<m><key>1234</key><zone>42</zone></m>").expect("de");
+    assert_eq!(req.key, "1234");
+    assert_eq!(req.zone, Some(42));
+    assert_eq!(req.node, None);
+
+    let req: FlatHeartbeat =
+        quick_xml::de::from_str("<m><key>1234</key><node>12</node></m>").expect("de");
+    assert_eq!(req.node, Some(12));
+    assert_eq!(req.zone, None);
+}
+
+#[test]
+fn flat_claim_parses_repeated_ids_xml() {
+    let req: FlatClaim = quick_xml::de::from_str(
+        "<m><key>1234</key><robot>7</robot><id>42</id><id>43</id><id>44</id></m>",
+    )
+    .expect("de");
+    assert_eq!(req.robot, "7");
+    assert_eq!(req.id, vec![42, 43, 44]);
+
+    // single id
+    let req: FlatClaim =
+        quick_xml::de::from_str("<m><key>1234</key><robot>7</robot><id>42</id></m>").expect("de");
+    assert_eq!(req.id, vec![42]);
+}
+
+#[test]
+fn flat_release_parses_xml() {
+    let req: FlatRelease =
+        quick_xml::de::from_str("<m><key>1234</key><robot>7</robot><id>42</id></m>").expect("de");
+    assert_eq!(req.robot, "7");
+    assert_eq!(req.id, 42);
+}
+
+#[test]
+fn flat_reply_serialises_to_xml() {
+    let xml = quick_xml::se::to_string(&FlatReply::ok()).expect("ser");
+    // clean root, not the Rust type name `<FlatReply>`
+    assert!(xml.starts_with("<reply>"), "got {xml}");
+    assert!(!xml.contains("FlatReply"), "leaked Rust type name: {xml}");
+    assert!(xml.contains("<decision>1</decision>"));
+    assert!(xml.contains("<reason>0</reason>"));
+}
+
+#[test]
+fn flat_register_key_optional_xml() {
+    // no <key> -> default "0"
+    let req: FlatRegister = quick_xml::de::from_str("<m><robot>7</robot></m>").expect("de");
+    assert_eq!(req.robot, "7");
+    assert_eq!(req.key, "0");
+}
+
+#[test]
+fn flat_claim_access_mode_and_lease_xml() {
+    let req: FlatClaim = quick_xml::de::from_str(
+        "<m><robot>7</robot><id>42</id><AccessMode>1</AccessMode><LeaseTime>30</LeaseTime></m>",
+    )
+    .expect("de");
+    assert_eq!(req.key, "0"); // omitted -> default
+    assert_eq!(req.robot, "7");
+    assert_eq!(req.id, vec![42]);
+    assert_eq!(req.access_mode, Some(1));
+    assert_eq!(req.lease_time, Some(30));
 }

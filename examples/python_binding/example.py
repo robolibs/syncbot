@@ -1,4 +1,4 @@
-"""End-to-end Python smoke test of the timenav module.
+"""End-to-end Python smoke test of the syncbot module.
 
 Build with::
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import sys
 
-import timenav
+import syncbot
 
 
 def header(title: str) -> None:
@@ -22,34 +22,34 @@ def header(title: str) -> None:
 
 def main() -> int:
     header("version + constants")
-    print("version:", timenav.version())
-    print("zone policy kinds:", timenav.ZONE_POLICY_KINDS)
-    print("schedule decision kinds:", timenav.SCHEDULE_DECISION_KINDS)
+    print("version:", syncbot.version())
+    print("zone policy kinds:", syncbot.ZONE_POLICY_KINDS)
+    print("schedule decision kinds:", syncbot.SCHEDULE_DECISION_KINDS)
 
     header("traffic value parsers")
-    assert timenav.parse_traffic_bool("yes") is True
-    assert timenav.parse_traffic_u64("3") == 3
-    assert timenav.parse_traffic_f64("0.5") == 0.5
+    assert syncbot.parse_traffic_bool("yes") is True
+    assert syncbot.parse_traffic_u64("3") == 3
+    assert syncbot.parse_traffic_f64("0.5") == 0.5
 
     header("zone policy classification")
-    policy = timenav.parse_zone_policy({"traffic.policy": "exclusive",
+    policy = syncbot.parse_zone_policy({"traffic.policy": "exclusive",
                                         "traffic.capacity": "2"})
     print("policy:", json.dumps(policy, indent=2))
     assert policy["kind"] == "ExclusiveAccess"
     assert policy["capacity"] == 2
 
-    issues = timenav.validate_zone_traffic_properties({"traffic.bogus": "x"})
+    issues = syncbot.validate_zone_traffic_properties({"traffic.bogus": "x"})
     print("issues:", issues)
     assert len(issues) == 1
     assert issues[0]["severity"] == "Warning"
 
     header("right-of-way arbitration")
-    decision = timenav.arbitrate_right_of_way(self_is_emergency=True)
+    decision = syncbot.arbitrate_right_of_way(self_is_emergency=True)
     print("emergency self:", decision)
     assert decision == "proceed"
 
     header("ClaimManager")
-    mgr = timenav.ClaimManager()
+    mgr = syncbot.ClaimManager()
     request = {
         "id": 1, "robot_id": 1, "mission_id": 0,
         "access_mode": "Exclusive", "priority": 0,
@@ -81,7 +81,7 @@ def main() -> int:
     assert expired == 1
 
     header("Coordinator")
-    coord = timenav.Coordinator()
+    coord = syncbot.Coordinator()
     coord.register_robot({
         "robot_id": 7, "mission_id": 0,
         "current_node_id": None, "current_edge_id": None,
@@ -118,7 +118,7 @@ def main() -> int:
         "traversed_edge_zone_ids": [[]],
         "total_cost": 1.0,
     }
-    order = timenav.vda_order_from_route(plan)
+    order = syncbot.vda_order_from_route(plan)
     print("order edges:", len(order["edges"]), "version:", order["version"])
     assert order["version"] == "3.0.0"
 

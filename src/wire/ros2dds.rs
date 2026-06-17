@@ -18,11 +18,12 @@ use serde::de::DeserializeOwned;
 use tokio::task::JoinHandle;
 use zenoh::query::Query;
 
+use crate::claim::ClaimTargetKind;
 use crate::core::ids::{ClaimId, RobotId};
 use crate::index::ResourceRef;
 use crate::wire::{
-    ApiError, AssignRouteRequest, ClaimRequestWire, HeartbeatRequest, Lease, PlanRouteRequest,
-    ReleaseLeaseRequest, ScheduleRobotRouteRequest, ServeState,
+    ApiError, AssignRouteRequest, ClaimRequestWire, Lease, PlanRouteRequest, ReleaseLeaseRequest,
+    ScheduleRobotRouteRequest, ServeState,
 };
 
 /// Generic ROS2 service type used for all ARES JSON services.
@@ -127,8 +128,8 @@ pub async fn serve_ares_json_services(
             "ares/v1/robots/register",
             state.clone(),
             |state, req| {
-                let robot: crate::robot::RobotState = from_json(&req)?;
-                to_json(crate::wire::register_robot(&state, robot)?)
+                let r: crate::wire::FlatRegister = from_json(&req)?;
+                to_json(crate::wire::flat_register(&state, &r.robot, &r.key))
             },
         )
         .await?,
@@ -169,12 +170,10 @@ pub async fn serve_ares_json_services(
             "ares/v1/robots/heartbeat",
             state.clone(),
             |state, req| {
-                let request: RobotHeartbeatEnvelope = from_json(&req)?;
-                to_json(crate::wire::heartbeat(
-                    &state,
-                    request.robot_id,
-                    request.heartbeat,
-                )?)
+                let r: FlatHeartbeatEnvelope = from_json(&req)?;
+                to_json(crate::wire::flat_heartbeat(
+                    &state, &r.robot, &r.hb.key, r.hb.zone, r.hb.node, r.hb.edge,
+                ))
             },
         )
         .await?,
@@ -284,12 +283,56 @@ pub async fn serve_ares_json_services(
         .await?,
     );
     tasks.push(
-        spawn_json_service(session, "ares/v1/leases/release", state, |state, req| {
-            let request: ReleaseLeaseRequest = from_json(&req)?;
-            to_json(crate::wire::release_lease(&state, request)?)
-        })
+        spawn_json_service(
+            session,
+            "ares/v1/leases/release",
+            state.clone(),
+            |state, req| {
+                let request: ReleaseLeaseRequest = from_json(&req)?;
+                to_json(crate::wire::release_lease(&state, request)?)
+            },
+        )
         .await?,
     );
+
+    // Flat (tier-1) services — type from the service name, flat JSON body,
+    // decision/reason reply.
+    for (key, kind) in [
+        ("ares/v1/claims/zone", ClaimTargetKind::Zone),
+        ("ares/v1/claims/node", ClaimTargetKind::Node),
+        ("ares/v1/claims/edge", ClaimTargetKind::Edge),
+    ] {
+        tasks.push(
+            spawn_json_service(session, key, state.clone(), move |state, req| {
+                let r: crate::wire::FlatClaim = from_json(&req)?;
+                to_json(crate::wire::flat_claim(
+                    &state,
+                    kind,
+                    &r.key,
+                    &r.robot,
+                    &r.id,
+                    r.access_mode,
+                    r.lease_time,
+                ))
+            })
+            .await?,
+        );
+    }
+    for (key, kind) in [
+        ("ares/v1/leases/release/zone", ClaimTargetKind::Zone),
+        ("ares/v1/leases/release/node", ClaimTargetKind::Node),
+        ("ares/v1/leases/release/edge", ClaimTargetKind::Edge),
+    ] {
+        tasks.push(
+            spawn_json_service(session, key, state.clone(), move |state, req| {
+                let r: crate::wire::FlatRelease = from_json(&req)?;
+                to_json(crate::wire::flat_release(
+                    &state, kind, &r.key, &r.robot, r.id,
+                ))
+            })
+            .await?,
+        );
+    }
 
     Ok(Ros2DdsAresJsonHandle { tasks })
 }
@@ -398,10 +441,13 @@ fn pad_to_4(out: &mut Vec<u8>) {
     }
 }
 
+/// Flat heartbeat over ROS2DDS: robot id lives in the body (no URL here).
 #[derive(serde::Deserialize)]
-struct RobotHeartbeatEnvelope {
-    robot_id: RobotId,
-    heartbeat: HeartbeatRequest,
+struct FlatHeartbeatEnvelope {
+    #[serde(deserialize_with = "crate::wire::de_scalar_string")]
+    robot: String,
+    #[serde(flatten)]
+    hb: crate::wire::FlatHeartbeat,
 }
 
 #[derive(serde::Deserialize)]

@@ -1,5 +1,5 @@
 [package]
-name = "timenav"
+name = "syncbot"
 version = "0.0.2"
 edition = "2024"
 description = "Rust multi-robot navigation, claims, and scheduling library on top of zoneout"

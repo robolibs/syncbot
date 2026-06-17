@@ -1,6 +1,6 @@
 # Shared message types
 
-These live in `timenav::wire` and are shared by the REST and Zenoh adapters. Each
+These live in `syncbot::wire` and are shared by the REST and Zenoh adapters. Each
 adapter just chooses an encoding (JSON or XML) for them. JSON field names are
 shown; XML uses the same names as elements.
 
@@ -31,22 +31,36 @@ PlanRouteRequest {
     use_penalties: bool,          // default false
 }
 
-HeartbeatRequest {
-    current_node_id: Option<ResourceRef>,
-    current_edge_id: Option<ResourceRef>,
-    updated_at_tick: u64,
-}
-
 ScheduleRobotRouteRequest {
     claim_id:            ClaimId,
     start_tick:          u64,
     ticks_per_cost_unit: f64,
     access_mode:         ClaimAccessMode,   // "Exclusive" | "Shared"
+    key:                 Option<String>,    // required (state-changing)
 }
 
-AssignRouteRequest { route_plan: RoutePlan, horizon: u64, updated_at_tick: u64 }
+AssignRouteRequest { route_plan, horizon, updated_at_tick, key: Option<String> }
 
 ReleaseLeaseRequest { lease_id: LeaseId, released_at_tick: Option<u64> }
+```
+
+## Flat (tier-1) types
+
+The PLC-facing flows use flat request envelopes and one reply type. `key` is an
+integer password or `did:pass=<secret>`; `id` carries one or more ids.
+
+```rust
+FlatRegister  { robot: String, key: String }   // key optional, defaults to "0"
+FlatHeartbeat { key: String, zone: Option<u64>, node: Option<u64>, edge: Option<u64> }
+FlatClaim     { key: String, robot: String, id: Vec<u64>,
+                AccessMode: Option<u8>, LeaseTime: Option<u64> }
+FlatRelease   { key: String, robot: String, id: u64 }
+
+// key omitted -> shared default password (insecure)
+// AccessMode: 0/absent/1 -> exclusive; 2+ reserved (rejected)
+// LeaseTime: minutes; 0/absent -> unlimited
+
+FlatReply { decision: u8, reason: u8, blocked: Option<u64> }   // 1/0, enum, offending id
 ```
 
 ## Claim wire types
@@ -62,6 +76,7 @@ ClaimRequestWire {
     requested_at_tick: Option<u64>,    // omitted when None
     window: ClaimWindow,               // { start_tick?, end_tick? }
     targets: Vec<ClaimTargetWire>,
+    key: Option<String>,               // required on submit; ignored by evaluate
 }
 ```
 
