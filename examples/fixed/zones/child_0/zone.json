@@ -3,7 +3,7 @@
   "name": "dock_a",
   "type": "zone",
   "properties": {
-    "external.numeric_id": "100",
+    "external.numeric_id": "1",
     "traffic.claim_required": "true",
     "traffic.policy": "exclusive"
   },

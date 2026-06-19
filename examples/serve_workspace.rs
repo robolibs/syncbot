@@ -98,6 +98,10 @@ async fn main() -> ExitCode {
     let state = ServeState::new(Coordinator::with_index(idx));
     #[cfg(feature = "robo")]
     let _ros2dds = start_ros2dds(state.clone()).await;
+    // Auto-release the claims of robots that stop heartbeating (per their
+    // <alive> interval). Checks once a second.
+    let _sweeper =
+        syncbot::wire::spawn_inactive_sweeper(state.clone(), std::time::Duration::from_secs(1));
     let app = rest::router(state);
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {

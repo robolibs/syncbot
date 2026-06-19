@@ -972,6 +972,25 @@ impl Coordinator {
             .collect()
     }
 
+    /// Release the claims/leases of every robot that has gone inactive (no
+    /// heartbeat for `2 × interval`). The robot stays registered, so it resumes
+    /// once it heartbeats again. Returns the robots whose claims were actually
+    /// freed (so callers can log them). Idempotent — robots already freed are
+    /// not reported again.
+    pub fn sweep_inactive(&mut self, now_ms: u64) -> Vec<RobotId> {
+        let mut freed = Vec::new();
+        for robot_id in self.inactive_robots_at(now_ms) {
+            let removed = self.claim_manager.remove_requests_for_robot(robot_id)
+                + self
+                    .claim_manager
+                    .release_leases_for_robot(robot_id, Some(now_ms));
+            if removed > 0 {
+                freed.push(robot_id);
+            }
+        }
+        freed
+    }
+
     pub fn index(&self) -> Option<&WorkspaceIndex> {
         self.index.as_deref()
     }

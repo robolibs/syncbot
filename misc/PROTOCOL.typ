@@ -102,8 +102,9 @@ may be an *integer or a UUID string*.
 == Register
 
 Bind a robot id to a key. Do this once. Optional `<alive>` is the heartbeat
-interval in seconds (default 2); the server marks the robot inactive after `2×`
-that without a heartbeat.
+interval in seconds (default 2); if no heartbeat arrives for `2×` that, the
+server marks the robot inactive *and auto-releases all its claims* (so a crashed
+robot never leaves a zone stuck).
 
 ```xml
 POST /ares/v1/robots

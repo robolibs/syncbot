@@ -533,6 +533,36 @@ pub fn evaluate_claim(state: &ServeState, request: ClaimRequestWire) -> ApiResul
     Ok(coord.claim_manager().evaluate_request(&resolved))
 }
 
+/// Release the claims of any robot that has gone inactive (no heartbeat for
+/// `2 ×` its registered `alive` interval). Returns the robots that were freed.
+/// Call this periodically — see [`spawn_inactive_sweeper`].
+pub fn sweep_inactive(state: &ServeState) -> Vec<RobotId> {
+    match write_coord(state) {
+        Ok(mut coord) => coord.sweep_inactive(now_ms()),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Spawn a background task that calls [`sweep_inactive`] every `period`,
+/// auto-releasing the claims of robots that stopped heartbeating. Returns the
+/// task handle (drop/abort to stop). Requires a Tokio runtime.
+#[cfg(feature = "rest")]
+pub fn spawn_inactive_sweeper(
+    state: ServeState,
+    period: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(period);
+        loop {
+            ticker.tick().await;
+            let freed = sweep_inactive(&state);
+            for robot in freed {
+                tracing::info!(robot = robot.raw(), "auto-released inactive robot's claims");
+            }
+        }
+    })
+}
+
 /// Resolve a raw robot identifier (integer or UUID string) from a per-robot URL
 /// route to its internal [`RobotId`]. Errors if the robot is unknown.
 pub fn resolve_robot(state: &ServeState, raw: &str) -> ApiResult<RobotId> {

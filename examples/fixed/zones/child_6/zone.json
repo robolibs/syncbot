@@ -1,0 +1,11 @@
+{
+  "id": "00000000-0000-0000-0000-000000000107",
+  "name": "zone_7",
+  "type": "zone",
+  "properties": {
+    "external.numeric_id": "7",
+    "traffic.capacity": "2",
+    "traffic.policy": "shared"
+  },
+  "node_ids": []
+}

@@ -14,7 +14,8 @@ make run
 
 Useful numeric IDs:
 
-- zones: fixed_yard root + dock_a=100, cross_aisle=101, dock_b=102
+- zones: fixed_yard root + 3 docks (dock_a=1, dock_b=2, dock_c=3) and
+  4 zones (zone_4=4, zone_5=5, zone_6=6, zone_7=7)
 - nodes: dock_a_entry=1001, main_junction=1002, dock_b_entry=1003
 - edges: dock_a_to_junction=2001, junction_to_dock_b=2002
 

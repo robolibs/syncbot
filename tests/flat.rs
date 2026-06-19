@@ -413,3 +413,36 @@ fn alive_interval_marks_robot_inactive_after_2x() {
     // a robot with no alive info is treated as active
     assert!(c.robot_active_at(RobotId::new(99), 1_000_000));
 }
+
+#[test]
+fn inactive_robot_claims_auto_released() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let s = build_state();
+    flat_register(&s, "7", "1234", Some(1)); // 1s heartbeat interval
+    flat_register(&s, "8", "5678", Some(1));
+
+    // robot 7 holds zone 42; robot 8 is blocked
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
+        1
+    );
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], None, None).reason,
+        2
+    );
+
+    // simulate >2× alive (2s) elapsed with no heartbeat from 7, then sweep
+    let future = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 10_000;
+    let freed = s.coordinator().write().unwrap().sweep_inactive(future);
+    assert!(freed.contains(&RobotId::new(7)));
+
+    // zone 42 is now free — robot 8 can take it
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], None, None).decision,
+        1
+    );
+}

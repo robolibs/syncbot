@@ -122,8 +122,10 @@ carry the same fields (see §5).
 
 == Register — `POST /ares/v1/robots`
 
-Optional `<alive>` = heartbeat interval in seconds (default 2); the server marks
-the robot inactive after `2×` that without a heartbeat.
+Optional `<alive>` = heartbeat interval in seconds (default 2); if no heartbeat
+arrives for `2×` that, the server marks the robot inactive and **auto-releases
+all its claims** (a background sweeper frees zones held by crashed/disconnected
+robots, so nothing stays stuck).
 
 ```xml
 <reg><robot>7</robot><key>1234</key><alive>2</alive></reg>  <!-- key/alive optional; robot int or UUID -->

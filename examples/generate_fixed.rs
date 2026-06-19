@@ -14,8 +14,12 @@ use zoneout::{CoordMode, EdgeData, NodeData, Workspace, ZoneBuilder};
 
 const ROOT_ZONE: Uuid = uuid!("00000000-0000-0000-0000-000000000001");
 const ZONE_DOCK_A: Uuid = uuid!("00000000-0000-0000-0000-000000000100");
-const ZONE_CROSS_AISLE: Uuid = uuid!("00000000-0000-0000-0000-000000000101");
 const ZONE_DOCK_B: Uuid = uuid!("00000000-0000-0000-0000-000000000102");
+const ZONE_DOCK_C: Uuid = uuid!("00000000-0000-0000-0000-000000000103");
+const ZONE_4: Uuid = uuid!("00000000-0000-0000-0000-000000000104");
+const ZONE_5: Uuid = uuid!("00000000-0000-0000-0000-000000000105");
+const ZONE_6: Uuid = uuid!("00000000-0000-0000-0000-000000000106");
+const ZONE_7: Uuid = uuid!("00000000-0000-0000-0000-000000000107");
 
 const NODE_DOCK_A: Uuid = uuid!("00000000-0000-0000-0000-000000001001");
 const NODE_JUNCTION: Uuid = uuid!("00000000-0000-0000-0000-000000001002");
@@ -104,33 +108,71 @@ fn build_workspace() -> Workspace {
         .expect("root zone");
     root.set_id(ROOT_ZONE);
 
+    // 3 docks (exclusive) ...
     root.add_child(zone(
         "dock_a",
         ZONE_DOCK_A,
-        100,
+        1,
         (10.0, 10.0, 60.0, 60.0),
         "exclusive",
         &[("traffic.claim_required", "true")],
     ))
     .expect("dock_a");
     root.add_child(zone(
-        "cross_aisle",
-        ZONE_CROSS_AISLE,
-        101,
-        (65.0, 20.0, 115.0, 125.0),
-        "shared",
-        &[("traffic.capacity", "2"), ("traffic.speed_limit", "1.2")],
-    ))
-    .expect("cross_aisle");
-    root.add_child(zone(
         "dock_b",
         ZONE_DOCK_B,
-        102,
+        2,
         (125.0, 10.0, 175.0, 60.0),
         "exclusive",
         &[("traffic.claim_required", "true")],
     ))
     .expect("dock_b");
+    root.add_child(zone(
+        "dock_c",
+        ZONE_DOCK_C,
+        3,
+        (65.0, 10.0, 115.0, 60.0),
+        "exclusive",
+        &[("traffic.claim_required", "true")],
+    ))
+    .expect("dock_c");
+    // ... and 4 general zones.
+    root.add_child(zone(
+        "zone_4",
+        ZONE_4,
+        4,
+        (10.0, 70.0, 60.0, 120.0),
+        "exclusive",
+        &[("traffic.claim_required", "true")],
+    ))
+    .expect("zone_4");
+    root.add_child(zone(
+        "zone_5",
+        ZONE_5,
+        5,
+        (65.0, 70.0, 115.0, 120.0),
+        "shared",
+        &[("traffic.capacity", "2")],
+    ))
+    .expect("zone_5");
+    root.add_child(zone(
+        "zone_6",
+        ZONE_6,
+        6,
+        (125.0, 70.0, 175.0, 120.0),
+        "exclusive",
+        &[("traffic.claim_required", "true")],
+    ))
+    .expect("zone_6");
+    root.add_child(zone(
+        "zone_7",
+        ZONE_7,
+        7,
+        (10.0, 130.0, 60.0, 180.0),
+        "shared",
+        &[("traffic.capacity", "2")],
+    ))
+    .expect("zone_7");
     let mut ws = Workspace::new(root);
     ws.set_coord_mode(CoordMode::Local);
     ws.set_datum(Geo::new(52.0, 5.0, 0.0));
@@ -184,7 +226,8 @@ make run
 
 Useful numeric IDs:
 
-- zones: fixed_yard root + dock_a=100, cross_aisle=101, dock_b=102
+- zones: fixed_yard root + 3 docks (dock_a=1, dock_b=2, dock_c=3) and
+  4 zones (zone_4=4, zone_5=5, zone_6=6, zone_7=7)
 - nodes: dock_a_entry=1001, main_junction=1002, dock_b_entry=1003
 - edges: dock_a_to_junction=2001, junction_to_dock_b=2002
 

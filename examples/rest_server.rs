@@ -86,6 +86,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     let coord = Coordinator::with_index(idx);
     let state = ServeState::new(coord);
+    let _sweeper =
+        syncbot::wire::spawn_inactive_sweeper(state.clone(), std::time::Duration::from_secs(1));
     let app = rest::router(state);
 
     let addr = "127.0.0.1:8080";
