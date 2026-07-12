@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.3] - 2026-07-12
+
+### <!-- 0 -->⛰️  Features
+
+- Small changes and persistence
+- TDD
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- USECASE scenario
+- Cleanup
+
 ## [0.1.2] - 2026-06-17
 
 ### <!-- 0 -->⛰️  Features
