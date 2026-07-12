@@ -10,7 +10,7 @@ use std::sync::Arc;
 use datapod::{Geo, Point, Polygon};
 use syncbot::wire::{
     ClaimRequestWire, ClaimTargetWire, ReleaseLeaseRequest, ServeState, add_lease, flat_claim,
-    flat_heartbeat, flat_register, flat_release, remove_claim, release_lease, submit_claim,
+    flat_heartbeat, flat_register, flat_release, release_lease, remove_claim, submit_claim,
     unregister_robot,
 };
 use syncbot::{
@@ -513,9 +513,7 @@ fn admin_auth_on_protects_keyed_but_not_keyless_robot() {
 
     // Robot 8 registered bound to the DEFAULT key "0" (keyless) -> stays open.
     flat_register(&s, "8", "0", None);
-    assert!(
-        unregister_robot(&s, RobotId::new(8), None).expect("keyless unregister stays open")
-    );
+    assert!(unregister_robot(&s, RobotId::new(8), None).expect("keyless unregister stays open"));
 }
 
 // ---------------------------------------------------------------------------

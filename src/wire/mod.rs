@@ -24,6 +24,9 @@ use crate::route::{RouteFailure, RoutePlan, plan_route};
 #[cfg(feature = "rest")]
 pub mod rest;
 
+#[cfg(feature = "peerbus")]
+pub mod peerbus;
+
 #[cfg(feature = "robo")]
 pub mod robo;
 
@@ -555,11 +558,7 @@ pub fn find_claim(state: &ServeState, claim_id: ClaimId) -> ApiResult<ClaimReque
         .ok_or_else(|| ApiError::new(format!("claim {claim_id} is not active")))
 }
 
-pub fn remove_claim(
-    state: &ServeState,
-    claim_id: ClaimId,
-    key: Option<String>,
-) -> ApiResult<bool> {
+pub fn remove_claim(state: &ServeState, claim_id: ClaimId, key: Option<String>) -> ApiResult<bool> {
     let mut coord = write_coord(state)?;
     // Opt-in auth: enforce the owning robot's key. If the claim is unknown there
     // is no owner to protect — fall through to the unchanged `false`.

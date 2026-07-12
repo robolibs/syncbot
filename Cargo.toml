@@ -24,15 +24,17 @@ crate-type = ["rlib", "cdylib"]
 default = []
 python = ["dep:pyo3"]
 python-extension = ["python"]
-rest = ["dep:axum", "dep:tokio", "dep:tower-http", "dep:tracing", "dep:tracing-subscriber"]
-robo = ["dep:tokio", "dep:zenoh"]
-xmlt = ["dep:axum", "dep:quick-xml"]
+peerbus = ["dep:peerbus"]
+rest = ["peerbus", "dep:axum", "dep:tokio", "dep:tower", "dep:tower-http", "dep:tracing", "dep:tracing-subscriber"]
+robo = ["peerbus", "dep:tokio", "dep:zenoh"]
+xmlt = ["peerbus", "dep:axum", "dep:quick-xml"]
 
 [dependencies]
 zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", tag = "0.1.1" }
 concord = { git = "https://codeberg.org/robolibs/concord.git", tag = "0.1.1" }
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.0" }
+datapod = { path = "../datapod" }
 graphix = { git = "https://codeberg.org/robolibs/graphix.git", tag = "0.1.1" }
+peerbus = { git = "https://codeberg.org/robolibs/peerbus", tag = "0.4.0", optional = true, default-features = false }
 axum = { version = "0.8.9", optional = true }
 pyo3 = { version = "0.23", optional = true, features = [
     "abi3-py39",
@@ -42,12 +44,16 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1.52", features = ["rt", "macros", "net", "time", "signal"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.6", features = ["trace"], optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["ansi", "env-filter", "fmt"], optional = true }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 zenoh = { version = "1.9.0", optional = true }
 quick-xml = { version = "0.36", features = ["serialize"], optional = true }
+
+[patch."https://codeberg.org/robolibs/datapod.git"]
+datapod = { path = "../datapod" }
 
 [[example]]
 name = "rest_server"

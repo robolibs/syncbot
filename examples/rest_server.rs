@@ -117,6 +117,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("admin auth ENABLED: mutation endpoints require the owning robot's key");
     }
     let state = ServeState::new(coord).with_admin_auth(admin_auth);
+    // peerbus owns an internal Tokio runtime. Construct it on a plain thread,
+    // outside this example's async runtime, to avoid nested-runtime panics.
+    let peerbus_state = state.clone();
+    let peerbus_identity = std::env::var("SYNCBOT_PEERBUS_IDENTITY")
+        .unwrap_or_else(|_| syncbot::wire::peerbus::CORE_IDENTITY.to_string());
+    let started = std::thread::spawn(move || -> Result<_, String> {
+        let core =
+            syncbot::wire::peerbus::CoreService::with_identity(peerbus_state, &peerbus_identity)
+                .map_err(|err| format!("start canonical peerbus core: {err}"))?;
+        let client = syncbot::wire::peerbus::Client::connect(peerbus_identity)
+            .map_err(|err| format!("start peerbus adapter client: {err}"))?;
+        Ok((core, client))
+    })
+    .join()
+    .map_err(|_| std::io::Error::other("peerbus startup thread panicked"))?
+    .map_err(std::io::Error::other)?;
+    let (_core, peerbus) = started;
     let _sweeper =
         syncbot::wire::spawn_inactive_sweeper(state.clone(), std::time::Duration::from_secs(1));
     // Periodic state flush (only when persistence is enabled), every 2s.
@@ -133,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
     });
-    let app = rest::router(state.clone());
+    let app = rest::router(peerbus);
 
     let addr = "127.0.0.1:8080";
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -149,26 +166,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("try: curl http://{addr}/ares/v1/health");
     info!(addr = %addr, "REST demo server listening");
 
-    // When persistence is enabled, flush a final snapshot on Ctrl-C via
-    // graceful shutdown. When it is not, keep the exact prior serve path.
-    match persist_path.clone() {
-        Some(path) => {
-            let coord_handle = state.coordinator();
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    let _ = tokio::signal::ctrl_c().await;
-                    if let Err(e) =
-                        syncbot::persist::flush(&coord_handle, std::path::Path::new(&path))
-                    {
-                        tracing::warn!(error = %e, "final state flush on shutdown failed");
-                    } else {
-                        info!("flushed final syncbot state on shutdown");
-                    }
-                })
-                .await?;
-        }
-        None => axum::serve(listener, app).await?,
-    }
+    // Always shut down gracefully so peerbus can unlink its SHM segments.
+    let coord_handle = state.coordinator();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            if let Some(path) = persist_path {
+                if let Err(e) = syncbot::persist::flush(&coord_handle, std::path::Path::new(&path))
+                {
+                    tracing::warn!(error = %e, "final state flush on shutdown failed");
+                } else {
+                    info!("flushed final syncbot state on shutdown");
+                }
+            }
+        })
+        .await?;
     Ok(())
 }
 

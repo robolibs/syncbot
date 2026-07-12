@@ -12,6 +12,12 @@ EXAMPLE ?= serve_workspace
 RUN_FEATURES ?= rest robo xmlt
 RUN_ARGS ?= examples/fixed
 RUN_FEATURE_ARGS := $(if $(strip $(RUN_FEATURES)),--features "$(RUN_FEATURES)",)
+ROS_SETUP ?= /opt/ros/jazzy/setup.bash
+ROS2_BUILD_ROOT ?= $(TOP_DIR)/target/usecase-ros2
+ROS2_INTERFACE_SETUP ?= $(ROS2_BUILD_ROOT)/install/share/ares_interfaces/local_setup.bash
+ROS2_BIN ?= /opt/ros/jazzy/bin/ros2
+ROS2_PYTHON ?=
+ROS2_BRIDGE ?= zenoh-bridge-ros2dds
 
 HAS_REL := $(shell command -v git-rel 2>/dev/null)
 
@@ -19,7 +25,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t check fmt bench clean bind bind-c bind-py help h
+.PHONY: build b compile c run r test t test-peerbus test-all ros2-interface test-usecase-rest test-usecase-ros2 test-usecase-mixed test-usecase check check-peerbus check-all check-python-adapter fmt bench clean bind bind-c bind-py help h
 
 build:
 	@$(CARGO) build --lib
@@ -54,11 +60,55 @@ test:
 
 t: test
 
+test-peerbus:
+	@$(CARGO) test --all-targets --features peerbus
+
+test-all:
+	@$(CARGO) test --all-targets --features "peerbus rest robo xmlt"
+
+test-usecase-rest:
+	@$(CARGO) build --example serve_workspace --features "rest robo xmlt"
+	@bash tests/usecase/rest.sh
+
+ros2-interface:
+	@bash -c 'set -eo pipefail; cmake_bin="$$(command -v cmake)"; python_bin="$$(command -v python3)"; \
+		source "$(ROS_SETUP)"; set -u; \
+		"$$cmake_bin" -S misc/ros2/ares_interfaces -B "$(ROS2_BUILD_ROOT)/build" \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_INSTALL_PREFIX="$(ROS2_BUILD_ROOT)/install" \
+			-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+			-DPython3_EXECUTABLE="$$python_bin"; \
+		"$$cmake_bin" --build "$(ROS2_BUILD_ROOT)/build" --parallel; \
+		"$$cmake_bin" --install "$(ROS2_BUILD_ROOT)/build"'
+
+test-usecase-ros2: ros2-interface
+	@$(CARGO) build --example serve_workspace --features "rest robo xmlt"
+	@ROS_SETUP="$(ROS_SETUP)" ROS2_INTERFACE_SETUP="$(ROS2_INTERFACE_SETUP)" \
+		ROS2_BIN="$(ROS2_BIN)" ROS2_PYTHON="$(ROS2_PYTHON)" ROS2_BRIDGE="$(ROS2_BRIDGE)" \
+		bash tests/usecase/ros2.sh
+
+test-usecase-mixed: ros2-interface
+	@$(CARGO) build --example serve_workspace --features "rest robo xmlt"
+	@ROS_SETUP="$(ROS_SETUP)" ROS2_INTERFACE_SETUP="$(ROS2_INTERFACE_SETUP)" \
+		ROS2_BIN="$(ROS2_BIN)" ROS2_PYTHON="$(ROS2_PYTHON)" ROS2_BRIDGE="$(ROS2_BRIDGE)" \
+		bash tests/usecase/mixed.sh
+
+test-usecase: test-usecase-rest test-usecase-ros2 test-usecase-mixed
+
 check:
 	@$(CARGO) check --all-targets
 
+check-peerbus:
+	@$(CARGO) check --all-targets --features peerbus
+
+check-all:
+	@$(CARGO) check --all-targets --features "peerbus rest robo xmlt"
+
+check-python-adapter:
+	@$(MAKE) -C examples/python_adapter check
+
 fmt:
-	@$(CARGO) fmt --all
+	@$(CARGO) fmt --package $(PROJECT_NAME)
 
 clean:
 	@$(CARGO) clean
@@ -98,8 +148,18 @@ help:
 	@echo "  compile      Clean and rebuild"
 	@echo "  run          Run the workspace server (REST + Zenoh when available)"
 	@echo "  test         Run all tests"
+	@echo "  test-peerbus Test the canonical peerbus core/client"
+	@echo "  test-all     Test all transport adapters"
+	@echo "  test-usecase-rest Run the live curl REST/XML battery from misc/USECASE.typ"
+	@echo "  test-usecase-ros2 Run the live ros2 service/bridge battery"
+	@echo "  test-usecase-mixed Run the cross-transport REST/XML + ROS2 battery"
+	@echo "  ros2-interface Build ares_interfaces/srv/Json for the live ROS2 battery"
+	@echo "  test-usecase Run every live transport battery from misc/USECASE.typ"
 	@echo "  bind         Generate both C and Python bindings"
 	@echo "  check        Run cargo check on all targets"
+	@echo "  check-peerbus Check the canonical peerbus core/client"
+	@echo "  check-all    Check all transport adapters"
+	@echo "  check-python-adapter Syntax-check the out-of-process Python adapter"
 	@echo "  fmt          Format the workspace"
 	@echo "  clean        Remove Cargo build artifacts"
 	@echo "  docs         Build the documentation"

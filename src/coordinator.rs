@@ -685,8 +685,11 @@ pub fn rolling_horizon_claim_request(
             plan.steps[start_node_index as usize].cumulative_cost
         };
         let remaining_cost = (plan.total_cost - traversed_cost).max(0.0);
-        request.window.end_tick =
-            Some(state.updated_at_tick.saturating_add(remaining_cost.ceil() as u64));
+        request.window.end_tick = Some(
+            state
+                .updated_at_tick
+                .saturating_add(remaining_cost.ceil() as u64),
+        );
     } else {
         request.window.end_tick = Some(state.updated_at_tick);
     }
@@ -971,7 +974,9 @@ impl Coordinator {
     /// an interval) are treated as active.
     pub fn robot_active_at(&self, robot_id: RobotId, now_ms: u64) -> bool {
         match self.robot_alive.get(&robot_id) {
-            Some(a) => now_ms.saturating_sub(a.last_seen_ms) <= a.interval_secs.saturating_mul(2_000),
+            Some(a) => {
+                now_ms.saturating_sub(a.last_seen_ms) <= a.interval_secs.saturating_mul(2_000)
+            }
             None => true,
         }
     }
@@ -980,7 +985,9 @@ impl Coordinator {
     pub fn inactive_robots_at(&self, now_ms: u64) -> Vec<RobotId> {
         self.robot_alive
             .iter()
-            .filter(|(_, a)| now_ms.saturating_sub(a.last_seen_ms) > a.interval_secs.saturating_mul(2_000))
+            .filter(|(_, a)| {
+                now_ms.saturating_sub(a.last_seen_ms) > a.interval_secs.saturating_mul(2_000)
+            })
             .map(|(id, _)| *id)
             .collect()
     }

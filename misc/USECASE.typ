@@ -38,9 +38,10 @@
   One protocol, three transports — every command shown in full. The
   register / heartbeat / claim / release battery runs over *REST/XML* (`curl`),
   over *ROS2* (`ros2 service call` through `zenoh-bridge-ros2dds`), and *mixed*
-  across both, against one coordinator and one 7-zone workspace where *every zone
-  is exclusive* (`dock_a=1 … dock_c=3`, `zone_4=4 … zone_7=7`). Server version
-  `0.1.2`. Every reply is captured from a live run.
+  across both, against one coordinator and one 7-zone workspace
+  (`dock_a=1 … dock_c=3`, `zone_4=4 … zone_7=7`). Zones 1–4 and 6 are exclusive;
+  zones 5 and 7 are shared with capacity 2. Server version `0.1.3`. Every reply
+  is captured from a live run.
 
   *Auto-release:* a robot loses its zones when it stops heart-beating — no manual
   reset. Register with a high `<alive>` (e.g. `9999`) to avoid constant
@@ -60,7 +61,7 @@ Set `B=http://<host>:8080/ares/v1`. Replies shown after `# ->`.
 
 ```sh
 curl -s "$B/health"
-# -> {"status":"ok","version":"0.1.2"}
+# -> {"status":"ok","version":"0.1.3"}
 curl -s "$B/zones"          # -> [ … zones: dock_a, dock_b, dock_c, zone_4 … zone_7 ]
 curl -s "$B/zones/3"        # -> {"numeric_id":3,"name":"dock_c",…,"traffic.policy":"exclusive"}
 curl -s "$B/zones/99"       # -> {"message":"unknown zone id Numeric(99)"}
@@ -175,7 +176,7 @@ curl -s -X POST "$B/claims/zone" -H 'content-type: application/xml' \
 
 #caution[*`access_mode 2`* now means *shared*, not "reserved" — on a free zone it
 is granted, and only lets robots coexist on a `shared`-policy zone with capacity
-> 1. On this all-exclusive map it behaves like a normal claim. `access_mode 3`+ is
+> 1. On a free exclusive zone it behaves like a normal claim. `access_mode 3`+ is
 still reserved (→ reason `5`).]
 
 = ROS2 — `ros2 service call`
@@ -187,7 +188,7 @@ The generic service type is `ares_interfaces/srv/Json`; the reply is
 
 ```sh
 ros2 service call /ares/v1/health ares_interfaces/srv/Json "{request: '{}'}"
-# -> response: {"status":"ok","version":"0.1.2"}
+# -> response: {"status":"ok","version":"0.1.3"}
 ros2 service call /ares/v1/zones/get ares_interfaces/srv/Json "{request: '{\"id\":\"3\"}'}"
 # -> response: {"numeric_id":3,"name":"dock_c", … }
 ros2 service call /ares/v1/zones/get ares_interfaces/srv/Json "{request: '{\"id\":\"99\"}'}"
@@ -340,4 +341,4 @@ ros2 service call /ares/v1/claims/zone ares_interfaces/srv/Json \
 
 #note[Captured live: REST via `curl`, ROS2 via `ros2 service call` through
 `zenoh-bridge-ros2dds` on CycloneDDS, all against one coordinator on the
-all-exclusive workspace.]
+same seven-zone workspace.]

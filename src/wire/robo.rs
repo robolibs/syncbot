@@ -1,6 +1,4 @@
-//! Zenoh robotics adapter for the syncbot core.
-//!
-//! Enabled with `--features robo`.
+//! Zenoh adapter for the canonical ARES peerbus service.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -8,17 +6,10 @@ use tokio::task::JoinHandle;
 use zenoh::query::Query;
 
 use crate::claim::ClaimTargetKind;
-use crate::core::ids::{ClaimId, RobotId};
-use crate::index::ResourceRef;
-use crate::wire::{
-    ApiError, AssignRouteRequest, ClaimRequestWire, Lease, PlanRouteRequest, ReleaseLeaseRequest,
-    ScheduleRobotRouteRequest, ServeState,
-};
+use crate::wire::{ApiError, ApiResult};
 
-/// Zenoh key-expression prefix used by `PRESENTATION.md`.
 pub const ROBO_PREFIX: &str = "ares/v1";
 
-/// Build a normalized Zenoh key under `ares/v1`.
 pub fn key_expr(path: &str) -> String {
     let path = path.trim_matches('/');
     if path.is_empty() {
@@ -28,7 +19,6 @@ pub fn key_expr(path: &str) -> String {
     }
 }
 
-/// Running Zenoh queryable tasks. Dropping this handle aborts them.
 pub struct ZenohServeHandle {
     tasks: Vec<JoinHandle<()>>,
 }
@@ -47,277 +37,93 @@ impl Drop for ZenohServeHandle {
     }
 }
 
-/// Install syncbot queryables on an existing Zenoh session.
-pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result<ZenohServeHandle> {
+/// Install canonical ARES queryables. This adapter has no coordinator handle.
+pub async fn serve(
+    session: &zenoh::Session,
+    client: crate::wire::peerbus::Client,
+) -> zenoh::Result<ZenohServeHandle> {
     let mut tasks = Vec::new();
 
     tasks.push(
-        spawn_queryable(session, "health", state.clone(), |_state, _| {
+        spawn_queryable(session, "health", client.clone(), |_client, _| {
             Ok(crate::wire::health())
         })
         .await?,
     );
-
     tasks.push(
-        spawn_queryable(session, "fleet/snapshot", state.clone(), |state, _| {
-            crate::wire::fleet_snapshot(&state)
+        spawn_queryable(session, "zones/get", client.clone(), |client, payload| {
+            let req: ResourceGetEnvelope = decode_required(payload)?;
+            client.zone(&req.id)
         })
         .await?,
     );
-
     tasks.push(
-        spawn_queryable(session, "zones/list", state.clone(), |state, _| {
-            crate::wire::list_zones(&state)
+        spawn_queryable(session, "fleet/snapshot", client.clone(), |client, _| {
+            client.fleet_snapshot()
         })
         .await?,
     );
-
-    tasks.push(
-        spawn_queryable(session, "zones/get", state.clone(), |state, payload| {
-            let request: ResourceRefEnvelope = decode_required(payload)?;
-            crate::wire::find_zone(&state, request.id)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "nodes/list", state.clone(), |state, _| {
-            crate::wire::list_nodes(&state)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "nodes/get", state.clone(), |state, payload| {
-            let request: ResourceRefEnvelope = decode_required(payload)?;
-            crate::wire::find_node(&state, request.id)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "edges/list", state.clone(), |state, _| {
-            crate::wire::list_edges(&state)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "edges/get", state.clone(), |state, payload| {
-            let request: ResourceRefEnvelope = decode_required(payload)?;
-            crate::wire::find_edge(&state, request.id)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "routes/plan", state.clone(), |state, payload| {
-            let request: PlanRouteRequest = decode_required(payload)?;
-            crate::wire::plan_route_request(&state, request)
-        })
-        .await?,
-    );
-
     tasks.push(
         spawn_queryable(
             session,
             "robots/register",
-            state.clone(),
-            |state, payload| {
+            client.clone(),
+            |client, payload| {
                 let req: crate::wire::FlatRegister = decode_required(payload)?;
-                Ok(crate::wire::flat_register(
-                    &state, &req.robot, &req.key, req.alive,
-                ))
+                client.register(&req.robot, &req.key, req.alive)
             },
         )
         .await?,
     );
-
-    tasks.push(
-        spawn_queryable(session, "robots/list", state.clone(), |state, _| {
-            crate::wire::list_robots(&state)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "robots/get", state.clone(), |state, payload| {
-            let request: RobotIdEnvelope = decode_required(payload)?;
-            crate::wire::robot_state(&state, request.robot_id)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(
-            session,
-            "robots/unregister",
-            state.clone(),
-            |state, payload| {
-                let request: RobotIdEnvelope = decode_required(payload)?;
-                crate::wire::unregister_robot(&state, request.robot_id, request.key)
-            },
-        )
-        .await?,
-    );
-
     tasks.push(
         spawn_queryable(
             session,
             "robots/heartbeat",
-            state.clone(),
-            |state, payload| {
+            client.clone(),
+            |client, payload| {
                 let req: FlatHeartbeatEnvelope = decode_required(payload)?;
-                Ok(crate::wire::flat_heartbeat(
-                    &state,
+                client.heartbeat(
                     &req.robot,
-                    &req.hb.key,
-                    req.hb.zone,
-                    req.hb.node,
-                    req.hb.edge,
-                ))
+                    &req.heartbeat.key,
+                    req.heartbeat.zone,
+                    req.heartbeat.node,
+                    req.heartbeat.edge,
+                )
             },
         )
         .await?,
     );
 
-    tasks.push(
-        spawn_queryable(
-            session,
-            "robots/assign_route",
-            state.clone(),
-            |state, payload| {
-                let request: RobotAssignRouteEnvelope = decode_required(payload)?;
-                crate::wire::assign_route(&state, request.robot_id, request.assignment)
-            },
-        )
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(
-            session,
-            "robots/schedule",
-            state.clone(),
-            |state, payload| {
-                let request: RobotScheduleEnvelope = decode_required(payload)?;
-                crate::wire::schedule_robot_route(&state, request.robot_id, request.schedule)
-            },
-        )
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "claims/list", state.clone(), |state, _| {
-            crate::wire::list_claims(&state)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "claims/get", state.clone(), |state, payload| {
-            let request: ClaimIdEnvelope = decode_required(payload)?;
-            crate::wire::find_claim(&state, request.claim_id)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "claims/remove", state.clone(), |state, payload| {
-            let request: ClaimIdEnvelope = decode_required(payload)?;
-            crate::wire::remove_claim(&state, request.claim_id, request.key)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(
-            session,
-            "claims/evaluate",
-            state.clone(),
-            |state, payload| {
-                let request: ClaimRequestWire = decode_required(payload)?;
-                crate::wire::evaluate_claim(&state, request)
-            },
-        )
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(
-            session,
-            "claims/request",
-            state.clone(),
-            |state, payload| {
-                let request: ClaimRequestWire = decode_required(payload)?;
-                crate::wire::submit_claim(&state, request)
-            },
-        )
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "leases/list", state.clone(), |state, _| {
-            crate::wire::list_leases(&state)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(session, "leases/add", state.clone(), |state, payload| {
-            let req: AddLeaseEnvelope = decode_required(payload)?;
-            crate::wire::add_lease(&state, req.lease, req.key)
-        })
-        .await?,
-    );
-
-    tasks.push(
-        spawn_queryable(
-            session,
-            "leases/release",
-            state.clone(),
-            |state, payload| {
-                let request: ReleaseLeaseRequest = decode_required(payload)?;
-                crate::wire::release_lease(&state, request)
-            },
-        )
-        .await?,
-    );
-
-    // Flat (tier-1) services — type from the key-expression, flat JSON body,
-    // decision/reason reply. Mirror the REST `/claims/{kind}` etc.
     for (path, kind) in [
         ("claims/zone", ClaimTargetKind::Zone),
         ("claims/node", ClaimTargetKind::Node),
         ("claims/edge", ClaimTargetKind::Edge),
     ] {
         tasks.push(
-            spawn_queryable(session, path, state.clone(), move |state, payload| {
+            spawn_queryable(session, path, client.clone(), move |client, payload| {
                 let req: crate::wire::FlatClaim = decode_required(payload)?;
-                Ok(crate::wire::flat_claim(
-                    &state,
+                client.claim(
                     kind,
                     &req.key,
                     &req.robot,
                     &req.id,
                     req.access_mode,
                     req.lease_time,
-                ))
+                )
             })
             .await?,
         );
     }
+
     for (path, kind) in [
         ("leases/release/zone", ClaimTargetKind::Zone),
         ("leases/release/node", ClaimTargetKind::Node),
         ("leases/release/edge", ClaimTargetKind::Edge),
     ] {
         tasks.push(
-            spawn_queryable(session, path, state.clone(), move |state, payload| {
+            spawn_queryable(session, path, client.clone(), move |client, payload| {
                 let req: crate::wire::FlatRelease = decode_required(payload)?;
-                Ok(crate::wire::flat_release(
-                    &state, kind, &req.key, &req.robot, req.id,
-                ))
+                client.release(kind, &req.key, &req.robot, req.id)
             })
             .await?,
         );
@@ -326,26 +132,15 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
     Ok(ZenohServeHandle { tasks })
 }
 
-/// Publish the current fleet snapshot to `ares/v1/fleet/state`.
-pub async fn publish_fleet_state(
-    session: &zenoh::Session,
-    state: &ServeState,
-) -> zenoh::Result<()> {
-    let payload =
-        encode(&crate::wire::fleet_snapshot(state).map_err(|e| zenoh::Error::from(e.message))?);
-    session.put(key_expr("fleet/state"), payload).await?;
-    Ok(())
-}
-
 async fn spawn_queryable<T, F>(
     session: &zenoh::Session,
     path: &'static str,
-    state: ServeState,
+    client: crate::wire::peerbus::Client,
     handler: F,
 ) -> zenoh::Result<JoinHandle<()>>
 where
     T: Serialize + Send + Sync + 'static,
-    F: Fn(ServeState, Option<String>) -> crate::wire::ApiResult<T> + Send + Sync + 'static,
+    F: Fn(crate::wire::peerbus::Client, Option<String>) -> ApiResult<T> + Send + Sync + 'static,
 {
     let key = key_expr(path);
     let queryable = session.declare_queryable(key.clone()).await?;
@@ -355,7 +150,7 @@ where
                 .payload()
                 .and_then(|payload| payload.try_to_string().ok())
                 .map(|payload| payload.to_string());
-            match handler(state.clone(), payload) {
+            match handler(client.clone(), payload) {
                 Ok(value) => reply_json(&query, &key, &value).await,
                 Err(err) => reply_error(&query, &err).await,
             }
@@ -381,65 +176,22 @@ async fn reply_error(query: &Query, error: &ApiError) {
     let _ = query.reply_err(payload).await;
 }
 
-fn decode_required<T: DeserializeOwned>(payload: Option<String>) -> crate::wire::ApiResult<T> {
+fn decode_required<T: DeserializeOwned>(payload: Option<String>) -> ApiResult<T> {
     let payload = payload.ok_or_else(|| ApiError::new("missing JSON payload"))?;
     serde_json::from_str(&payload)
         .map_err(|err| ApiError::new(format!("invalid JSON payload: {err}")))
 }
 
-fn encode<T: Serialize>(value: &T) -> String {
-    serde_json::to_string(value)
-        .unwrap_or_else(|_| "{\"message\":\"internal serialization error\"}".into())
-}
-
-/// Flat heartbeat over Zenoh: robot id lives in the body (no URL here).
 #[derive(serde::Deserialize)]
 struct FlatHeartbeatEnvelope {
     #[serde(deserialize_with = "crate::wire::de_scalar_string")]
     robot: String,
     #[serde(flatten)]
-    hb: crate::wire::FlatHeartbeat,
+    heartbeat: crate::wire::FlatHeartbeat,
 }
 
 #[derive(serde::Deserialize)]
-struct RobotAssignRouteEnvelope {
-    robot_id: RobotId,
-    assignment: AssignRouteRequest,
-}
-
-#[derive(serde::Deserialize)]
-struct RobotScheduleEnvelope {
-    robot_id: RobotId,
-    schedule: ScheduleRobotRouteRequest,
-}
-
-#[derive(serde::Deserialize)]
-struct ResourceRefEnvelope {
-    id: ResourceRef,
-}
-
-#[derive(serde::Deserialize)]
-struct RobotIdEnvelope {
-    robot_id: RobotId,
-    /// Optional admin key (ignored unless `ServeState::admin_auth` is on).
-    #[serde(default)]
-    key: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct ClaimIdEnvelope {
-    claim_id: ClaimId,
-    /// Optional admin key (ignored unless `ServeState::admin_auth` is on).
-    #[serde(default)]
-    key: Option<String>,
-}
-
-/// `leases/add` body: the flat `Lease` plus an optional admin key.
-#[derive(serde::Deserialize)]
-struct AddLeaseEnvelope {
-    #[serde(flatten)]
-    lease: Lease,
-    /// Optional admin key (ignored unless `ServeState::admin_auth` is on).
-    #[serde(default)]
-    key: Option<String>,
+struct ResourceGetEnvelope {
+    #[serde(deserialize_with = "crate::wire::de_scalar_string")]
+    id: String,
 }

@@ -23,11 +23,36 @@ bindings. The primary validation lanes are the Makefile targets below.
 ## Build
 
 ```sh
-make build                           # cargo build --lib --examples
-make test                            # cargo test --all-targets
-make run EXAMPLE=route_planning      # run an example
-make test-python                     # python feature plumbing
+make build                           # build the library
+make check-all                       # check every transport adapter
+make test-all                        # run every Rust target with all adapters
+make check-python-adapter            # syntax-check the Python adapter
+make test-usecase-rest               # live REST/XML curl battery
+make test-usecase                    # REST/XML + ROS2 bridge + mixed battery
 ```
+
+## Transport adapters
+
+`serve_workspace` starts one canonical peerbus req/res core. HTTP/JSON,
+HTTP/XML, Zenoh, and ROS2/DDS are adapters: they parse their external wire,
+make a typed datapod call through peerbus, and encode the reply. They never
+receive a coordinator handle.
+
+```sh
+make run                              # REST + Zenoh/ROS2DDS adapters
+curl -X POST http://127.0.0.1:8080/ares/v1/robots/register \
+  -H 'content-type: application/json' \
+  -d '{"robot":"7","key":"1234"}'
+```
+
+The frozen topics/schema and Rust/Python adapter examples are documented in
+[`docs/WRITING_ADAPTER.md`](docs/WRITING_ADAPTER.md).
+
+The live acceptance scripts under `tests/usecase/` execute every command class
+in [`misc/USECASE.typ`](misc/USECASE.typ), including heartbeat auto-release and
+cross-transport conflict/release. The ROS2 targets build the bundled
+`misc/ros2/ares_interfaces` package and accept `ROS_SETUP`, `ROS2_BIN`,
+`ROS2_PYTHON`, and `ROS2_BRIDGE` Make variables for non-standard installations.
 
 ## Dependencies
 
@@ -589,6 +614,9 @@ src/
 ├── robot.rs                    RobotState, RobotProgressState
 ├── coordinator.rs              Coordinator + scheduling + arbitration
 ├── vda/                        VDA 5050 transport + Adapter
+├── wire/peerbus.rs             canonical datapods + req/res core/client
+├── wire/{rest,xmlt}.rs         HTTP JSON/XML peerbus adapters
+├── wire/{robo,ros2dds}.rs      Zenoh and DDS peerbus adapters
 ├── ffi.rs                      C ABI (opaque handles + JSON marshaling)
 └── python/mod.rs               PyO3 (gated, full surface)
 ```

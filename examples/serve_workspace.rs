@@ -128,8 +128,33 @@ async fn main() -> ExitCode {
         info!("admin auth ENABLED: mutation endpoints require the owning robot's key");
     }
     let state = ServeState::new(coord).with_admin_auth(admin_auth);
+    // peerbus owns an internal Tokio runtime. Construct it on a plain thread,
+    // outside this example's async runtime, to avoid nested-runtime panics.
+    let peerbus_state = state.clone();
+    let peerbus_identity = std::env::var("SYNCBOT_PEERBUS_IDENTITY")
+        .unwrap_or_else(|_| syncbot::wire::peerbus::CORE_IDENTITY.to_string());
+    let started = std::thread::spawn(move || -> Result<_, String> {
+        let core =
+            syncbot::wire::peerbus::CoreService::with_identity(peerbus_state, &peerbus_identity)
+                .map_err(|err| format!("failed to start canonical peerbus core: {err}"))?;
+        let client = syncbot::wire::peerbus::Client::connect(peerbus_identity)
+            .map_err(|err| format!("failed to start peerbus adapter client: {err}"))?;
+        Ok((core, client))
+    })
+    .join();
+    let (_core, peerbus) = match started {
+        Ok(Ok(started)) => started,
+        Ok(Err(err)) => {
+            error!(error = %err, "failed to start peerbus services");
+            return ExitCode::FAILURE;
+        }
+        Err(_) => {
+            error!("peerbus startup thread panicked");
+            return ExitCode::FAILURE;
+        }
+    };
     #[cfg(feature = "robo")]
-    let _ros2dds = start_ros2dds(state.clone()).await;
+    let _ros2dds = start_ros2dds(peerbus.clone()).await;
     // Auto-release the claims of robots that stop heartbeating (per their
     // <alive> interval). Checks once a second.
     let _sweeper =
@@ -149,7 +174,7 @@ async fn main() -> ExitCode {
             }
         })
     });
-    let app = rest::router(state.clone());
+    let app = rest::router(peerbus);
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
@@ -163,27 +188,22 @@ async fn main() -> ExitCode {
     println!("try: curl http://{addr}/ares/v1/health");
     info!(addr = %addr, workspace = %dir, "REST server listening");
 
-    // When persistence is enabled, flush a final snapshot on Ctrl-C via
-    // graceful shutdown. When it is not, keep the exact prior serve path so
-    // behaviour is unchanged.
-    let serve_result = match persist_path.clone() {
-        Some(path) => {
-            let coord_handle = state.coordinator();
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    let _ = tokio::signal::ctrl_c().await;
-                    if let Err(e) =
-                        syncbot::persist::flush(&coord_handle, std::path::Path::new(&path))
-                    {
-                        warn!(error = %e, "final state flush on shutdown failed");
-                    } else {
-                        info!("flushed final syncbot state on shutdown");
-                    }
-                })
-                .await
-        }
-        None => axum::serve(listener, app).await,
-    };
+    // Always shut down gracefully so peerbus can unlink its SHM segments.
+    // Persistence additionally flushes the last snapshot after Ctrl-C.
+    let coord_handle = state.coordinator();
+    let serve_result = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            if let Some(path) = persist_path {
+                if let Err(e) = syncbot::persist::flush(&coord_handle, std::path::Path::new(&path))
+                {
+                    warn!(error = %e, "final state flush on shutdown failed");
+                } else {
+                    info!("flushed final syncbot state on shutdown");
+                }
+            }
+        })
+        .await;
     if let Err(e) = serve_result {
         error!(error = %e, "REST server error");
         return ExitCode::FAILURE;
@@ -192,7 +212,9 @@ async fn main() -> ExitCode {
 }
 
 #[cfg(feature = "robo")]
-async fn start_ros2dds(state: ServeState) -> Option<(zenoh::Session, Ros2DdsAresJsonHandle)> {
+async fn start_ros2dds(
+    peerbus: syncbot::wire::peerbus::Client,
+) -> Option<(zenoh::Session, Ros2DdsAresJsonHandle)> {
     let config = match zenoh_config_from_env() {
         Ok(config) => config,
         Err(err) => {
@@ -215,7 +237,7 @@ async fn start_ros2dds(state: ServeState) -> Option<(zenoh::Session, Ros2DdsAres
         }
     };
 
-    let ares_json_handle = match serve_ares_json_services(&session, state).await {
+    let ares_json_handle = match serve_ares_json_services(&session, peerbus).await {
         Ok(handle) => handle,
         Err(err) => {
             warn!(

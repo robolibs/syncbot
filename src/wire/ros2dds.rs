@@ -1,17 +1,8 @@
-//! Native-Zenoh ARES services for `zenoh-bridge-ros2dds`.
+//! ROS2/DDS adapter exposed through `zenoh-bridge-ros2dds`.
 //!
-//! ARES stays pure Zenoh here: no ROS2 libraries are linked. The ROS side uses
-//! `ares_interfaces/srv/Json`:
-//!
-//! ```text
-//! string request
-//! ---
-//! bool success
-//! string response
-//! ```
-//!
-//! Service names and Zenoh keys mirror the native ARES keys, for example:
-//! `/ares/v1/claims/request` <-> `ares/v1/claims/request`.
+//! ARES stays independent of ROS libraries. Each JSON service decodes the
+//! bridge's CDR envelope, translates the flat request to a canonical datapod
+//! call over peerbus, then encodes the peerbus reply as CDR again.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -19,18 +10,10 @@ use tokio::task::JoinHandle;
 use zenoh::query::Query;
 
 use crate::claim::ClaimTargetKind;
-use crate::core::ids::{ClaimId, RobotId};
-use crate::index::ResourceRef;
-use crate::wire::{
-    ApiError, AssignRouteRequest, ClaimRequestWire, Lease, PlanRouteRequest, ReleaseLeaseRequest,
-    ScheduleRobotRouteRequest, ServeState,
-};
+use crate::wire::ApiError;
 
-/// Generic ROS2 service type used for all ARES JSON services.
 pub const JSON_SERVICE_TYPE: &str = "ares_interfaces/srv/Json";
 
-/// Running ARES ROS2DDS JSON service tasks. Dropping it aborts the background
-/// query loops.
 pub struct Ros2DdsAresJsonHandle {
     tasks: Vec<JoinHandle<()>>,
 }
@@ -49,15 +32,16 @@ impl Drop for Ros2DdsAresJsonHandle {
     }
 }
 
-/// Declare the complete ARES JSON ROS2 service surface.
+/// Declare the canonical ARES JSON ROS2 service surface. The adapter owns no
+/// coordinator handle; all stateful work goes through `client`.
 pub async fn serve_ares_json_services(
     session: &zenoh::Session,
-    state: ServeState,
+    client: crate::wire::peerbus::Client,
 ) -> zenoh::Result<Ros2DdsAresJsonHandle> {
     let mut tasks = Vec::new();
 
     tasks.push(
-        spawn_json_service(session, "ares/v1/health", state.clone(), |_state, _| {
+        spawn_json_service(session, "ares/v1/health", client.clone(), |_client, _| {
             to_json(crate::wire::health())
         })
         .await?,
@@ -65,60 +49,21 @@ pub async fn serve_ares_json_services(
     tasks.push(
         spawn_json_service(
             session,
-            "ares/v1/fleet/snapshot",
-            state.clone(),
-            |state, _| to_json(crate::wire::fleet_snapshot(&state)?),
+            "ares/v1/zones/get",
+            client.clone(),
+            |client, raw| {
+                let req: ResourceGetEnvelope = from_json(&raw)?;
+                to_json(client.zone(&req.id)?)
+            },
         )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(session, "ares/v1/zones/list", state.clone(), |state, _| {
-            to_json(crate::wire::list_zones(&state)?)
-        })
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(session, "ares/v1/zones/get", state.clone(), |state, req| {
-            let request: ResourceRefEnvelope = from_json(&req)?;
-            to_json(crate::wire::find_zone(&state, request.id)?)
-        })
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(session, "ares/v1/nodes/list", state.clone(), |state, _| {
-            to_json(crate::wire::list_nodes(&state)?)
-        })
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(session, "ares/v1/nodes/get", state.clone(), |state, req| {
-            let request: ResourceRefEnvelope = from_json(&req)?;
-            to_json(crate::wire::find_node(&state, request.id)?)
-        })
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(session, "ares/v1/edges/list", state.clone(), |state, _| {
-            to_json(crate::wire::list_edges(&state)?)
-        })
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(session, "ares/v1/edges/get", state.clone(), |state, req| {
-            let request: ResourceRefEnvelope = from_json(&req)?;
-            to_json(crate::wire::find_edge(&state, request.id)?)
-        })
         .await?,
     );
     tasks.push(
         spawn_json_service(
             session,
-            "ares/v1/routes/plan",
-            state.clone(),
-            |state, req| {
-                let request: PlanRouteRequest = from_json(&req)?;
-                to_json(crate::wire::plan_route_request(&state, request)?)
-            },
+            "ares/v1/fleet/snapshot",
+            client.clone(),
+            |client, _| to_json(client.fleet_snapshot()?),
         )
         .await?,
     );
@@ -126,46 +71,10 @@ pub async fn serve_ares_json_services(
         spawn_json_service(
             session,
             "ares/v1/robots/register",
-            state.clone(),
-            |state, req| {
-                let r: crate::wire::FlatRegister = from_json(&req)?;
-                to_json(crate::wire::flat_register(
-                    &state, &r.robot, &r.key, r.alive,
-                ))
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(session, "ares/v1/robots/list", state.clone(), |state, _| {
-            to_json(crate::wire::list_robots(&state)?)
-        })
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/robots/get",
-            state.clone(),
-            |state, req| {
-                let request: RobotIdEnvelope = from_json(&req)?;
-                to_json(crate::wire::robot_state(&state, request.robot_id)?)
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/robots/unregister",
-            state.clone(),
-            |state, req| {
-                let request: RobotIdEnvelope = from_json(&req)?;
-                to_json(crate::wire::unregister_robot(
-                    &state,
-                    request.robot_id,
-                    request.key,
-                )?)
+            client.clone(),
+            |client, raw| {
+                let req: crate::wire::FlatRegister = from_json(&raw)?;
+                to_json(client.register(&req.robot, &req.key, req.alive)?)
             },
         )
         .await?,
@@ -174,167 +83,51 @@ pub async fn serve_ares_json_services(
         spawn_json_service(
             session,
             "ares/v1/robots/heartbeat",
-            state.clone(),
-            |state, req| {
-                let r: FlatHeartbeatEnvelope = from_json(&req)?;
-                to_json(crate::wire::flat_heartbeat(
-                    &state, &r.robot, &r.hb.key, r.hb.zone, r.hb.node, r.hb.edge,
-                ))
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/robots/assign_route",
-            state.clone(),
-            |state, req| {
-                let request: RobotAssignRouteEnvelope = from_json(&req)?;
-                to_json(crate::wire::assign_route(
-                    &state,
-                    request.robot_id,
-                    request.assignment,
+            client.clone(),
+            |client, raw| {
+                let req: FlatHeartbeatEnvelope = from_json(&raw)?;
+                to_json(client.heartbeat(
+                    &req.robot,
+                    &req.heartbeat.key,
+                    req.heartbeat.zone,
+                    req.heartbeat.node,
+                    req.heartbeat.edge,
                 )?)
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/robots/schedule",
-            state.clone(),
-            |state, req| {
-                let request: RobotScheduleEnvelope = from_json(&req)?;
-                to_json(crate::wire::schedule_robot_route(
-                    &state,
-                    request.robot_id,
-                    request.schedule,
-                )?)
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(session, "ares/v1/claims/list", state.clone(), |state, _| {
-            to_json(crate::wire::list_claims(&state)?)
-        })
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/claims/get",
-            state.clone(),
-            |state, req| {
-                let request: ClaimIdEnvelope = from_json(&req)?;
-                to_json(crate::wire::find_claim(&state, request.claim_id)?)
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/claims/remove",
-            state.clone(),
-            |state, req| {
-                let request: ClaimIdEnvelope = from_json(&req)?;
-                to_json(crate::wire::remove_claim(&state, request.claim_id, request.key)?)
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/claims/evaluate",
-            state.clone(),
-            |state, req| {
-                let request: ClaimRequestWire = from_json(&req)?;
-                to_json(crate::wire::evaluate_claim(&state, request)?)
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/claims/request",
-            state.clone(),
-            |state, req| {
-                let request: ClaimRequestWire = from_json(&req)?;
-                to_json(crate::wire::submit_claim(&state, request)?)
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(session, "ares/v1/leases/list", state.clone(), |state, _| {
-            to_json(crate::wire::list_leases(&state)?)
-        })
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/leases/add",
-            state.clone(),
-            |state, req| {
-                let body: AddLeaseEnvelope = from_json(&req)?;
-                to_json(crate::wire::add_lease(&state, body.lease, body.key)?)
-            },
-        )
-        .await?,
-    );
-    tasks.push(
-        spawn_json_service(
-            session,
-            "ares/v1/leases/release",
-            state.clone(),
-            |state, req| {
-                let request: ReleaseLeaseRequest = from_json(&req)?;
-                to_json(crate::wire::release_lease(&state, request)?)
             },
         )
         .await?,
     );
 
-    // Flat (tier-1) services — type from the service name, flat JSON body,
-    // decision/reason reply.
     for (key, kind) in [
         ("ares/v1/claims/zone", ClaimTargetKind::Zone),
         ("ares/v1/claims/node", ClaimTargetKind::Node),
         ("ares/v1/claims/edge", ClaimTargetKind::Edge),
     ] {
         tasks.push(
-            spawn_json_service(session, key, state.clone(), move |state, req| {
-                let r: crate::wire::FlatClaim = from_json(&req)?;
-                to_json(crate::wire::flat_claim(
-                    &state,
+            spawn_json_service(session, key, client.clone(), move |client, raw| {
+                let req: crate::wire::FlatClaim = from_json(&raw)?;
+                to_json(client.claim(
                     kind,
-                    &r.key,
-                    &r.robot,
-                    &r.id,
-                    r.access_mode,
-                    r.lease_time,
-                ))
+                    &req.key,
+                    &req.robot,
+                    &req.id,
+                    req.access_mode,
+                    req.lease_time,
+                )?)
             })
             .await?,
         );
     }
+
     for (key, kind) in [
         ("ares/v1/leases/release/zone", ClaimTargetKind::Zone),
         ("ares/v1/leases/release/node", ClaimTargetKind::Node),
         ("ares/v1/leases/release/edge", ClaimTargetKind::Edge),
     ] {
         tasks.push(
-            spawn_json_service(session, key, state.clone(), move |state, req| {
-                let r: crate::wire::FlatRelease = from_json(&req)?;
-                to_json(crate::wire::flat_release(
-                    &state, kind, &r.key, &r.robot, r.id,
-                ))
+            spawn_json_service(session, key, client.clone(), move |client, raw| {
+                let req: crate::wire::FlatRelease = from_json(&raw)?;
+                to_json(client.release(kind, &req.key, &req.robot, req.id)?)
             })
             .await?,
         );
@@ -346,11 +139,14 @@ pub async fn serve_ares_json_services(
 async fn spawn_json_service<F>(
     session: &zenoh::Session,
     key: &'static str,
-    state: ServeState,
+    client: crate::wire::peerbus::Client,
     handler: F,
 ) -> zenoh::Result<JoinHandle<()>>
 where
-    F: Fn(ServeState, String) -> crate::wire::ApiResult<String> + Send + Sync + 'static,
+    F: Fn(crate::wire::peerbus::Client, String) -> crate::wire::ApiResult<String>
+        + Send
+        + Sync
+        + 'static,
 {
     let queryable = session
         .declare_queryable(key.to_string())
@@ -362,7 +158,7 @@ where
                 .payload()
                 .map(|payload| decode_json_request(&payload.to_bytes()))
                 .unwrap_or_else(|| Ok(String::new()));
-            let response = match request.and_then(|request| handler(state.clone(), request)) {
+            let response = match request.and_then(|raw| handler(client.clone(), raw)) {
                 Ok(response_json) => encode_json_response(true, &response_json),
                 Err(err) => encode_json_response(false, &err.message),
             };
@@ -415,25 +211,12 @@ fn try_decode_cdr_string_at(bytes: &[u8], offset: usize) -> Option<String> {
 }
 
 /// Encode `ares_interfaces/srv/Json_Response` as XCDR1 little-endian CDR.
-///
-/// Layout:
-///
-/// ```text
-/// CDR header: 00 01 00 00
-/// bool success: 1 byte
-/// padding to 4-byte alignment
-/// uint32 string length including trailing NUL
-/// UTF-8 bytes
-/// trailing NUL
-/// padding to 4-byte alignment
-/// ```
 pub fn encode_json_response(success: bool, response: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + response.len());
     out.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
     out.push(u8::from(success));
     pad_to_4(&mut out);
-
-    let len_with_nul = response.as_bytes().len() + 1;
+    let len_with_nul = response.len() + 1;
     out.extend_from_slice(&(len_with_nul as u32).to_le_bytes());
     out.extend_from_slice(response.as_bytes());
     out.push(0);
@@ -447,56 +230,18 @@ fn pad_to_4(out: &mut Vec<u8>) {
     }
 }
 
-/// Flat heartbeat over ROS2DDS: robot id lives in the body (no URL here).
 #[derive(serde::Deserialize)]
 struct FlatHeartbeatEnvelope {
     #[serde(deserialize_with = "crate::wire::de_scalar_string")]
     robot: String,
     #[serde(flatten)]
-    hb: crate::wire::FlatHeartbeat,
+    heartbeat: crate::wire::FlatHeartbeat,
 }
 
 #[derive(serde::Deserialize)]
-struct RobotAssignRouteEnvelope {
-    robot_id: RobotId,
-    assignment: AssignRouteRequest,
-}
-
-#[derive(serde::Deserialize)]
-struct RobotScheduleEnvelope {
-    robot_id: RobotId,
-    schedule: ScheduleRobotRouteRequest,
-}
-
-#[derive(serde::Deserialize)]
-struct ResourceRefEnvelope {
-    id: ResourceRef,
-}
-
-#[derive(serde::Deserialize)]
-struct RobotIdEnvelope {
-    robot_id: RobotId,
-    /// Optional admin key (ignored unless `ServeState::admin_auth` is on).
-    #[serde(default)]
-    key: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct ClaimIdEnvelope {
-    claim_id: ClaimId,
-    /// Optional admin key (ignored unless `ServeState::admin_auth` is on).
-    #[serde(default)]
-    key: Option<String>,
-}
-
-/// `leases/add` body: the flat `Lease` plus an optional admin key.
-#[derive(serde::Deserialize)]
-struct AddLeaseEnvelope {
-    #[serde(flatten)]
-    lease: Lease,
-    /// Optional admin key (ignored unless `ServeState::admin_auth` is on).
-    #[serde(default)]
-    key: Option<String>,
+struct ResourceGetEnvelope {
+    #[serde(deserialize_with = "crate::wire::de_scalar_string")]
+    id: String,
 }
 
 #[cfg(test)]

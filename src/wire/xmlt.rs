@@ -1,34 +1,19 @@
-//! XML transport adapter for the syncbot core.
-//!
-//! Enabled with `--features xmlt`. Identical surface and semantics to
-//! [`crate::wire::rest`], but the request body is parsed as XML and the
-//! response body is serialised as XML. The wire shape is whatever
-//! `quick-xml` produces from the existing `serde` derives — same field
-//! names, same nesting as the JSON form, just XML-encoded.
+//! Standalone HTTP/XML adapter for the canonical ARES peerbus service.
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{FromRequest, Path, Query, Request, State};
+use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::core::ids::RobotId;
-use crate::wire::{
-    ApiError, ApiResult, AssignRouteRequest, ClaimRequestWire, Lease, PlanRouteRequest,
-    ReleaseLeaseRequest, ScheduleRobotRouteRequest, ServeState,
-};
+use crate::claim::ClaimTargetKind;
+use crate::wire::{ApiError, ApiResult};
 
-/// URL prefix mirroring [`crate::wire::rest::REST_PREFIX`].
 pub const XML_PREFIX: &str = "/ares/v1";
 
-/// Axum extractor / responder for XML payloads.
-///
-/// Request side: reads the raw body as UTF-8 and runs `quick_xml::de`
-/// against it. Response side: serialises with `quick_xml::se` and sets
-/// `Content-Type: application/xml`.
 pub struct Xml<T>(pub T);
 
 impl<T, S> FromRequest<S> for Xml<T>
@@ -41,12 +26,12 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let bytes = Bytes::from_request(req, state)
             .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, format!("read body: {e}")))?;
+            .map_err(|err| (StatusCode::BAD_REQUEST, format!("read body: {err}")))?;
         let text = std::str::from_utf8(&bytes)
-            .map_err(|e| (StatusCode::BAD_REQUEST, format!("body is not UTF-8: {e}")))?;
-        let value: T = quick_xml::de::from_str(text)
-            .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid XML: {e}")))?;
-        Ok(Xml(value))
+            .map_err(|err| (StatusCode::BAD_REQUEST, format!("body is not UTF-8: {err}")))?;
+        quick_xml::de::from_str(text)
+            .map(Xml)
+            .map_err(|err| (StatusCode::BAD_REQUEST, format!("invalid XML: {err}")))
     }
 }
 
@@ -59,9 +44,9 @@ impl<T: Serialize> IntoResponse for Xml<T> {
                 body,
             )
                 .into_response(),
-            Err(e) => (
+            Err(err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("serialise XML: {e}"),
+                format!("serialize XML: {err}"),
             )
                 .into_response(),
         }
@@ -70,257 +55,101 @@ impl<T: Serialize> IntoResponse for Xml<T> {
 
 type XmlResult<T> = Result<Xml<T>, (StatusCode, Xml<ApiError>)>;
 
-/// Optional `?key=...` query for the admin/mutation DELETE routes. Ignored
-/// unless the server was built with `ServeState::with_admin_auth(true)`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-struct KeyQuery {
-    #[serde(default)]
-    key: Option<String>,
-}
-
-fn ok<T>(result: ApiResult<T>) -> XmlResult<T> {
-    result
+fn result<T>(value: ApiResult<T>) -> XmlResult<T> {
+    value
         .map(Xml)
         .map_err(|err| (StatusCode::BAD_REQUEST, Xml(err)))
 }
 
-/// Build the XML router. Same paths and verbs as [`crate::wire::rest::router`].
-pub fn router(state: ServeState) -> Router {
+pub fn router(client: crate::wire::peerbus::Client) -> Router {
     Router::new()
         .route("/ares/v1/health", get(health))
         .route("/ares/v1/fleet/snapshot", get(fleet_snapshot))
-        .route("/ares/v1/routes/plan", post(plan_route))
-        .route("/ares/v1/robots", get(list_robots).post(register_robot))
-        .route(
-            "/ares/v1/robots/{id}",
-            get(robot_state).delete(unregister_robot),
-        )
-        .route("/ares/v1/robots/{id}/heartbeat", post(heartbeat))
-        .route("/ares/v1/robots/{id}/route", post(assign_route))
-        .route("/ares/v1/robots/{id}/schedule", post(schedule_robot_route))
-        .route("/ares/v1/claims", get(list_claims).post(submit_claim))
-        .route("/ares/v1/claims/evaluate", post(evaluate_claim))
-        .route("/ares/v1/claims/zone", post(flat_claim_zone))
-        .route("/ares/v1/claims/node", post(flat_claim_node))
-        .route("/ares/v1/claims/edge", post(flat_claim_edge))
-        .route("/ares/v1/leases", get(list_leases).post(add_lease))
-        .route("/ares/v1/leases/release", post(release_lease))
-        .route("/ares/v1/leases/release/zone", post(flat_release_zone))
-        .route("/ares/v1/leases/release/node", post(flat_release_node))
-        .route("/ares/v1/leases/release/edge", post(flat_release_edge))
-        .route("/ares/v1/leases/{id}", delete(release_lease_by_path))
-        .with_state(state)
+        .route("/ares/v1/zones", get(list_zones))
+        .route("/ares/v1/zones/{id}", get(zone))
+        .route("/ares/v1/robots", post(register))
+        .route("/ares/v1/robots/register", post(register))
+        .route("/ares/v1/robots/{robot}/heartbeat", post(heartbeat))
+        .route("/ares/v1/claims/zone", post(claim_zone))
+        .route("/ares/v1/claims/node", post(claim_node))
+        .route("/ares/v1/claims/edge", post(claim_edge))
+        .route("/ares/v1/leases/release/zone", post(release_zone))
+        .route("/ares/v1/leases/release/node", post(release_node))
+        .route("/ares/v1/leases/release/edge", post(release_edge))
+        .with_state(client)
 }
 
 async fn health() -> Xml<crate::wire::Health> {
     Xml(crate::wire::health())
 }
 
-async fn fleet_snapshot(State(state): State<ServeState>) -> XmlResult<crate::wire::FleetSnapshot> {
-    ok(crate::wire::fleet_snapshot(&state))
+async fn fleet_snapshot(
+    State(client): State<crate::wire::peerbus::Client>,
+) -> XmlResult<crate::wire::FleetSnapshot> {
+    result(client.fleet_snapshot())
 }
 
-async fn plan_route(
-    State(state): State<ServeState>,
-    Xml(request): Xml<PlanRouteRequest>,
-) -> XmlResult<crate::wire::PlanRouteResponse> {
-    ok(crate::wire::plan_route_request(&state, request))
+async fn list_zones(
+    State(client): State<crate::wire::peerbus::Client>,
+) -> XmlResult<Vec<crate::wire::ZoneView>> {
+    result(client.list_zones())
 }
 
-async fn list_robots(State(state): State<ServeState>) -> XmlResult<Vec<crate::robot::RobotState>> {
-    ok(crate::wire::list_robots(&state))
+async fn zone(
+    State(client): State<crate::wire::peerbus::Client>,
+    Path(id): Path<String>,
+) -> XmlResult<crate::wire::ZoneView> {
+    result(client.zone(&id))
 }
 
-async fn register_robot(
-    State(state): State<ServeState>,
+async fn register(
+    State(client): State<crate::wire::peerbus::Client>,
     Xml(req): Xml<crate::wire::FlatRegister>,
-) -> Xml<crate::wire::FlatReply> {
-    Xml(crate::wire::flat_register(
-        &state, &req.robot, &req.key, req.alive,
-    ))
-}
-
-fn resolve(state: &ServeState, raw: &str) -> Result<RobotId, (StatusCode, Xml<ApiError>)> {
-    crate::wire::resolve_robot(state, raw).map_err(|e| (StatusCode::BAD_REQUEST, Xml(e)))
-}
-
-async fn unregister_robot(
-    State(state): State<ServeState>,
-    Path(id): Path<String>,
-    Query(q): Query<KeyQuery>,
-) -> XmlResult<bool> {
-    let robot_id = resolve(&state, &id)?;
-    ok(crate::wire::unregister_robot(&state, robot_id, q.key))
-}
-
-async fn robot_state(
-    State(state): State<ServeState>,
-    Path(id): Path<String>,
-) -> XmlResult<crate::robot::RobotState> {
-    let robot_id = resolve(&state, &id)?;
-    ok(crate::wire::robot_state(&state, robot_id))
+) -> XmlResult<crate::wire::FlatReply> {
+    result(client.register(&req.robot, &req.key, req.alive))
 }
 
 async fn heartbeat(
-    State(state): State<ServeState>,
-    Path(id): Path<String>,
+    State(client): State<crate::wire::peerbus::Client>,
+    Path(robot): Path<String>,
     Xml(req): Xml<crate::wire::FlatHeartbeat>,
-) -> Xml<crate::wire::FlatReply> {
-    Xml(crate::wire::flat_heartbeat(
-        &state, &id, &req.key, req.zone, req.node, req.edge,
-    ))
+) -> XmlResult<crate::wire::FlatReply> {
+    result(client.heartbeat(&robot, &req.key, req.zone, req.node, req.edge))
 }
 
-async fn assign_route(
-    State(state): State<ServeState>,
-    Path(id): Path<String>,
-    Xml(request): Xml<AssignRouteRequest>,
-) -> XmlResult<crate::robot::RobotState> {
-    let robot_id = resolve(&state, &id)?;
-    ok(crate::wire::assign_route(&state, robot_id, request))
+macro_rules! claim_handler {
+    ($name:ident, $kind:expr) => {
+        async fn $name(
+            State(client): State<crate::wire::peerbus::Client>,
+            Xml(req): Xml<crate::wire::FlatClaim>,
+        ) -> XmlResult<crate::wire::FlatReply> {
+            result(client.claim(
+                $kind,
+                &req.key,
+                &req.robot,
+                &req.id,
+                req.access_mode,
+                req.lease_time,
+            ))
+        }
+    };
 }
 
-async fn schedule_robot_route(
-    State(state): State<ServeState>,
-    Path(id): Path<String>,
-    Xml(request): Xml<ScheduleRobotRouteRequest>,
-) -> XmlResult<crate::coordinator::ScheduleDecision> {
-    let robot_id = resolve(&state, &id)?;
-    ok(crate::wire::schedule_robot_route(&state, robot_id, request))
+claim_handler!(claim_zone, ClaimTargetKind::Zone);
+claim_handler!(claim_node, ClaimTargetKind::Node);
+claim_handler!(claim_edge, ClaimTargetKind::Edge);
+
+macro_rules! release_handler {
+    ($name:ident, $kind:expr) => {
+        async fn $name(
+            State(client): State<crate::wire::peerbus::Client>,
+            Xml(req): Xml<crate::wire::FlatRelease>,
+        ) -> XmlResult<crate::wire::FlatReply> {
+            result(client.release($kind, &req.key, &req.robot, req.id))
+        }
+    };
 }
 
-async fn list_claims(
-    State(state): State<ServeState>,
-) -> XmlResult<Vec<crate::claim::ClaimRequest>> {
-    ok(crate::wire::list_claims(&state))
-}
-
-async fn evaluate_claim(
-    State(state): State<ServeState>,
-    Xml(request): Xml<ClaimRequestWire>,
-) -> XmlResult<crate::claim::ClaimEvaluation> {
-    ok(crate::wire::evaluate_claim(&state, request))
-}
-
-async fn submit_claim(
-    State(state): State<ServeState>,
-    Xml(request): Xml<ClaimRequestWire>,
-) -> XmlResult<crate::claim::ClaimEvaluation> {
-    ok(crate::wire::submit_claim(&state, request))
-}
-
-async fn list_leases(State(state): State<ServeState>) -> XmlResult<Vec<Lease>> {
-    ok(crate::wire::list_leases(&state))
-}
-
-async fn add_lease(State(state): State<ServeState>, Xml(lease): Xml<Lease>) -> XmlResult<Lease> {
-    // XML add_lease carries no admin key: quick-xml 0.36 cannot reliably flatten
-    // an extra field alongside the `Lease` body without changing the wire shape,
-    // so the XML body stays byte-identical. With admin auth off (the default)
-    // the key is ignored anyway; with it on, use JSON/robo/ros2dds for a keyed
-    // lease, or POST `/leases/release` (which does carry a key).
-    ok(crate::wire::add_lease(&state, lease, None))
-}
-
-async fn release_lease(
-    State(state): State<ServeState>,
-    Xml(request): Xml<ReleaseLeaseRequest>,
-) -> XmlResult<bool> {
-    ok(crate::wire::release_lease(&state, request))
-}
-
-async fn release_lease_by_path(
-    State(state): State<ServeState>,
-    Path(id): Path<u64>,
-    Query(q): Query<KeyQuery>,
-) -> XmlResult<bool> {
-    ok(crate::wire::release_lease(
-        &state,
-        ReleaseLeaseRequest {
-            lease_id: crate::core::ids::LeaseId::new(id),
-            released_at_tick: None,
-            key: q.key,
-        },
-    ))
-}
-
-// --- Flat (tier-1) XML handlers --------------------------------------------
-
-async fn flat_claim_zone(
-    State(state): State<ServeState>,
-    Xml(req): Xml<crate::wire::FlatClaim>,
-) -> Xml<crate::wire::FlatReply> {
-    Xml(crate::wire::flat_claim(
-        &state,
-        crate::claim::ClaimTargetKind::Zone,
-        &req.key,
-        &req.robot,
-        &req.id,
-        req.access_mode,
-        req.lease_time,
-    ))
-}
-async fn flat_claim_node(
-    State(state): State<ServeState>,
-    Xml(req): Xml<crate::wire::FlatClaim>,
-) -> Xml<crate::wire::FlatReply> {
-    Xml(crate::wire::flat_claim(
-        &state,
-        crate::claim::ClaimTargetKind::Node,
-        &req.key,
-        &req.robot,
-        &req.id,
-        req.access_mode,
-        req.lease_time,
-    ))
-}
-async fn flat_claim_edge(
-    State(state): State<ServeState>,
-    Xml(req): Xml<crate::wire::FlatClaim>,
-) -> Xml<crate::wire::FlatReply> {
-    Xml(crate::wire::flat_claim(
-        &state,
-        crate::claim::ClaimTargetKind::Edge,
-        &req.key,
-        &req.robot,
-        &req.id,
-        req.access_mode,
-        req.lease_time,
-    ))
-}
-async fn flat_release_zone(
-    State(state): State<ServeState>,
-    Xml(req): Xml<crate::wire::FlatRelease>,
-) -> Xml<crate::wire::FlatReply> {
-    Xml(crate::wire::flat_release(
-        &state,
-        crate::claim::ClaimTargetKind::Zone,
-        &req.key,
-        &req.robot,
-        req.id,
-    ))
-}
-async fn flat_release_node(
-    State(state): State<ServeState>,
-    Xml(req): Xml<crate::wire::FlatRelease>,
-) -> Xml<crate::wire::FlatReply> {
-    Xml(crate::wire::flat_release(
-        &state,
-        crate::claim::ClaimTargetKind::Node,
-        &req.key,
-        &req.robot,
-        req.id,
-    ))
-}
-async fn flat_release_edge(
-    State(state): State<ServeState>,
-    Xml(req): Xml<crate::wire::FlatRelease>,
-) -> Xml<crate::wire::FlatReply> {
-    Xml(crate::wire::flat_release(
-        &state,
-        crate::claim::ClaimTargetKind::Edge,
-        &req.key,
-        &req.robot,
-        req.id,
-    ))
-}
+release_handler!(release_zone, ClaimTargetKind::Zone);
+release_handler!(release_node, ClaimTargetKind::Node);
+release_handler!(release_edge, ClaimTargetKind::Edge);
