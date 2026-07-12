@@ -320,12 +320,59 @@ The server stays pure Zenoh; ROS2 clients reach it through
 generic service type carries everything:
 
 ```text
-# ares_interfaces/srv/Json  (ros/ares_interfaces/srv/Json.srv)
+# ares_interfaces/srv/Json.srv
 string request      # JSON request object as a string; "{}" for no input
 ---
 bool   success      # false when ARES returns an error
 string response     # JSON response on success; error text on failure
 ```
+
+Build that type once so `ros2 service call` can find it. Wrap the `.srv` in a
+small `ament_cmake` interface package:
+
+```text
+ares_interfaces/
+  package.xml
+  CMakeLists.txt
+  srv/Json.srv        # the .srv above
+```
+
+`package.xml`:
+
+```xml
+<?xml version="1.0"?>
+<package format="3">
+  <name>ares_interfaces</name>
+  <version>0.1.0</version>
+  <description>ARES generic JSON service.</description>
+  <maintainer email="dev@example.com">dev</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <depend>rosidl_default_runtime</depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
+```
+
+`CMakeLists.txt`:
+
+```cmake
+cmake_minimum_required(VERSION 3.8)
+project(ares_interfaces)
+find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+rosidl_generate_interfaces(${PROJECT_NAME} "srv/Json.srv")
+ament_package()
+```
+
+```sh
+colcon build --packages-select ares_interfaces
+source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp   # match the bridge's CycloneDDS
+```
+
+With the type built and sourced, call any service:
 
 ```sh
 ros2 service call /ares/v1/robots/register ares_interfaces/srv/Json \

@@ -64,6 +64,73 @@ curl http://<host>:8080/ares/v1/health
 # {"status":"ok","version":"0.1.0"}
 ```
 
+= ROS2: build the service type once
+
+*REST/XML users can skip this section.* The ROS2 side reaches every call through
+one generic service type, `ares_interfaces/srv/Json` (a JSON string in, a JSON
+string out), relayed by `zenoh-bridge-ros2dds`. Build that interface package
+once so `ros2 service call` knows the type. Lay out three files:
+
+```text
+ares_interfaces/
+  package.xml
+  CMakeLists.txt
+  srv/Json.srv
+```
+
+`srv/Json.srv` — the service (request above the `---`, response below):
+
+```text
+string request
+---
+bool   success
+string response
+```
+
+`package.xml`:
+
+```xml
+<?xml version="1.0"?>
+<package format="3">
+  <name>ares_interfaces</name>
+  <version>0.1.0</version>
+  <description>ARES generic JSON service.</description>
+  <maintainer email="dev@example.com">dev</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <depend>rosidl_default_runtime</depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
+```
+
+`CMakeLists.txt`:
+
+```cmake
+cmake_minimum_required(VERSION 3.8)
+project(ares_interfaces)
+find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+rosidl_generate_interfaces(${PROJECT_NAME} "srv/Json.srv")
+ament_package()
+```
+
+Build it, source it, and point the bridge at the ARES host (note `tcp/`, *not*
+`tcp://`):
+
+```sh
+colcon build --packages-select ares_interfaces
+source install/setup.bash
+zenoh-bridge-ros2dds -e tcp/<host>:7447
+```
+
+#block(fill: rgb("#fffbeb"), stroke: warn.lighten(20%), radius: 5pt, inset: 8pt)[
+  *Use CycloneDDS.* Run the ROS2 side with
+  `export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` — the bridge speaks CycloneDDS,
+  and a mismatched middleware lets the request through but drops the reply.
+]
+
 = The key
 
 Each call may carry a `key`. Two forms:
