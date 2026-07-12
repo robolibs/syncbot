@@ -2,6 +2,7 @@
 //! evaluation. Port of `include/syncbot/claim_manager.hpp`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use uuid::Uuid;
 
@@ -19,6 +20,10 @@ pub struct ClaimManager {
     active_requests: Vec<ClaimRequest>,
     active_leases: Vec<Lease>,
     released_leases: Vec<Lease>,
+    /// Monotonic source for server-minted claim ids. Never goes backward, so a
+    /// minted id can never collide with a live id even if attacker-influenced
+    /// lease claim_ids sit near `u64::MAX`. See `next_request_id`.
+    next_id: AtomicU64,
 }
 
 impl Default for ClaimManager {
@@ -28,6 +33,7 @@ impl Default for ClaimManager {
             active_requests: Vec::new(),
             active_leases: Vec::new(),
             released_leases: Vec::new(),
+            next_id: AtomicU64::new(1),
         }
     }
 }
@@ -85,6 +91,37 @@ impl ClaimManager {
         self.released_leases.clear();
     }
 
+    // -- persistence ------------------------------------------------------
+
+    /// Capture the owned ledger (requests, leases, released leases) plus the
+    /// current value of the monotonic `next_id` counter into a serializable
+    /// snapshot. The bound `index` is NOT serialized. See [`crate::persist`].
+    pub fn snapshot(&self) -> crate::persist::ClaimManagerSnapshot {
+        crate::persist::ClaimManagerSnapshot {
+            active_requests: self.active_requests.clone(),
+            active_leases: self.active_leases.clone(),
+            released_leases: self.released_leases.clone(),
+            next_id: self.next_id.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Rebuild a manager from a snapshot, re-attaching the freshly-loaded
+    /// `index`. The `next_id` atomic is reconstructed from the stored value
+    /// (floored at 1) so server-minted claim ids keep increasing across a
+    /// restart.
+    pub fn restore(
+        snapshot: crate::persist::ClaimManagerSnapshot,
+        index: Option<Arc<WorkspaceIndex>>,
+    ) -> Self {
+        Self {
+            index,
+            active_requests: snapshot.active_requests,
+            active_leases: snapshot.active_leases,
+            released_leases: snapshot.released_leases,
+            next_id: AtomicU64::new(snapshot.next_id.max(1)),
+        }
+    }
+
     // -- request lifecycle ------------------------------------------------
 
     pub fn add_request(&mut self, request: ClaimRequest) {
@@ -115,10 +152,28 @@ impl ClaimManager {
 
     /// A claim id not currently used by any active request or lease. Used by
     /// the flat wire, where the server (not the client) mints claim ids.
+    ///
+    /// Backed by a monotonic counter that never goes backward, so it cannot
+    /// overflow-panic or wrap into a live id even when attacker-influenced lease
+    /// `claim_id`s sit near `u64::MAX`. The counter is also floored above any
+    /// existing id so a minted id is unique against current requests/leases.
+    /// (Takes `&self`; the counter is atomic so the signature is unchanged and
+    /// callers holding an immutable manager reference still compile.)
     pub fn next_request_id(&self) -> ClaimId {
         let max_req = self.active_requests.iter().map(|r| r.id.raw()).max();
         let max_lease = self.active_leases.iter().map(|l| l.claim_id.raw()).max();
-        ClaimId::new(max_req.max(max_lease).map_or(1, |m| m + 1))
+        // One past the largest existing id, saturating so an id at u64::MAX
+        // cannot overflow. Zero is reserved for "no ids yet" → floor of 1.
+        let floor = max_req
+            .max(max_lease)
+            .map_or(1, |m| m.saturating_add(1))
+            .max(1);
+        // Advance the monotonic counter to at least `floor`, then take that
+        // value and bump by one. Never decreases.
+        let candidate = self.next_id.load(Ordering::Relaxed).max(floor);
+        self.next_id
+            .store(candidate.saturating_add(1), Ordering::Relaxed);
+        ClaimId::new(candidate)
     }
 
     /// Release (remove) the first active request held by `robot_id` whose
@@ -334,6 +389,7 @@ impl ClaimManager {
                     conflicting_targets: conflicts.clone(),
                     blocking_target: conflicts.first().copied(),
                     diagnostics: self.build_conflict_diagnostics("active request", &conflicts),
+                    denied_by_capacity: false,
                 };
             }
         }
@@ -352,6 +408,7 @@ impl ClaimManager {
                     conflicting_targets: conflicts.clone(),
                     blocking_target: conflicts.first().copied(),
                     diagnostics: self.build_conflict_diagnostics("granted lease", &conflicts),
+                    denied_by_capacity: false,
                 };
             }
         }
@@ -981,6 +1038,7 @@ fn capacity_eval(v: CapacityViolation) -> ClaimEvaluation {
         conflicting_targets: vec![v.target],
         blocking_target: Some(v.target),
         diagnostics: v.diagnostics,
+        denied_by_capacity: true,
     }
 }
 

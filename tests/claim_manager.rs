@@ -238,3 +238,41 @@ fn upsert_replaces_existing_request() {
     // Window check via static helper
     assert!(mgr.find_request(ClaimId::new(5)).unwrap().window == ClaimWindow::default());
 }
+
+#[test]
+fn next_request_id_is_monotonic_past_huge_existing_id() {
+    // A lease with an attacker-influenced claim_id at the very top of the u64
+    // range must not make `next_request_id` overflow-panic or wrap to a live
+    // id. It saturates and the counter never goes backward.
+    let mut mgr = ClaimManager::new();
+    let lease = Lease {
+        id: LeaseId::new(1),
+        claim_id: ClaimId::new(u64::MAX),
+        robot_id: RobotId::new(1),
+        targets: vec![ClaimTarget {
+            kind: ClaimTargetKind::Node,
+            resource_id: Uuid::new_v4(),
+        }],
+        ..Lease::default()
+    };
+    mgr.add_lease(lease);
+
+    // Does not panic; saturates at u64::MAX (never wraps to a small live id).
+    let first = mgr.next_request_id();
+    assert_eq!(first.raw(), u64::MAX);
+
+    // Monotonic: with the huge lease removed the counter still does not go
+    // backward (would otherwise re-mint u64::MAX).
+    assert!(mgr.remove_lease(LeaseId::new(1)));
+    let second = mgr.next_request_id();
+    assert!(second.raw() >= first.raw());
+}
+
+#[test]
+fn next_request_id_unique_and_increasing_normal_case() {
+    let mgr = ClaimManager::new();
+    let a = mgr.next_request_id();
+    let b = mgr.next_request_id();
+    let c = mgr.next_request_id();
+    assert!(a.raw() < b.raw() && b.raw() < c.raw());
+}

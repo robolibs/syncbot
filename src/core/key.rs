@@ -51,10 +51,33 @@ impl Key {
         Err(KeyError::Malformed)
     }
 
-    /// Whether two keys authenticate as the same. Plaintext compare for now.
+    /// Whether two keys authenticate as the same. Plaintext compare for now,
+    /// but done in constant time to avoid a timing side channel: the secret
+    /// bytes are XOR-accumulated so the comparison does not short-circuit on the
+    /// first differing byte. Values of different variants or different lengths
+    /// never match. (Hashing — Argon2 for `did:pass` — is deferred to keylock;
+    /// see PLAN.md.)
     pub fn matches(&self, other: &Key) -> bool {
-        self == other
+        match (self, other) {
+            (Key::Numeric(a), Key::Numeric(b)) => ct_eq_bytes(&a.to_le_bytes(), &b.to_le_bytes()),
+            (Key::Pass(a), Key::Pass(b)) => ct_eq_bytes(a.as_bytes(), b.as_bytes()),
+            _ => false,
+        }
     }
+}
+
+/// Constant-time byte-slice equality. Returns `false` immediately for
+/// different lengths (length is not itself secret), otherwise XOR-accumulates
+/// every byte so timing does not reveal the position of the first mismatch.
+fn ct_eq_bytes(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 impl std::fmt::Display for Key {
@@ -111,5 +134,19 @@ mod tests {
         assert!(!Key::Numeric(1).matches(&Key::Numeric(2)));
         assert!(Key::Pass("x".into()).matches(&Key::Pass("x".into())));
         assert!(!Key::Numeric(1).matches(&Key::Pass("1".into())));
+    }
+
+    #[test]
+    fn constant_time_matches_correct_for_all_cases() {
+        // Equal passwords match.
+        assert!(Key::Pass("s3cret".into()).matches(&Key::Pass("s3cret".into())));
+        // Same-length mismatch (differs only in last byte) still rejected.
+        assert!(!Key::Pass("s3cret".into()).matches(&Key::Pass("s3creX".into())));
+        // Different-length passwords never match.
+        assert!(!Key::Pass("short".into()).matches(&Key::Pass("longer-pass".into())));
+        assert!(!Key::Pass("".into()).matches(&Key::Pass("x".into())));
+        // Numeric equality/inequality via the constant-time path.
+        assert!(Key::Numeric(u64::MAX).matches(&Key::Numeric(u64::MAX)));
+        assert!(!Key::Numeric(0).matches(&Key::Numeric(u64::MAX)));
     }
 }

@@ -54,7 +54,7 @@ Reasons: 0 ok · 1 key · 2 already registered · 3 bad id · 4 unsupported key.
 <hb><key>1234</key><zone>42</zone></hb>   <!-- or <node>/<edge>; <zone>-1</zone> = unknown -->
 <reply><decision>1</decision><reason>0</reason></reply>
 ```
-Reasons: 0 ok · 1 key · 2 not registered. `zone = -1` means the robot holds no
+Reasons: 0 ok · 1 key · 2 not registered. If a robot stops heartbeating for 2× its `<alive>` interval, the server auto-releases its claims. `zone = -1` means the robot holds no
 zone / its location is unknown.
 
 **Claim** — `POST /ares/v1/claims/{zone,node,edge}` (type in path; repeat `<id>`

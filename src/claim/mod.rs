@@ -135,4 +135,10 @@ pub struct ClaimEvaluation {
     pub conflicting_targets: Vec<ClaimTarget>,
     pub blocking_target: Option<ClaimTarget>,
     pub diagnostics: Vec<String>,
+    /// Internal discriminant: `true` only when the denial came from a shared
+    /// capacity check (`capacity_eval`), so the flat wire can report reason 3
+    /// (CAPACITY) instead of misreporting reason 2 (CONFLICT). `#[serde(skip)]`
+    /// keeps the tier-2 JSON/XML shape unchanged.
+    #[serde(skip)]
+    pub denied_by_capacity: bool,
 }
