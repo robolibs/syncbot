@@ -95,14 +95,61 @@ async fn main() -> ExitCode {
     print_zones(&idx);
 
     // 4. Serve.
-    let state = ServeState::new(Coordinator::with_index(idx));
+    // OPT-IN persistence: only when `SYNCBOT_STATE` is set. Unset/empty →
+    // fully in-memory, no file touched, behaviour identical to before.
+    let persist_path = std::env::var("SYNCBOT_STATE")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let coord = match persist_path.as_deref() {
+        Some(path) => match syncbot::persist::load(std::path::Path::new(path)) {
+            Ok(Some(snapshot)) => {
+                info!(
+                    state_file = %path,
+                    robots = snapshot.robot_states.len(),
+                    "restored syncbot state from disk"
+                );
+                Coordinator::restore(snapshot, Some(Arc::clone(&idx)))
+            }
+            Ok(None) => {
+                info!(state_file = %path, "no existing state file; starting fresh");
+                Coordinator::with_index(Arc::clone(&idx))
+            }
+            Err(e) => {
+                warn!(state_file = %path, error = %e, "failed to load state file; starting fresh");
+                Coordinator::with_index(Arc::clone(&idx))
+            }
+        },
+        None => Coordinator::with_index(Arc::clone(&idx)),
+    };
+    // OPT-IN admin auth: only when `SYNCBOT_ADMIN_AUTH` is truthy. Unset/other →
+    // admin endpoints stay OPEN, behaviour identical to before.
+    let admin_auth = env_truthy("SYNCBOT_ADMIN_AUTH");
+    if admin_auth {
+        info!("admin auth ENABLED: mutation endpoints require the owning robot's key");
+    }
+    let state = ServeState::new(coord).with_admin_auth(admin_auth);
     #[cfg(feature = "robo")]
     let _ros2dds = start_ros2dds(state.clone()).await;
     // Auto-release the claims of robots that stop heartbeating (per their
     // <alive> interval). Checks once a second.
     let _sweeper =
         syncbot::wire::spawn_inactive_sweeper(state.clone(), std::time::Duration::from_secs(1));
-    let app = rest::router(state);
+    // Periodic state flush (only when persistence is enabled). Mirrors the
+    // sweeper: read the coordinator, snapshot, atomically write, every 2s.
+    let _flusher = persist_path.clone().map(|path| {
+        let coord_handle = state.coordinator();
+        let path_buf = std::path::PathBuf::from(path);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
+            loop {
+                ticker.tick().await;
+                if let Err(e) = syncbot::persist::flush(&coord_handle, &path_buf) {
+                    warn!(error = %e, "periodic state flush failed");
+                }
+            }
+        })
+    });
+    let app = rest::router(state.clone());
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
@@ -116,7 +163,28 @@ async fn main() -> ExitCode {
     println!("try: curl http://{addr}/ares/v1/health");
     info!(addr = %addr, workspace = %dir, "REST server listening");
 
-    if let Err(e) = axum::serve(listener, app).await {
+    // When persistence is enabled, flush a final snapshot on Ctrl-C via
+    // graceful shutdown. When it is not, keep the exact prior serve path so
+    // behaviour is unchanged.
+    let serve_result = match persist_path.clone() {
+        Some(path) => {
+            let coord_handle = state.coordinator();
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = tokio::signal::ctrl_c().await;
+                    if let Err(e) =
+                        syncbot::persist::flush(&coord_handle, std::path::Path::new(&path))
+                    {
+                        warn!(error = %e, "final state flush on shutdown failed");
+                    } else {
+                        info!("flushed final syncbot state on shutdown");
+                    }
+                })
+                .await
+        }
+        None => axum::serve(listener, app).await,
+    };
+    if let Err(e) = serve_result {
         error!(error = %e, "REST server error");
         return ExitCode::FAILURE;
     }
@@ -218,6 +286,17 @@ fn json_array(values: &[String]) -> String {
         .map(|value| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
         .collect::<Vec<_>>();
     format!("[{}]", quoted.join(","))
+}
+
+/// Truthy env flag: `1`/`true`/`yes` (case-insensitive). Anything else, or
+/// unset, is false.
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        })
+        .unwrap_or(false)
 }
 
 fn init_logging() {

@@ -114,7 +114,8 @@ POST /ares/v1/robots
 
 ```sh
 ros2 service call /ares/v1/robots/register ares_interfaces/srv/Json \
-  "{request: '{\"robot\":\"7\",\"key\":\"1234\"}'}"
+  "{request: '{\"robot\":\"7\",\"key\":\"1234\",\"alive\":2}'}"
+# response.success=true  response.response='{"decision":1,"reason":0}'
 ```
 
 #table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
@@ -137,7 +138,8 @@ POST /ares/v1/robots/7/heartbeat
 
 ```sh
 ros2 service call /ares/v1/robots/heartbeat ares_interfaces/srv/Json \
-  "{request: '{\"robot\":\"7\",\"key\":\"1234\",\"zone\":42}'}"
+  "{request: '{\"robot\":\"7\",\"key\":\"1234\",\"zone\":42}'}"   # or "zone":-1 if unknown
+# response.success=true  response.response='{"decision":1,"reason":0}'
 ```
 
 #table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
@@ -153,9 +155,21 @@ that stopped it. Two optional fields:
 
 #table(columns: (24mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
   table.header([Field], [Meaning]),
-  [`<access_mode>`], [`1` = exclusive (default), `0` = unspecified (→ exclusive); `2`+ reserved for future modes and rejected for now.],
+  [`<access_mode>`], [`0` = unspecified (→ exclusive), `1` = exclusive (default), `2` = shared; `3`+ reserved and rejected.],
   [`<lease_time>`], [seconds the claim should hold: `0` (default) = unlimited, `X` = X seconds.],
 )
+
+*Shared zones.* On a zone whose capacity is greater than 1, several robots may
+hold it at once with `access_mode=2` (shared), up to that capacity; once full, a
+further shared claim is denied with reason `3` (*capacity exceeded*). An
+*exclusive* claim (`access_mode=1`) on a shared zone still *conflicts* with the
+current holders (reason `2`).
+
+*Lease time, today.* `<lease_time>` is accepted but timed wall-clock expiry is
+not enforced yet: only `0` (unlimited) is currently effective, and a non-zero
+value is accepted but the claim is *not* auto-expired on a timer today. The
+expiry that does work is auto-release when a robot stops heartbeating (after
+`2×` its `alive` interval).
 
 ```xml
 POST /ares/v1/claims/zone
@@ -171,6 +185,12 @@ POST /ares/v1/claims/zone
 ```sh
 ros2 service call /ares/v1/claims/zone ares_interfaces/srv/Json \
   "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":[42]}'}"
+# response.success=true  response.response='{"decision":1,"reason":0}'
+
+# several zones, atomic, exclusive, 30-second lease — id is an ARRAY even for one
+ros2 service call /ares/v1/claims/zone ares_interfaces/srv/Json \
+  "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":[42,43],\"access_mode\":1,\"lease_time\":30}'}"
+# response.success=true  response.response='{"decision":0,"reason":2,"blocked":43}'
 ```
 
 #table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
@@ -196,6 +216,7 @@ POST /ares/v1/leases/release/zone
 ```sh
 ros2 service call /ares/v1/leases/release/zone ares_interfaces/srv/Json \
   "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":42}'}"
+# response.success=true  response.response='{"decision":1,"reason":0}'
 ```
 
 #table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
@@ -214,6 +235,17 @@ xml /robots            '<reg><robot>7</robot><key>1234</key></reg>'
 xml /claims/zone       '<claim><key>1234</key><robot>7</robot><id>42</id></claim>'
 xml /robots/7/heartbeat '<hb><key>1234</key><zone>42</zone></hb>'
 xml /leases/release/zone '<rel><key>1234</key><robot>7</robot><id>42</id></rel>'
+```
+
+The same run over ROS2 — register, claim, heartbeat, release:
+
+```sh
+J=ares_interfaces/srv/Json
+
+ros2 service call /ares/v1/robots/register     $J "{request: '{\"robot\":\"7\",\"key\":\"1234\"}'}"
+ros2 service call /ares/v1/claims/zone         $J "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":[42]}'}"
+ros2 service call /ares/v1/robots/heartbeat    $J "{request: '{\"robot\":\"7\",\"key\":\"1234\",\"zone\":42}'}"
+ros2 service call /ares/v1/leases/release/zone $J "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":42}'}"
 ```
 
 #block(fill: rgb("#fffbeb"), stroke: warn.lighten(20%), radius: 5pt, inset: 8pt)[

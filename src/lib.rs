@@ -19,6 +19,7 @@ pub mod coordinator;
 pub mod core;
 pub mod ffi;
 pub mod index;
+pub mod persist;
 pub mod policy;
 pub mod robot;
 pub mod route;

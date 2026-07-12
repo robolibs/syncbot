@@ -9,11 +9,12 @@ use std::sync::Arc;
 
 use datapod::{Geo, Point, Polygon};
 use syncbot::wire::{
-    ClaimRequestWire, ClaimTargetWire, ServeState, flat_claim, flat_heartbeat, flat_register,
-    flat_release, submit_claim,
+    ClaimRequestWire, ClaimTargetWire, ReleaseLeaseRequest, ServeState, add_lease, flat_claim,
+    flat_heartbeat, flat_register, flat_release, remove_claim, release_lease, submit_claim,
+    unregister_robot,
 };
 use syncbot::{
-    ClaimAccessMode, ClaimId, ClaimTargetKind, ClaimWindow, Coordinator, MissionId,
+    ClaimAccessMode, ClaimId, ClaimTargetKind, ClaimWindow, Coordinator, Lease, LeaseId, MissionId,
     NUMERIC_ID_PROPERTY, ResourceRef, RobotId, WorkspaceIndex,
 };
 use zoneout::{Workspace, ZoneBuilder};
@@ -357,7 +358,8 @@ fn claim_access_mode_and_lease_time() {
         .decision,
         1
     );
-    // access_mode 2 (reserved/future) -> rejected as bad request (reason 5)
+    // access_mode 3 (reserved/future) -> rejected as bad request (reason 5).
+    // (access_mode 2 is now the approved SHARED mode; see the shared-zone tests.)
     flat_register(&s, "8", "5678", None);
     let r = flat_claim(
         &s,
@@ -365,7 +367,7 @@ fn claim_access_mode_and_lease_time() {
         "5678",
         "8",
         &[139],
-        Some(2),
+        Some(3),
         None,
     );
     assert_eq!((r.decision, r.reason), (0, 5));
@@ -445,4 +447,152 @@ fn inactive_robot_claims_auto_released() {
         flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], None, None).decision,
         1
     );
+}
+
+// ---------------------------------------------------------------------------
+// Opt-in admin auth on the mutation endpoints (unregister / remove_claim /
+// add_lease / release_lease). Default (flag OFF) is byte-identically open.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn admin_auth_off_is_open_no_key_required() {
+    // Default ServeState: admin_auth = false -> endpoints stay OPEN.
+    let s = build_state();
+    flat_register(&s, "7", "1234", None); // robot bound to a REAL key
+
+    // A claim owned by robot 7 (to exercise remove_claim's owner lookup).
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
+        1
+    );
+    let claim_id = s.coordinator().read().unwrap().claim_manager().requests()[0].id;
+
+    // add_lease with NO key succeeds even though robot 7 has a real key.
+    let lease = Lease {
+        id: LeaseId::new(1),
+        robot_id: RobotId::new(7),
+        ..Lease::default()
+    };
+    add_lease(&s, lease, None).expect("add_lease open");
+
+    // remove_claim with NO key -> actually removes it.
+    assert!(remove_claim(&s, claim_id, None).expect("remove_claim open"));
+
+    // release_lease with NO key -> actually releases it.
+    assert!(
+        release_lease(
+            &s,
+            ReleaseLeaseRequest {
+                lease_id: LeaseId::new(1),
+                released_at_tick: None,
+                key: None,
+            },
+        )
+        .expect("release_lease open")
+    );
+
+    // unregister_robot with NO key -> succeeds.
+    assert!(unregister_robot(&s, RobotId::new(7), None).expect("unregister open"));
+}
+
+#[test]
+fn admin_auth_on_protects_keyed_but_not_keyless_robot() {
+    let s = build_state().with_admin_auth(true);
+
+    // Robot 7 registered WITH a real key -> protected.
+    flat_register(&s, "7", "1234", None);
+    // Omitted key -> denied (defaults to "0", which is not robot 7's key).
+    assert!(unregister_robot(&s, RobotId::new(7), None).is_err());
+    // Wrong key -> denied.
+    assert!(unregister_robot(&s, RobotId::new(7), Some("9999".into())).is_err());
+    // Correct key -> succeeds (returns true, proving it was still registered).
+    assert!(
+        unregister_robot(&s, RobotId::new(7), Some("1234".into()))
+            .expect("unregister with correct key")
+    );
+
+    // Robot 8 registered bound to the DEFAULT key "0" (keyless) -> stays open.
+    flat_register(&s, "8", "0", None);
+    assert!(
+        unregister_robot(&s, RobotId::new(8), None).expect("keyless unregister stays open")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Shared claims via access_mode=2 and reason 3 (CAPACITY) on the shared path.
+// ---------------------------------------------------------------------------
+
+/// Root + one shared zone (numeric 60, `traffic.policy=shared`, capacity 2).
+fn build_shared_state() -> ServeState {
+    let mut root = ZoneBuilder::new()
+        .with_name("root")
+        .with_kind("workspace")
+        .with_boundary(rectangle(0.0, 0.0, 100.0, 100.0))
+        .with_datum(Geo::new(52.0, 5.0, 0.0))
+        .build()
+        .expect("root zone");
+    let shared = ZoneBuilder::new()
+        .with_name("shared")
+        .with_kind("zone")
+        .with_boundary(rectangle(10.0, 10.0, 50.0, 50.0))
+        .with_datum(Geo::new(52.0, 5.0, 0.0))
+        .with_property(NUMERIC_ID_PROPERTY, "60")
+        .with_property("traffic.policy", "shared")
+        .with_property("traffic.capacity", "2")
+        .build()
+        .expect("shared zone");
+    root.add_child(shared).expect("add zone");
+
+    let idx = Arc::new(WorkspaceIndex::new(Arc::new(Workspace::new(root))));
+    ServeState::new(Coordinator::with_index(idx))
+}
+
+#[test]
+fn shared_zone_admits_up_to_capacity_then_reason_3() {
+    let s = build_shared_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+    flat_register(&s, "9", "9012", None);
+
+    // Two shared claimants (access_mode 2) fit the cap-2 zone -> both granted.
+    let r = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[60], Some(2), None);
+    assert_eq!((r.decision, r.reason), (1, 0));
+    let r = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[60], Some(2), None);
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    // A third shared claimant exceeds capacity -> reason 3 (CAPACITY), not 2.
+    let r = flat_claim(&s, ClaimTargetKind::Zone, "9012", "9", &[60], Some(2), None);
+    assert_eq!((r.decision, r.reason), (0, 3));
+    assert_eq!(r.blocked, Some(60));
+}
+
+#[test]
+fn exclusive_on_shared_zone_is_conflict_not_capacity() {
+    let s = build_shared_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+
+    // A shared claimant holds the zone (well within capacity 2).
+    let r = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[60], Some(2), None);
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    // An EXCLUSIVE claim (access_mode 1) on that same zone must return reason 2
+    // (CONFLICT), NOT 3 — exclusive claims never route through capacity_eval.
+    let r = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[60], Some(1), None);
+    assert_eq!((r.decision, r.reason), (0, 2));
+    assert_eq!(r.blocked, Some(60));
+}
+
+#[test]
+fn access_mode_2_accepted_3_still_bad_request() {
+    let s = build_shared_state();
+    flat_register(&s, "7", "1234", None);
+
+    // access_mode 2 (shared) no longer returns reason 5; it is granted here.
+    let r = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[60], Some(2), None);
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    // access_mode 3 remains reserved -> reason 5 (BAD_REQUEST).
+    let r = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[60], Some(3), None);
+    assert_eq!((r.decision, r.reason), (0, 5));
 }

@@ -1,8 +1,8 @@
 //! Coordinator integration tests.
 
 use syncbot::{
-    ArbitrationContext, ArbitrationDecision, RobotProgressState, RobotState,
-    arbitrate_right_of_way, robot_missed_schedule_slot,
+    ArbitrationContext, ArbitrationDecision, Coordinator, Key, RobotId, RobotProgressState,
+    RobotState, arbitrate_right_of_way, robot_missed_schedule_slot,
 };
 
 #[test]
@@ -73,4 +73,43 @@ fn missed_schedule_slot_only_when_late_and_not_idle() {
     state.progress_state = RobotProgressState::Waiting;
     assert!(robot_missed_schedule_slot(&state, 20, 5));
     assert!(!robot_missed_schedule_slot(&state, 20, 100));
+}
+
+// -- hardening regression tests ------------------------------------------
+
+#[test]
+fn failed_register_does_not_poison_uuid_map() {
+    let mut c = Coordinator::new();
+    let uuid = "12345678-1234-1234-1234-1234567890ab";
+
+    // First registration mints a synthetic id and commits the binding.
+    let id1 = c.resolve_or_mint_robot_id(uuid).expect("mint");
+    assert!(c.register_with_key(id1, Key::Numeric(1)));
+
+    // A duplicate register attempt for the same UUID fails but must NOT rebind
+    // or drop the committed mapping.
+    let id_again = c.resolve_or_mint_robot_id(uuid).expect("resolve existing");
+    assert_eq!(id_again, id1);
+    assert!(!c.register_with_key(id_again, Key::Numeric(2)));
+
+    // The UUID still resolves to the original committed id (no poisoning).
+    assert_eq!(c.resolve_robot_id(uuid), Some(id1));
+    // And the original key is intact.
+    assert!(c.validate_key(id1, &Key::Numeric(1)));
+    assert!(!c.validate_key(id1, &Key::Numeric(2)));
+}
+
+#[test]
+fn alive_interval_overflow_saturates_without_panic() {
+    let mut c = Coordinator::new();
+    // A huge interval is stored as-is (no clamp), but the `interval * 2000`
+    // liveness math is saturating so it cannot overflow-panic. This only
+    // verifies "no panic" — it does not assert any clamping of the stored value.
+    c.set_alive(RobotId::new(1), u64::MAX, 0);
+    // The far-future query does not panic (saturating math).
+    let _ = c.robot_active_at(RobotId::new(1), u64::MAX);
+    let _ = c.inactive_robots_at(u64::MAX);
+    // Well within the window the robot is active.
+    assert!(c.robot_active_at(RobotId::new(1), 1_000));
+    assert!(c.inactive_robots_at(1_000).is_empty());
 }

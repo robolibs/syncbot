@@ -412,7 +412,7 @@ pub fn schedule_route_request(
     }
 
     decision.kind = ScheduleDecisionKind::Queue;
-    decision.start_tick = latest_blocking_tick + 1;
+    decision.start_tick = latest_blocking_tick.saturating_add(1);
     decision.queue_position = decision.conflicts.len() as u64 + 1;
     decision
         .diagnostics
@@ -592,7 +592,7 @@ pub fn claim_window_from_route(
         .ceil() as u64;
     ClaimWindow {
         start_tick: Some(start_tick),
-        end_tick: Some(start_tick + duration),
+        end_tick: Some(start_tick.saturating_add(duration)),
     }
 }
 
@@ -685,7 +685,8 @@ pub fn rolling_horizon_claim_request(
             plan.steps[start_node_index as usize].cumulative_cost
         };
         let remaining_cost = (plan.total_cost - traversed_cost).max(0.0);
-        request.window.end_tick = Some(state.updated_at_tick + remaining_cost.ceil() as u64);
+        request.window.end_tick =
+            Some(state.updated_at_tick.saturating_add(remaining_cost.ceil() as u64));
     } else {
         request.window.end_tick = Some(state.updated_at_tick);
     }
@@ -878,6 +879,12 @@ pub struct Coordinator {
     /// Next id minted for a previously-unseen UUID robot. Starts high to avoid
     /// colliding with client-supplied numeric ids.
     next_synthetic_robot_id: u64,
+    /// UUID robots whose id was minted but whose registration has not yet
+    /// succeeded. Maps the tentative `RobotId` back to its canonical UUID
+    /// string. The `robot_id_by_uuid` binding is only committed once
+    /// `register_with_key` succeeds, so a failed/duplicate register cannot
+    /// poison the mapping. See `resolve_or_mint_robot_id`.
+    pending_uuid_bindings: BTreeMap<RobotId, String>,
     /// Heartbeat liveness tracking per robot: expected interval + last seen.
     robot_alive: BTreeMap<RobotId, AliveInfo>,
 }
@@ -888,10 +895,14 @@ const SYNTHETIC_ROBOT_ID_BASE: u64 = 1 << 56;
 /// Per-robot heartbeat liveness: the expected interval (seconds) the robot
 /// promised at registration, and the wall-clock time (epoch millis) of its last
 /// heartbeat. A robot is "inactive" once `2 × interval` has elapsed.
-#[derive(Debug, Clone, Copy)]
-struct AliveInfo {
-    interval_secs: u64,
-    last_seen_ms: u64,
+///
+/// Public and `serde`-derivable so it can round-trip through a
+/// [`crate::persist::CoordinatorSnapshot`]. Fields are otherwise only touched
+/// through the coordinator's alive/heartbeat methods.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AliveInfo {
+    pub interval_secs: u64,
+    pub last_seen_ms: u64,
 }
 
 impl Default for Coordinator {
@@ -903,6 +914,7 @@ impl Default for Coordinator {
             robot_keys: BTreeMap::new(),
             robot_id_by_uuid: BTreeMap::new(),
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
+            pending_uuid_bindings: BTreeMap::new(),
             robot_alive: BTreeMap::new(),
         }
     }
@@ -921,6 +933,7 @@ impl Coordinator {
             robot_keys: BTreeMap::new(),
             robot_id_by_uuid: BTreeMap::new(),
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
+            pending_uuid_bindings: BTreeMap::new(),
             robot_alive: BTreeMap::new(),
         }
     }
@@ -958,7 +971,7 @@ impl Coordinator {
     /// an interval) are treated as active.
     pub fn robot_active_at(&self, robot_id: RobotId, now_ms: u64) -> bool {
         match self.robot_alive.get(&robot_id) {
-            Some(a) => now_ms.saturating_sub(a.last_seen_ms) <= a.interval_secs * 2_000,
+            Some(a) => now_ms.saturating_sub(a.last_seen_ms) <= a.interval_secs.saturating_mul(2_000),
             None => true,
         }
     }
@@ -967,7 +980,7 @@ impl Coordinator {
     pub fn inactive_robots_at(&self, now_ms: u64) -> Vec<RobotId> {
         self.robot_alive
             .iter()
-            .filter(|(_, a)| now_ms.saturating_sub(a.last_seen_ms) > a.interval_secs * 2_000)
+            .filter(|(_, a)| now_ms.saturating_sub(a.last_seen_ms) > a.interval_secs.saturating_mul(2_000))
             .map(|(id, _)| *id)
             .collect()
     }
@@ -1025,6 +1038,7 @@ impl Coordinator {
         self.robot_states.clear();
         self.robot_keys.clear();
         self.robot_id_by_uuid.clear();
+        self.pending_uuid_bindings.clear();
         self.robot_alive.clear();
         self.next_synthetic_robot_id = SYNTHETIC_ROBOT_ID_BASE;
         self.claim_manager.clear();
@@ -1043,9 +1057,12 @@ impl Coordinator {
         if let Some(id) = self.robot_id_by_uuid.get(&canon) {
             return Some(*id);
         }
+        // Mint a tentative id but DO NOT commit the UUID->id binding yet: it is
+        // only committed once `register_with_key` succeeds, so a failed or
+        // duplicate registration cannot poison `robot_id_by_uuid`.
         let id = RobotId::new(self.next_synthetic_robot_id);
-        self.next_synthetic_robot_id += 1;
-        self.robot_id_by_uuid.insert(canon, id);
+        self.next_synthetic_robot_id = self.next_synthetic_robot_id.saturating_add(1);
+        self.pending_uuid_bindings.insert(id, canon);
         Some(id)
     }
 
@@ -1067,6 +1084,10 @@ impl Coordinator {
     /// reason); the existing robot and its key are left untouched.
     pub fn register_with_key(&mut self, robot_id: RobotId, key: Key) -> bool {
         if self.robot_keys.contains_key(&robot_id) || self.find_robot_state(robot_id).is_some() {
+            // Registration did not take: drop any tentative UUID->id binding
+            // minted for this id so the mapping is not poisoned. (A no-op for
+            // integer ids and for already-committed UUID robots.)
+            self.pending_uuid_bindings.remove(&robot_id);
             return false;
         }
         let state = RobotState {
@@ -1075,6 +1096,10 @@ impl Coordinator {
         };
         self.robot_states.push(state);
         self.robot_keys.insert(robot_id, key);
+        // Registration succeeded: commit the tentative UUID->id binding, if any.
+        if let Some(canon) = self.pending_uuid_bindings.remove(&robot_id) {
+            self.robot_id_by_uuid.insert(canon, robot_id);
+        }
         true
     }
 
@@ -1196,7 +1221,8 @@ impl Coordinator {
         state.horizon = horizon;
         state.next_route_step_index = 0;
         state.scheduled_start_tick = Some(updated_at_tick);
-        state.reserved_until_tick = Some(updated_at_tick + total_cost.max(0.0).ceil() as u64);
+        state.reserved_until_tick =
+            Some(updated_at_tick.saturating_add(total_cost.max(0.0).ceil() as u64));
         state.wait_ticks = 0;
         state.needs_replan = false;
         state.progress_state = if is_empty {
@@ -1367,5 +1393,44 @@ impl Coordinator {
         state.needs_replan = true;
         state.updated_at_tick = current_tick;
         true
+    }
+
+    // -- persistence ------------------------------------------------------
+
+    /// Capture the coordinator's owned state (registrations, keys, UUID→id
+    /// map, synthetic-id counter, liveness, and the embedded claim manager)
+    /// into a serializable snapshot. The bound [`WorkspaceIndex`] and the
+    /// transient `pending_uuid_bindings` are intentionally excluded. See
+    /// [`crate::persist`].
+    pub fn snapshot(&self) -> crate::persist::CoordinatorSnapshot {
+        crate::persist::CoordinatorSnapshot {
+            robot_states: self.robot_states.clone(),
+            robot_keys: self.robot_keys.clone(),
+            robot_id_by_uuid: self.robot_id_by_uuid.clone(),
+            next_synthetic_robot_id: self.next_synthetic_robot_id,
+            robot_alive: self.robot_alive.clone(),
+            claims: self.claim_manager.snapshot(),
+        }
+    }
+
+    /// Rebuild a coordinator from a snapshot, re-attaching the freshly-loaded
+    /// `index` (which was never serialized). `pending_uuid_bindings` starts
+    /// empty. The claim manager's `next_id` atomic is rebuilt so minted ids
+    /// keep increasing after a restart.
+    pub fn restore(
+        snapshot: crate::persist::CoordinatorSnapshot,
+        index: Option<Arc<WorkspaceIndex>>,
+    ) -> Self {
+        let claim_manager = ClaimManager::restore(snapshot.claims, index.clone());
+        Self {
+            index,
+            claim_manager,
+            robot_states: snapshot.robot_states,
+            robot_keys: snapshot.robot_keys,
+            robot_id_by_uuid: snapshot.robot_id_by_uuid,
+            next_synthetic_robot_id: snapshot.next_synthetic_robot_id,
+            pending_uuid_bindings: BTreeMap::new(),
+            robot_alive: snapshot.robot_alive,
+        }
     }
 }

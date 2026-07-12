@@ -5,7 +5,7 @@
 //! request uses `Content-Type: application/xml` or `Accept: application/xml`.
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -30,6 +30,15 @@ pub const REST_PREFIX: &str = "/ares/v1";
 enum WireFormat {
     Json,
     Xml,
+}
+
+/// Optional `?key=...` query for the admin/mutation routes. Ignored unless the
+/// server was built with `ServeState::with_admin_auth(true)`; when off (the
+/// default) the value is never read, so existing callers are unaffected.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct KeyQuery {
+    #[serde(default)]
+    key: Option<String>,
 }
 
 /// Build a real router wired to a shared `Coordinator`.
@@ -159,13 +168,17 @@ async fn unregister_robot(
     headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<String>,
+    Query(q): Query<KeyQuery>,
 ) -> Response {
     let format = preferred_format(&headers);
     let robot_id = match crate::wire::resolve_robot(&state, &id) {
         Ok(r) => r,
         Err(err) => return respond::<()>(format, Err(err)),
     };
-    respond(format, crate::wire::unregister_robot(&state, robot_id))
+    respond(
+        format,
+        crate::wire::unregister_robot(&state, robot_id, q.key),
+    )
 }
 
 async fn robot_state(
@@ -261,10 +274,11 @@ async fn remove_claim(
     headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<u64>,
+    Query(q): Query<KeyQuery>,
 ) -> Response {
     respond(
         preferred_format(&headers),
-        crate::wire::remove_claim(&state, ClaimId::new(id)),
+        crate::wire::remove_claim(&state, ClaimId::new(id), q.key),
     )
 }
 
@@ -301,13 +315,18 @@ async fn list_leases(headers: HeaderMap, State(state): State<ServeState>) -> Res
     )
 }
 
-async fn add_lease(headers: HeaderMap, State(state): State<ServeState>, body: Bytes) -> Response {
+async fn add_lease(
+    headers: HeaderMap,
+    State(state): State<ServeState>,
+    Query(q): Query<KeyQuery>,
+    body: Bytes,
+) -> Response {
     let format = request_format(&headers);
     let lease = match parse_body::<Lease>(format, &body) {
         Ok(lease) => lease,
         Err(err) => return respond::<()>(format, Err(err)),
     };
-    respond(format, crate::wire::add_lease(&state, lease))
+    respond(format, crate::wire::add_lease(&state, lease, q.key))
 }
 
 async fn release_lease(
@@ -327,6 +346,7 @@ async fn release_lease_by_path(
     headers: HeaderMap,
     State(state): State<ServeState>,
     Path(id): Path<u64>,
+    Query(q): Query<KeyQuery>,
 ) -> Response {
     respond(
         preferred_format(&headers),
@@ -335,6 +355,7 @@ async fn release_lease_by_path(
             ReleaseLeaseRequest {
                 lease_id: crate::core::ids::LeaseId::new(id),
                 released_at_tick: None,
+                key: q.key,
             },
         ),
     )

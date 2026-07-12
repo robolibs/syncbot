@@ -155,7 +155,7 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
             state.clone(),
             |state, payload| {
                 let request: RobotIdEnvelope = decode_required(payload)?;
-                crate::wire::unregister_robot(&state, request.robot_id)
+                crate::wire::unregister_robot(&state, request.robot_id, request.key)
             },
         )
         .await?,
@@ -225,7 +225,7 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
     tasks.push(
         spawn_queryable(session, "claims/remove", state.clone(), |state, payload| {
             let request: ClaimIdEnvelope = decode_required(payload)?;
-            crate::wire::remove_claim(&state, request.claim_id)
+            crate::wire::remove_claim(&state, request.claim_id, request.key)
         })
         .await?,
     );
@@ -265,8 +265,8 @@ pub async fn serve(session: &zenoh::Session, state: ServeState) -> zenoh::Result
 
     tasks.push(
         spawn_queryable(session, "leases/add", state.clone(), |state, payload| {
-            let lease: Lease = decode_required(payload)?;
-            crate::wire::add_lease(&state, lease)
+            let req: AddLeaseEnvelope = decode_required(payload)?;
+            crate::wire::add_lease(&state, req.lease, req.key)
         })
         .await?,
     );
@@ -421,9 +421,25 @@ struct ResourceRefEnvelope {
 #[derive(serde::Deserialize)]
 struct RobotIdEnvelope {
     robot_id: RobotId,
+    /// Optional admin key (ignored unless `ServeState::admin_auth` is on).
+    #[serde(default)]
+    key: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 struct ClaimIdEnvelope {
     claim_id: ClaimId,
+    /// Optional admin key (ignored unless `ServeState::admin_auth` is on).
+    #[serde(default)]
+    key: Option<String>,
+}
+
+/// `leases/add` body: the flat `Lease` plus an optional admin key.
+#[derive(serde::Deserialize)]
+struct AddLeaseEnvelope {
+    #[serde(flatten)]
+    lease: Lease,
+    /// Optional admin key (ignored unless `ServeState::admin_auth` is on).
+    #[serde(default)]
+    key: Option<String>,
 }

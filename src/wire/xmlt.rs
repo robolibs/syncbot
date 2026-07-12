@@ -8,7 +8,7 @@
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{FromRequest, Path, Request, State};
+use axum::extract::{FromRequest, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -69,6 +69,14 @@ impl<T: Serialize> IntoResponse for Xml<T> {
 }
 
 type XmlResult<T> = Result<Xml<T>, (StatusCode, Xml<ApiError>)>;
+
+/// Optional `?key=...` query for the admin/mutation DELETE routes. Ignored
+/// unless the server was built with `ServeState::with_admin_auth(true)`.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct KeyQuery {
+    #[serde(default)]
+    key: Option<String>,
+}
 
 fn ok<T>(result: ApiResult<T>) -> XmlResult<T> {
     result
@@ -139,9 +147,10 @@ fn resolve(state: &ServeState, raw: &str) -> Result<RobotId, (StatusCode, Xml<Ap
 async fn unregister_robot(
     State(state): State<ServeState>,
     Path(id): Path<String>,
+    Query(q): Query<KeyQuery>,
 ) -> XmlResult<bool> {
     let robot_id = resolve(&state, &id)?;
-    ok(crate::wire::unregister_robot(&state, robot_id))
+    ok(crate::wire::unregister_robot(&state, robot_id, q.key))
 }
 
 async fn robot_state(
@@ -205,7 +214,12 @@ async fn list_leases(State(state): State<ServeState>) -> XmlResult<Vec<Lease>> {
 }
 
 async fn add_lease(State(state): State<ServeState>, Xml(lease): Xml<Lease>) -> XmlResult<Lease> {
-    ok(crate::wire::add_lease(&state, lease))
+    // XML add_lease carries no admin key: quick-xml 0.36 cannot reliably flatten
+    // an extra field alongside the `Lease` body without changing the wire shape,
+    // so the XML body stays byte-identical. With admin auth off (the default)
+    // the key is ignored anyway; with it on, use JSON/robo/ros2dds for a keyed
+    // lease, or POST `/leases/release` (which does carry a key).
+    ok(crate::wire::add_lease(&state, lease, None))
 }
 
 async fn release_lease(
@@ -218,12 +232,14 @@ async fn release_lease(
 async fn release_lease_by_path(
     State(state): State<ServeState>,
     Path(id): Path<u64>,
+    Query(q): Query<KeyQuery>,
 ) -> XmlResult<bool> {
     ok(crate::wire::release_lease(
         &state,
         ReleaseLeaseRequest {
             lease_id: crate::core::ids::LeaseId::new(id),
             released_at_tick: None,
+            key: q.key,
         },
     ))
 }

@@ -37,17 +37,39 @@ pub mod xmlt;
 #[derive(Clone)]
 pub struct ServeState {
     coordinator: Arc<RwLock<Coordinator>>,
+    /// OPT-IN auth on the admin/mutation endpoints (unregister robot, remove
+    /// claim, add/release lease). Defaults to `false`, which keeps those
+    /// endpoints OPEN exactly as before. Flip on with [`ServeState::with_admin_auth`].
+    /// Never read from the environment here — operators wire that in the binary
+    /// (see the examples) so this stays testable and race-free.
+    admin_auth: bool,
 }
 
 impl ServeState {
     pub fn new(coordinator: Coordinator) -> Self {
         Self {
             coordinator: Arc::new(RwLock::new(coordinator)),
+            admin_auth: false,
         }
     }
 
     pub fn shared(coordinator: Arc<RwLock<Coordinator>>) -> Self {
-        Self { coordinator }
+        Self {
+            coordinator,
+            admin_auth: false,
+        }
+    }
+
+    /// Enable (or disable) opt-in auth on the admin/mutation endpoints. Off by
+    /// default; leaving it off keeps those endpoints byte-identically open.
+    pub fn with_admin_auth(mut self, on: bool) -> Self {
+        self.admin_auth = on;
+        self
+    }
+
+    /// Whether opt-in admin auth is enabled.
+    pub fn admin_auth(&self) -> bool {
+        self.admin_auth
     }
 
     pub fn coordinator(&self) -> Arc<RwLock<Coordinator>> {
@@ -165,6 +187,11 @@ pub struct AssignRouteRequest {
 pub struct ReleaseLeaseRequest {
     pub lease_id: LeaseId,
     pub released_at_tick: Option<u64>,
+    /// OPTIONAL admin key. Ignored unless `ServeState::admin_auth` is on; when
+    /// on, it is validated against the lease's owning robot (a missing key
+    /// falls back to the shared [`DEFAULT_KEY`]). See [`require_key_or_default`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// Wire form of [`ClaimTarget`] — `resource_id` accepts either a UUID
@@ -385,8 +412,18 @@ pub fn register_robot(state: &ServeState, robot: RobotState) -> ApiResult<RobotS
     Ok(robot)
 }
 
-pub fn unregister_robot(state: &ServeState, robot_id: RobotId) -> ApiResult<bool> {
-    Ok(write_coord(state)?.unregister_robot(robot_id))
+pub fn unregister_robot(
+    state: &ServeState,
+    robot_id: RobotId,
+    key: Option<String>,
+) -> ApiResult<bool> {
+    let mut coord = write_coord(state)?;
+    // Opt-in auth: protect a registered robot bound to a real key. An unknown
+    // robot has nothing to protect — fall through to the unchanged `false`.
+    if state.admin_auth && coord.has_robot(robot_id) {
+        require_key_or_default(&coord, robot_id, &key)?;
+    }
+    Ok(coord.unregister_robot(robot_id))
 }
 
 pub fn robot_state(state: &ServeState, robot_id: RobotId) -> ApiResult<RobotState> {
@@ -518,10 +555,24 @@ pub fn find_claim(state: &ServeState, claim_id: ClaimId) -> ApiResult<ClaimReque
         .ok_or_else(|| ApiError::new(format!("claim {claim_id} is not active")))
 }
 
-pub fn remove_claim(state: &ServeState, claim_id: ClaimId) -> ApiResult<bool> {
-    Ok(write_coord(state)?
-        .claim_manager_mut()
-        .remove_request(claim_id))
+pub fn remove_claim(
+    state: &ServeState,
+    claim_id: ClaimId,
+    key: Option<String>,
+) -> ApiResult<bool> {
+    let mut coord = write_coord(state)?;
+    // Opt-in auth: enforce the owning robot's key. If the claim is unknown there
+    // is no owner to protect — fall through to the unchanged `false`.
+    if state.admin_auth {
+        if let Some(owner) = coord
+            .claim_manager()
+            .find_request(claim_id)
+            .map(|r| r.robot_id)
+        {
+            require_key_or_default(&coord, owner, &key)?;
+        }
+    }
+    Ok(coord.claim_manager_mut().remove_request(claim_id))
 }
 
 pub fn evaluate_claim(state: &ServeState, request: ClaimRequestWire) -> ApiResult<ClaimEvaluation> {
@@ -587,6 +638,28 @@ fn require_key(coord: &Coordinator, robot_id: RobotId, key: &Option<String>) -> 
     }
 }
 
+/// Validate an OPTIONAL admin key against `robot_id`, defaulting a MISSING key
+/// to the shared [`DEFAULT_KEY`] before validating. Semantics mirror the flat
+/// register/heartbeat/claim convention: a robot bound to the default key `"0"`
+/// (i.e. registered without a real key) stays openly manageable even with auth
+/// on, while a robot bound to a real key is protected (omitted/wrong key is
+/// rejected). Unlike the strict tier-2 [`require_key`], a missing key is NOT a
+/// hard error — it becomes the default. Only invoked by the admin handlers when
+/// `ServeState::admin_auth` is enabled.
+fn require_key_or_default(
+    coord: &Coordinator,
+    robot_id: RobotId,
+    key: &Option<String>,
+) -> ApiResult<()> {
+    let raw = key.as_deref().unwrap_or(DEFAULT_KEY);
+    let parsed = Key::parse(raw).map_err(|_| ApiError::new("mismatched key: bad key"))?;
+    if coord.validate_key(robot_id, &parsed) {
+        Ok(())
+    } else {
+        Err(ApiError::new("mismatched key"))
+    }
+}
+
 pub fn submit_claim(state: &ServeState, request: ClaimRequestWire) -> ApiResult<ClaimEvaluation> {
     let mut coord = write_coord(state)?;
     require_key(&coord, request.robot_id, &request.key)?;
@@ -607,30 +680,44 @@ pub fn list_leases(state: &ServeState) -> ApiResult<Vec<Lease>> {
     Ok(read_coord(state)?.claim_manager().leases().to_vec())
 }
 
-pub fn add_lease(state: &ServeState, lease: Lease) -> ApiResult<Lease> {
+pub fn add_lease(state: &ServeState, lease: Lease, key: Option<String>) -> ApiResult<Lease> {
     let mut coord = write_coord(state)?;
+    // Opt-in auth: the lease names its own owning robot; enforce that robot's key.
+    if state.admin_auth {
+        require_key_or_default(&coord, lease.robot_id, &key)?;
+    }
     coord.claim_manager_mut().add_lease(lease.clone());
     Ok(lease)
 }
 
 pub fn release_lease(state: &ServeState, request: ReleaseLeaseRequest) -> ApiResult<bool> {
-    Ok(write_coord(state)?
+    let mut coord = write_coord(state)?;
+    // Opt-in auth: enforce the owning robot's key. If the lease is unknown there
+    // is no owner to protect — fall through to the unchanged `false`.
+    if state.admin_auth {
+        if let Some(owner) = coord
+            .claim_manager()
+            .find_lease(request.lease_id)
+            .map(|l| l.robot_id)
+        {
+            require_key_or_default(&coord, owner, &request.key)?;
+        }
+    }
+    Ok(coord
         .claim_manager_mut()
         .release_lease(request.lease_id, request.released_at_tick))
 }
 
 fn read_coord(state: &ServeState) -> ApiResult<std::sync::RwLockReadGuard<'_, Coordinator>> {
-    state
-        .coordinator
-        .read()
-        .map_err(|_| ApiError::new("coordinator lock is poisoned"))
+    // Recover the guard from a poisoned lock (defense-in-depth): a single
+    // panicking request must not permanently brick every future request.
+    Ok(state.coordinator.read().unwrap_or_else(|e| e.into_inner()))
 }
 
 fn write_coord(state: &ServeState) -> ApiResult<std::sync::RwLockWriteGuard<'_, Coordinator>> {
-    state
-        .coordinator
-        .write()
-        .map_err(|_| ApiError::new("coordinator lock is poisoned"))
+    // Recover the guard from a poisoned lock (defense-in-depth): a single
+    // panicking request must not permanently brick every future request.
+    Ok(state.coordinator.write().unwrap_or_else(|e| e.into_inner()))
 }
 
 fn zone_view(idx: &WorkspaceIndex, zone: &zoneout::Zone) -> ZoneView {
@@ -686,6 +773,21 @@ fn numeric_id(properties: &BTreeMap<String, String>) -> Option<u64> {
     properties
         .get(NUMERIC_ID_PROPERTY)
         .and_then(|raw| raw.trim().parse::<u64>().ok())
+}
+
+/// Resolve a claim target's numeric alias (`NUMERIC_ID_PROPERTY`) from the
+/// workspace index by its resolved UUID. Used to name a blocker that the caller
+/// never requested (cross-level conflicts), the reverse of the numeric->UUID
+/// resolution done elsewhere.
+fn numeric_alias_for(index: &WorkspaceIndex, target: &ClaimTarget) -> Option<u64> {
+    let raw = match target.kind {
+        ClaimTargetKind::Zone => index.zone_property(target.resource_id, NUMERIC_ID_PROPERTY),
+        ClaimTargetKind::Node => index
+            .node(target.resource_id)
+            .and_then(|node| node.properties.get(NUMERIC_ID_PROPERTY).cloned()),
+        ClaimTargetKind::Edge => index.edge_property(target.resource_id, NUMERIC_ID_PROPERTY),
+    };
+    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
 }
 
 // ===========================================================================
@@ -871,7 +973,8 @@ pub fn flat_claim(
     };
     let access = match access_mode.unwrap_or(1) {
         0 | 1 => ClaimAccessMode::Exclusive,
-        _ => return FlatReply::deny(reason::claim::BAD_REQUEST), // 2+ reserved
+        2 => ClaimAccessMode::Shared,
+        _ => return FlatReply::deny(reason::claim::BAD_REQUEST), // 3+ reserved
     };
     let window = match lease_seconds.unwrap_or(0) {
         0 => ClaimWindow::default(),
@@ -924,15 +1027,23 @@ pub fn flat_claim(
         coord.claim_manager_mut().add_request(request);
         return FlatReply::ok();
     }
-    let blocked = evaluation
-        .blocking_target
-        .and_then(|t| numeric_by_uuid.get(&t.resource_id).copied());
-    let code =
-        if evaluation.conflicting_claim_id.is_some() || evaluation.conflicting_lease_id.is_some() {
-            reason::claim::CONFLICT
-        } else {
-            reason::claim::CAPACITY
-        };
+    let blocked = evaluation.blocking_target.and_then(|t| {
+        // Prefer the caller's own requested numeric id; otherwise (cross-level
+        // conflict where the blocker is an ancestor/containing zone the caller
+        // never named) fall back to the blocker's numeric alias in the index.
+        numeric_by_uuid
+            .get(&t.resource_id)
+            .copied()
+            .or_else(|| numeric_alias_for(&index, &t))
+    });
+    // Capacity denials (shared-vs-shared, zone/edge over capacity) report reason
+    // 3; every other denial (including an exclusive claim on an occupied or
+    // shared zone) stays CONFLICT (reason 2), exactly as before.
+    let code = if evaluation.denied_by_capacity {
+        reason::claim::CAPACITY
+    } else {
+        reason::claim::CONFLICT
+    };
     match blocked {
         Some(b) => FlatReply::deny_blocked(code, b),
         None => FlatReply::deny(code),

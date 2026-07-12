@@ -99,8 +99,11 @@ A `key` authenticates the acting robot. Forms:
   default password — convenient but insecure. A robot that registered with a
   real key must keep sending it.
 - *Required on state-changing tier-2 calls* (assign-route, schedule, the nested
-  claim submit, add-lease) — in the request body. *Read-only* calls (health,
+  claim submit) — in the request body. *Read-only* calls (health,
   snapshot, map lookups, list/get, route planning, claim *evaluate*) take no key.
+- *Admin mutation endpoints* (unregister, remove claim, release/add lease) are
+  *open by default*; a key is required only when the operator opts in with
+  `SYNCBOT_ADMIN_AUTH` (§8.2).
 
 == Replies and errors
 
@@ -123,8 +126,8 @@ carry the same fields (see §5).
 == Register — `POST /ares/v1/robots`
 
 Optional `<alive>` = heartbeat interval in seconds (default 2); if no heartbeat
-arrives for `2×` that, the server marks the robot inactive and **auto-releases
-all its claims** (a background sweeper frees zones held by crashed/disconnected
+arrives for `2×` that, the server marks the robot inactive and *auto-releases
+all its claims* (a background sweeper frees zones held by crashed/disconnected
 robots, so nothing stays stuck).
 
 ```xml
@@ -146,8 +149,8 @@ claimed zone".
 == Claim — `POST /ares/v1/claims/{zone|node|edge}`
 
 Repeat `<id>` to claim several atomically (all-or-nothing). Optional
-`<access_mode>` (1 = exclusive default; 0 = unspecified; 2+ reserved → rejected)
-and `<lease_time>` (seconds; 0 = unlimited).
+`<access_mode>` (0 = unspecified → exclusive; 1 = exclusive default; 2 = shared;
+3+ reserved → rejected) and `<lease_time>` (seconds; 0 = unlimited).
 
 ```xml
 <claim><key>1234</key><robot>7</robot><id>42</id><id>43</id>
@@ -156,7 +159,11 @@ and `<lease_time>` (seconds; 0 = unlimited).
 ```
 
 Claiming a zone reserves everything inside it, so a zone claim conflicts with a
-node/edge claim within that zone (and vice versa).
+node/edge claim within that zone (and vice versa). A zone with capacity greater
+than 1 may be held concurrently by several robots under `access_mode=2`
+(shared), up to that capacity; a further shared claim past capacity is denied
+with reason `3` (*capacity exceeded*), while an *exclusive* claim
+(`access_mode=1`) on a shared zone still conflicts (reason `2`).
 
 == Release — `POST /ares/v1/leases/release/{zone|node|edge}`
 
@@ -200,7 +207,7 @@ response  {"found":true,"distance":12.0,"plan":{...},"failure":null}
   table.header([], [Endpoint], [Notes]),
   [W], [`POST /robots`], [Flat register (§3). Body `robot` + optional `key`.],
   [R], [`GET /robots` · `GET /robots/{id}`], [`RobotState` / list.],
-  [W], [`DELETE /robots/{id}`], [Unregister. Admin path; no key field yet (DELETE has no body).],
+  [W], [`DELETE /robots/{id}`], [Unregister. Admin path; open by default, owning-robot key via `?key=` when `SYNCBOT_ADMIN_AUTH` is set (§8.2).],
   [W], [`POST /robots/{id}/heartbeat`], [Flat heartbeat (§3).],
   [W], [`POST /robots/{id}/route`], [Assign a precomputed `RoutePlan`. Body `AssignRouteRequest` + `key`.],
   [W], [`POST /robots/{id}/schedule`], [Schedule from a claim → `ScheduleDecision` (Proceed / Queue / Replan). Body `ScheduleRobotRouteRequest` + `key`.],
@@ -222,7 +229,7 @@ response  {"found":true,"distance":12.0,"plan":{...},"failure":null}
   [R], [`POST /claims/evaluate`], [Dry-run a nested claim; does not store it. No key.],
   [W], [`POST /claims`], [Nested submit: evaluate + store if granted. Body `ClaimRequestWire` + `key`.],
   [W], [`POST /claims/{zone,node,edge}`], [Flat claim (§3).],
-  [W], [`DELETE /claims/{id}`], [Remove a request. Admin path; no key field yet.],
+  [W], [`DELETE /claims/{id}`], [Remove a request. Admin path; open by default, owning-robot key via `?key=` when `SYNCBOT_ADMIN_AUTH` is set (§8.2).],
 )
 
 Nested `ClaimRequestWire` (for `evaluate` / `POST /claims`):
@@ -323,9 +330,43 @@ string response     # JSON response on success; error text on failure
 ```sh
 ros2 service call /ares/v1/robots/register ares_interfaces/srv/Json \
   "{request: '{\"robot\":\"7\",\"key\":\"1234\"}'}"
+# success=true  response='{"decision":1,"reason":0}'
 
 ros2 service call /ares/v1/claims/zone ares_interfaces/srv/Json \
   "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":[42]}'}"
+# success=true  response='{"decision":1,"reason":0}'
+```
+
+Tier-2 endpoints ride the same generic service — the `request` string carries the
+fuller JSON body, and `response` carries the endpoint's data type as a JSON
+string. Service names come from the §5.1 map; ids that REST puts in the URL go in
+the body:
+
+```sh
+# read, no input — fleet snapshot (request "{}")
+ros2 service call /ares/v1/fleet/snapshot ares_interfaces/srv/Json \
+  "{request: '{}'}"
+# success=true  response='{"robots":[...],"requests":[...],"leases":[...]}'
+
+# read by id — one zone (id-addressed calls take {"id":"..."})
+ros2 service call /ares/v1/zones/get ares_interfaces/srv/Json \
+  "{request: '{\"id\":\"3\"}'}"
+# success=true  response='{"id":"...","numeric_id":3,"name":"...","kind":"...", ...}'
+
+# route planning
+ros2 service call /ares/v1/routes/plan ares_interfaces/srv/Json \
+  "{request: '{\"start_node_id\":\"1001\",\"goal_node_id\":\"1003\"}'}"
+# success=true  response='{"found":true,"distance":12.0,"plan":{...},"failure":null}'
+
+# nested claim submit — ClaimRequestWire body, key required
+ros2 service call /ares/v1/claims/request ares_interfaces/srv/Json \
+  "{request: '{\"id\":10,\"robot_id\":1,\"key\":\"1234\",\"access_mode\":\"Exclusive\",\"priority\":10,\"requested_at_tick\":10,\"window\":{\"start_tick\":10,\"end_tick\":100},\"targets\":[{\"kind\":\"Zone\",\"resource_id\":\"100\"}]}'}"
+# success=true  response='{"decision":"Grant","reason":"...","blocking_target":null,"diagnostics":[]}'
+
+# unregister (admin) — body field is robot_id; add "key" only when SYNCBOT_ADMIN_AUTH is set
+ros2 service call /ares/v1/robots/unregister ares_interfaces/srv/Json \
+  "{request: '{\"robot_id\":7}'}"
+# success=true  response='true'   (bool: whether a robot was removed)
 ```
 
 Connect the bridge to the ARES host (note `tcp/`, not `tcp://`):
@@ -402,3 +443,42 @@ a reason code.
 Common enums: claim target kind `Zone`/`Node`/`Edge`; access mode
 `Exclusive`/`Shared`; lease disposition `Active`/`Released`/`Expired`/`Revoked`;
 robot progress `Idle`/`FollowingRoute`/`Waiting`/`Queued`/`Blocked`/`Replanning`.
+
+= Operator options (opt-in)
+
+Two server-side options that an operator may enable at deploy time. *Both are
+off by default; the protocol seen by existing clients is unchanged.*
+
+== State persistence
+
+By default the server is *fully ephemeral*: all state lives in memory and is
+lost on restart. This is the default and is unchanged.
+
+Optionally, set the env var `SYNCBOT_STATE` to a JSON file path to persist state
+across restarts. When set, on boot the server *restores* registrations, auth
+keys, UUID→id mappings, and active claims/leases from that file; while running it
+*flushes every 2 seconds* (atomic write) and once more on shutdown. If
+`SYNCBOT_STATE` is unset, nothing is written and the server stays fully
+ephemeral (state lost on restart — the default).
+
+== Admin endpoint authentication
+
+The admin mutation endpoints — unregister a robot (`DELETE /robots/{id}`),
+remove a claim (`DELETE /claims/{id}`), release a lease by id
+(`DELETE /leases/{id}` / `POST /leases/release`), and add a lease
+(`POST /leases`) — are *open by default*: no key is required. This is the
+default and is unchanged.
+
+Optionally, an operator may set the env var `SYNCBOT_ADMIN_AUTH=1` (also accepts
+`true` / `yes`) to require the owning robot's key on these endpoints — supplied
+as `?key=...` on the body-less DELETEs and `POST /leases`, or in the body where
+the endpoint already takes one. With auth enabled:
+
+- a robot that registered *without* a key stays openly manageable (it is bound
+  to the shared default key);
+- a robot that registered *with* a key is protected — a missing or wrong key is
+  rejected (reason `1` / mismatched-key error).
+
+#note[Both options above are *opt-in*. Leave `SYNCBOT_STATE` and
+`SYNCBOT_ADMIN_AUTH` unset and the server behaves exactly as before: ephemeral
+state and open admin endpoints.]
