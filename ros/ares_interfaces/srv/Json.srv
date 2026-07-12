@@ -1,9 +1,0 @@
-# Generic ARES JSON service for ROS2DDS bridge clients.
-# Request is a JSON object encoded as a string.
-string request
----
-# success=false means response contains an error message.
-bool success
-# On success, response is a JSON value encoded as a string.
-# On error, response is a plain error message.
-string response
