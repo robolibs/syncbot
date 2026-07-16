@@ -30,10 +30,10 @@ robo = ["peerbus", "dep:tokio", "dep:zenoh"]
 xmlt = ["peerbus", "dep:axum", "dep:quick-xml"]
 
 [dependencies]
-zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", tag = "0.1.1" }
-concord = { git = "https://codeberg.org/robolibs/concord.git", tag = "0.1.1" }
-datapod = { path = "../datapod" }
-graphix = { git = "https://codeberg.org/robolibs/graphix.git", tag = "0.1.1" }
+zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", tag = "0.1.2" }
+concord = { git = "https://codeberg.org/robolibs/concord.git", tag = "0.1.2" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
+graphix = { git = "https://codeberg.org/robolibs/graphix.git", tag = "0.1.2" }
 peerbus = { git = "https://codeberg.org/robolibs/peerbus", tag = "0.4.0", optional = true, default-features = false }
 axum = { version = "0.8.9", optional = true }
 pyo3 = { version = "0.23", optional = true, features = [
@@ -51,9 +51,6 @@ tracing-subscriber = { version = "0.3", features = ["ansi", "env-filter", "fmt"]
 uuid = { version = "1.10", features = ["v4", "serde"] }
 zenoh = { version = "1.9.0", optional = true }
 quick-xml = { version = "0.36", features = ["serialize"], optional = true }
-
-[patch."https://codeberg.org/robolibs/datapod.git"]
-datapod = { path = "../datapod" }
 
 [[example]]
 name = "rest_server"
