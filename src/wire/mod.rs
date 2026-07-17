@@ -5,8 +5,8 @@
 //! core (`Coordinator`, `ClaimManager`, `plan_route`) and serialises core
 //! results back to the wire.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,7 @@ use crate::claim::{
 use crate::coordinator::{Coordinator, ScheduleDecision};
 use crate::core::ids::RobotId;
 use crate::core::key::{Key, KeyError};
-use crate::index::{NUMERIC_ID_PROPERTY, ResourceRef, WorkspaceIndex};
+use crate::index::{NUMERIC_ID_PROPERTY, ResourceRef, ValidationSeverity, WorkspaceIndex};
 use crate::robot::RobotState;
 use crate::route::{RouteFailure, RoutePlan, plan_route};
 
@@ -46,6 +46,57 @@ pub struct ServeState {
     /// Never read from the environment here — operators wire that in the binary
     /// (see the examples) so this stays testable and race-free.
     admin_auth: bool,
+    /// Recent decisions, newest last. See [`FleetEvent`].
+    ///
+    /// Lives here rather than in the coordinator because it is a record of what
+    /// the wire was asked and answered, not part of the coordination state: a
+    /// refusal changes nothing, so the coordinator rightly forgets it the
+    /// instant it replies.
+    events: Arc<Mutex<VecDeque<FleetEvent>>>,
+}
+
+/// How many decisions to remember. Enough to cover a busy fleet's last minute
+/// or two without the snapshot growing without bound — it is re-sent on every
+/// poll.
+const MAX_EVENTS: usize = 256;
+
+/// Something the core was asked to do, and what it answered.
+///
+/// The fleet snapshot otherwise only shows claims that *succeeded*: a denial
+/// leaves no trace anywhere, so a client cannot tell "nobody asked" from "three
+/// robots were refused". These are the refusals, and the grants that preceded
+/// them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FleetEvent {
+    /// Wall clock, same scale as [`FleetSnapshot::now_ms`]. Compare against
+    /// that rather than the reader's clock, so ages stay right across hosts.
+    pub at_ms: u64,
+    pub kind: FleetEventKind,
+    pub robot_id: Option<RobotId>,
+    /// Zones the request named, resolved to uuids so a client can match them
+    /// against its own workspace.
+    #[serde(default)]
+    pub zone_ids: Vec<uuid::Uuid>,
+    /// Zone names as the core knows them, for clients without the workspace.
+    #[serde(default)]
+    pub zone_names: Vec<String>,
+    /// The `FlatReply` reason on a denial; `0` otherwise.
+    #[serde(default)]
+    pub reason: u8,
+    /// Numeric id of whatever blocked a denied claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FleetEventKind {
+    Registered,
+    Granted,
+    Denied,
+    Released,
+    /// Auto-released because the robot stopped heartbeating.
+    Swept,
+    WorkspaceReplaced,
 }
 
 impl ServeState {
@@ -53,6 +104,7 @@ impl ServeState {
         Self {
             coordinator: Arc::new(RwLock::new(coordinator)),
             admin_auth: false,
+            events: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -60,7 +112,30 @@ impl ServeState {
         Self {
             coordinator,
             admin_auth: false,
+            events: Arc::new(Mutex::new(VecDeque::new())),
         }
+    }
+
+    /// Record a decision, dropping the oldest once the ring is full.
+    ///
+    /// A poisoned lock is swallowed rather than propagated: losing an entry
+    /// from an observability log must never fail the operation it describes.
+    pub(crate) fn record(&self, event: FleetEvent) {
+        let Ok(mut events) = self.events.lock() else {
+            return;
+        };
+        if events.len() >= MAX_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(event);
+    }
+
+    /// Recent decisions, oldest first.
+    pub fn events(&self) -> Vec<FleetEvent> {
+        self.events
+            .lock()
+            .map(|events| events.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Enable (or disable) opt-in auth on the admin/mutation endpoints. Off by
@@ -99,6 +174,30 @@ pub type ApiResult<T> = std::result::Result<T, ApiError>;
 pub struct Health {
     pub status: String,
     pub version: String,
+    /// The workspace datum, or `None` until one is bound.
+    ///
+    /// Every robot position is anchored to this, so it is published wherever a
+    /// client might look — here it is reachable before any workspace call.
+    #[serde(default)]
+    pub datum: Option<DatumView>,
+}
+
+/// The origin every local coordinate is measured from.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DatumView {
+    pub lat: f64,
+    pub lon: f64,
+    pub alt: f64,
+}
+
+impl From<concord::Geo> for DatumView {
+    fn from(geo: concord::Geo) -> Self {
+        Self {
+            lat: geo.latitude,
+            lon: geo.longitude,
+            alt: geo.altitude,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +205,41 @@ pub struct FleetSnapshot {
     pub robots: Vec<RobotState>,
     pub requests: Vec<ClaimRequest>,
     pub leases: Vec<Lease>,
+    /// Which workspace these claims are against, or `None` when no workspace
+    /// is bound yet.
+    ///
+    /// Claims name resources by uuid, so a client holding a *different*
+    /// workspace resolves none of them and cannot tell that apart from "no
+    /// claims" — it just shows an empty map and says nothing. Naming the
+    /// workspace here lets a client detect the mismatch outright.
+    #[serde(default)]
+    pub workspace_root_zone_id: Option<uuid::Uuid>,
+    /// Robots that have not heartbeated within `2 × alive`.
+    ///
+    /// Registration has no expiry — a robot the core has ever seen stays in
+    /// `robots` for the life of the process, because it is allowed to come
+    /// back (see [`Coordinator::sweep_inactive`]). Without this a client can't
+    /// tell a robot that is present and idle from one that left hours ago, and
+    /// ends up listing ghosts forever.
+    #[serde(default)]
+    pub inactive_robot_ids: Vec<RobotId>,
+    /// Recent decisions, oldest first — including the ones that changed
+    /// nothing. See [`FleetEvent`].
+    #[serde(default)]
+    pub events: Vec<FleetEvent>,
+    /// The core's clock when this snapshot was taken.
+    ///
+    /// Ages are `now_ms - event.at_ms`, both from here, so a client on another
+    /// host doesn't subtract its own clock from the core's and show nonsense.
+    #[serde(default)]
+    pub now_ms: u64,
+    /// The origin the robots' x/y/z are measured from.
+    ///
+    /// Sent with every snapshot rather than left to be looked up: it is what
+    /// makes the positions here mean anything, and a reader holding positions
+    /// without the frame they are in has nothing.
+    #[serde(default)]
+    pub datum: Option<DatumView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +252,11 @@ pub struct ZoneView {
     pub child_ids: Vec<uuid::Uuid>,
     pub node_ids: Vec<uuid::Uuid>,
     pub properties: BTreeMap<String, String>,
+    /// The origin this zone's geometry is measured from. Zones carry their own
+    /// datum in zoneout, so this is the zone's, not a copy of the workspace's —
+    /// they normally agree, and it is per-zone here rather than hoisted to the
+    /// response so `/zones` stays a plain array.
+    pub datum: DatumView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +409,18 @@ pub fn health() -> Health {
     Health {
         status: "ok".into(),
         version: crate::version().into(),
+        datum: None,
+    }
+}
+
+/// Health, plus the datum once a workspace is bound.
+pub fn health_with_datum(state: &ServeState) -> Health {
+    Health {
+        datum: read_coord(state)
+            .ok()
+            .and_then(|coord| coord.index().and_then(|index| index.datum()))
+            .map(DatumView::from),
+        ..health()
     }
 }
 
@@ -279,7 +430,106 @@ pub fn fleet_snapshot(state: &ServeState) -> ApiResult<FleetSnapshot> {
         robots: coord.robot_states().to_vec(),
         requests: coord.claim_manager().requests().to_vec(),
         leases: coord.claim_manager().leases().to_vec(),
+        workspace_root_zone_id: coord.index().and_then(|index| index.root_zone_id()),
+        inactive_robot_ids: coord.inactive_robots_at(now_ms()),
+        events: state.events(),
+        now_ms: now_ms(),
+        datum: coord
+            .index()
+            .and_then(|index| index.datum())
+            .map(DatumView::from),
     })
+}
+
+/// What the core made of a pushed workspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceAccepted {
+    pub name: String,
+    pub root_zone_id: uuid::Uuid,
+    pub zones: usize,
+    pub nodes: usize,
+    /// Zones the flat claim API cannot address, because they carry no
+    /// `external.numeric_id` property. Claims against them are denied as
+    /// unknown resources, so report it once at push time instead of leaving
+    /// the caller to discover it one denial at a time.
+    pub zones_without_numeric_id: Vec<String>,
+    /// Non-fatal validation issues; errors reject the push outright.
+    pub warnings: Vec<String>,
+}
+
+/// Replace the served workspace with one pushed over the wire.
+///
+/// `document` is a serialized `zoneout::WorkspaceJson` — the flat wire format
+/// the editors already read and write. This is the counterpart to booting from
+/// a directory: it lets a core start with no map and be told what to serve, so
+/// an editor can be the source of truth without both sides sharing a disk.
+///
+/// Claims deliberately survive the swap. They are keyed by resource uuid, and
+/// the usual reason to push is a workspace someone just edited, where dropping
+/// the fleet's claims would be worse than keeping them. A claim whose zone no
+/// longer exists simply stops resolving.
+pub fn set_workspace(state: &ServeState, document: &[u8]) -> ApiResult<WorkspaceAccepted> {
+    let wire: zoneout::WorkspaceJson = serde_json::from_slice(document)
+        .map_err(|err| ApiError::new(format!("workspace is not valid zoneout JSON: {err}")))?;
+    let name = wire.name.clone();
+
+    // from_wire is where a merely-well-formed document meets the rules a
+    // served workspace has to satisfy: one root, no orphans, real geometry.
+    let workspace = zoneout::Workspace::from_wire(wire)
+        .map_err(|err| ApiError::new(format!("workspace is not loadable: {err}")))?;
+    let index = WorkspaceIndex::from_workspace(workspace);
+
+    let issues = index.validation_issues();
+    let errors: Vec<String> = issues
+        .iter()
+        .filter(|issue| issue.severity == ValidationSeverity::Error)
+        .map(|issue| issue.message.clone())
+        .collect();
+    if !errors.is_empty() {
+        return Err(ApiError::new(format!(
+            "refusing a workspace with validation errors: {}",
+            errors.join("; ")
+        )));
+    }
+
+    let root_zone_id = index
+        .root_zone_id()
+        .ok_or_else(|| ApiError::new("workspace has no root zone"))?;
+    let mut zones: Vec<&zoneout::Zone> = vec![
+        index
+            .zone(root_zone_id)
+            .ok_or_else(|| ApiError::new("root zone is missing from index"))?,
+    ];
+    zones.extend(index.descendant_zones(root_zone_id));
+
+    let accepted = WorkspaceAccepted {
+        name,
+        root_zone_id,
+        zones: zones.len(),
+        nodes: index.workspace().graph().vertices().len(),
+        zones_without_numeric_id: zones
+            .iter()
+            .filter(|zone| zone.property(NUMERIC_ID_PROPERTY).is_none())
+            .map(|zone| zone.name().to_string())
+            .collect(),
+        warnings: issues
+            .iter()
+            .filter(|issue| issue.severity == ValidationSeverity::Warning)
+            .map(|issue| issue.message.clone())
+            .collect(),
+    };
+
+    write_coord(state)?.bind_index(Arc::new(index));
+    state.record(FleetEvent {
+        at_ms: now_ms(),
+        kind: FleetEventKind::WorkspaceReplaced,
+        robot_id: None,
+        zone_ids: Vec::new(),
+        zone_names: vec![accepted.name.clone()],
+        reason: reason::OK,
+        blocked: None,
+    });
+    Ok(accepted)
 }
 
 pub fn list_zones(state: &ServeState) -> ApiResult<Vec<ZoneView>> {
@@ -587,10 +837,24 @@ pub fn evaluate_claim(state: &ServeState, request: ClaimRequestWire) -> ApiResul
 /// `2 ×` its registered `alive` interval). Returns the robots that were freed.
 /// Call this periodically — see [`spawn_inactive_sweeper`].
 pub fn sweep_inactive(state: &ServeState) -> Vec<RobotId> {
-    match write_coord(state) {
+    let swept = match write_coord(state) {
         Ok(mut coord) => coord.sweep_inactive(now_ms()),
         Err(_) => Vec::new(),
+    };
+    // A zone freeing itself with nobody having asked is the least obvious thing
+    // the core does, so it gets a line of its own.
+    for robot_id in &swept {
+        state.record(FleetEvent {
+            at_ms: now_ms(),
+            kind: FleetEventKind::Swept,
+            robot_id: Some(*robot_id),
+            zone_ids: Vec::new(),
+            zone_names: Vec::new(),
+            reason: reason::OK,
+            blocked: None,
+        });
     }
+    swept
 }
 
 /// Spawn a background task that calls [`sweep_inactive`] every `period`,
@@ -721,6 +985,7 @@ fn write_coord(state: &ServeState) -> ApiResult<std::sync::RwLockWriteGuard<'_, 
 
 fn zone_view(idx: &WorkspaceIndex, zone: &zoneout::Zone) -> ZoneView {
     ZoneView {
+        datum: (*zone.datum()).into(),
         id: zone.id(),
         numeric_id: zone
             .property(NUMERIC_ID_PROPERTY)
@@ -811,6 +1076,10 @@ pub mod reason {
     }
     pub mod heartbeat {
         pub const NOT_REGISTERED: u8 = 2;
+        /// A position or heading that isn't a number, or a lat/lon off the
+        /// globe. Refused rather than stored: NaN would poison every later
+        /// conversion and comparison silently.
+        pub const BAD_POSITION: u8 = 3;
     }
     pub mod claim {
         pub const CONFLICT: u8 = 2;
@@ -899,10 +1168,38 @@ pub fn flat_register(
     if coord.register_with_key(robot_id, key) {
         let interval = alive_secs.unwrap_or(Coordinator::DEFAULT_ALIVE_SECS);
         coord.set_alive(robot_id, interval, now_ms());
+        state.record(FleetEvent {
+            at_ms: now_ms(),
+            kind: FleetEventKind::Registered,
+            robot_id: Some(robot_id),
+            zone_ids: Vec::new(),
+            zone_names: Vec::new(),
+            reason: reason::OK,
+            blocked: None,
+        });
         FlatReply::ok()
     } else {
         FlatReply::deny(reason::register::ALREADY_REGISTERED)
     }
+}
+
+/// Human names for claim targets, so an event still reads sensibly to a client
+/// that does not hold this workspace.
+fn resource_names(
+    index: &WorkspaceIndex,
+    kind: ClaimTargetKind,
+    ids: &[uuid::Uuid],
+) -> Vec<String> {
+    ids.iter()
+        .map(|id| match kind {
+            ClaimTargetKind::Zone => index
+                .zone(*id)
+                .map(|zone| zone.name().to_string())
+                .unwrap_or_else(|| format!("zone {id}")),
+            ClaimTargetKind::Node => format!("node {id}"),
+            ClaimTargetKind::Edge => format!("edge {id}"),
+        })
+        .collect()
 }
 
 /// Flat heartbeat: liveness + position. Reply is just an ack (decision/reason).
@@ -910,6 +1207,66 @@ pub fn flat_register(
 /// value is a zone id; `-1` (or any negative) means "unknown / not in any
 /// claimed zone" — still a valid heartbeat, just no known location. Node/edge
 /// progress updates as before (zone-granular progress is deferred).
+/// A position as it came off the wire, before the datum is applied.
+///
+/// A robot reports in whichever frame it has: lat/lon/alt straight from a GNSS
+/// receiver, or x/y/z from an odometry stack zeroed at the datum. Both name the
+/// same point, so the sender uses whichever it can produce and the core stores
+/// both.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReportedPosition {
+    /// Latitude, longitude, altitude (WGS84).
+    Global { lat: f64, lon: f64, alt: f64 },
+    /// Metres east/north/up of the datum.
+    Local { x: f64, y: f64, z: f64 },
+}
+
+/// Fill in the frame the robot didn't send, using the workspace datum.
+///
+/// With no datum there is nothing to anchor against, so the reported frame is
+/// kept and the other left zeroed behind `converted: false` — which says
+/// "unknown", where a bare zero would claim the robot is sitting on the origin.
+fn resolve_position(
+    index: Option<&Arc<WorkspaceIndex>>,
+    reported: ReportedPosition,
+) -> crate::robot::RobotPosition {
+    use crate::robot::{PositionFrame, RobotPosition};
+    match reported {
+        ReportedPosition::Global { lat, lon, alt } => {
+            let local = index
+                .and_then(|index| index.pose_global_to_local(concord::Geo::new(lat, lon, alt)));
+            RobotPosition {
+                reported: PositionFrame::Global,
+                lat,
+                lon,
+                alt,
+                x: local.map_or(0.0, |p| p.x),
+                y: local.map_or(0.0, |p| p.y),
+                z: local.map_or(0.0, |p| p.z),
+                converted: local.is_some(),
+            }
+        }
+        ReportedPosition::Local { x, y, z } => {
+            let global =
+                index.and_then(|index| index.pose_local_to_global(datapod::Point::new(x, y, z)));
+            RobotPosition {
+                reported: PositionFrame::Local,
+                lat: global.map_or(0.0, |g| g.latitude),
+                lon: global.map_or(0.0, |g| g.longitude),
+                alt: global.map_or(0.0, |g| g.altitude),
+                x,
+                y,
+                z,
+                converted: global.is_some(),
+            }
+        }
+    }
+}
+
+/// `position` and `yaw_rad` are optional and independent: a robot that sends
+/// neither still coordinates, it just cannot be drawn. `yaw_rad` is REP-103
+/// yaw — radians counter-clockwise from east — and the compass bearing is
+/// derived from it.
 pub fn flat_heartbeat(
     state: &ServeState,
     robot_raw: &str,
@@ -917,6 +1274,8 @@ pub fn flat_heartbeat(
     zone: Option<i64>,
     node: Option<u64>,
     edge: Option<u64>,
+    position: Option<ReportedPosition>,
+    yaw_rad: Option<f64>,
 ) -> FlatReply {
     let mut coord = match write_coord(state) {
         Ok(coord) => coord,
@@ -932,22 +1291,48 @@ pub fn flat_heartbeat(
     if !key_ok(&coord, robot_id, key_raw) {
         return FlatReply::deny(reason::MISMATCHED_KEY);
     }
+    // A non-finite coordinate would poison every later conversion and comparison
+    // with NaN, so it is refused at the door rather than stored.
+    if let Some(p) = position
+        && !position_is_finite(&p)
+    {
+        return FlatReply::deny(reason::heartbeat::BAD_POSITION);
+    }
+    if yaw_rad.is_some_and(|yaw| !yaw.is_finite()) {
+        return FlatReply::deny(reason::heartbeat::BAD_POSITION);
+    }
     // A negative zone is the "unknown location" sentinel; a non-negative one is
     // a zone id (informational for now — progress advances from node/edge).
     let _known_zone = zone.filter(|&z| z >= 0).map(|z| z as u64);
     let tick = coord
         .find_robot_state(robot_id)
         .map_or(1, |s| s.updated_at_tick + 1);
-    let (node_uuid, edge_uuid) = match coord.index_arc() {
+    let index = coord.index_arc();
+    let (node_uuid, edge_uuid) = match &index {
         Some(index) => (
-            node.and_then(|n| ResourceRef::Numeric(n).resolve_node(&index)),
-            edge.and_then(|e| ResourceRef::Numeric(e).resolve_edge(&index)),
+            node.and_then(|n| ResourceRef::Numeric(n).resolve_node(index)),
+            edge.and_then(|e| ResourceRef::Numeric(e).resolve_edge(index)),
         ),
         None => (None, None),
     };
     coord.update_robot_progress(robot_id, node_uuid, edge_uuid, tick);
+    let resolved = position.map(|p| resolve_position(index.as_ref(), p));
+    let heading = yaw_rad.map(crate::robot::RobotHeading::from_yaw_rad);
+    coord.update_robot_pose(robot_id, resolved, heading, now_ms());
     coord.touch_robot(robot_id, now_ms());
     FlatReply::ok()
+}
+
+fn position_is_finite(position: &ReportedPosition) -> bool {
+    match *position {
+        ReportedPosition::Global { lat, lon, alt } => {
+            lat.is_finite() && lon.is_finite() && alt.is_finite()
+                // A GNSS fix outside these ranges is a bug, not a location.
+                && (-90.0..=90.0).contains(&lat)
+                && (-180.0..=180.0).contains(&lon)
+        }
+        ReportedPosition::Local { x, y, z } => x.is_finite() && y.is_finite() && z.is_finite(),
+    }
 }
 
 /// Flat claim over one or more resources of `kind` (type from the address).
@@ -1022,8 +1407,19 @@ pub fn flat_claim(
         targets,
     };
     let evaluation = coord.claim_manager().evaluate_request(&request);
+    let zone_ids: Vec<uuid::Uuid> = request.targets.iter().map(|t| t.resource_id).collect();
+    let zone_names = resource_names(&index, kind, &zone_ids);
     if evaluation.decision == ClaimDecision::Grant {
         coord.claim_manager_mut().add_request(request);
+        state.record(FleetEvent {
+            at_ms: now_ms(),
+            kind: FleetEventKind::Granted,
+            robot_id: Some(robot_id),
+            zone_ids,
+            zone_names,
+            reason: reason::OK,
+            blocked: None,
+        });
         return FlatReply::ok();
     }
     let blocked = evaluation.blocking_target.and_then(|t| {
@@ -1043,6 +1439,15 @@ pub fn flat_claim(
     } else {
         reason::claim::CONFLICT
     };
+    state.record(FleetEvent {
+        at_ms: now_ms(),
+        kind: FleetEventKind::Denied,
+        robot_id: Some(robot_id),
+        zone_ids,
+        zone_names,
+        reason: code,
+        blocked,
+    });
     match blocked {
         Some(b) => FlatReply::deny_blocked(code, b),
         None => FlatReply::deny(code),
@@ -1085,6 +1490,16 @@ pub fn flat_release(
         .claim_manager_mut()
         .release_request_for_robot_target(robot_id, resource_id)
     {
+        let zone_names = resource_names(&index, kind, &[resource_id]);
+        state.record(FleetEvent {
+            at_ms: now_ms(),
+            kind: FleetEventKind::Released,
+            robot_id: Some(robot_id),
+            zone_ids: vec![resource_id],
+            zone_names,
+            reason: reason::OK,
+            blocked: None,
+        });
         FlatReply::ok()
     } else {
         FlatReply::deny(reason::release::NO_SUCH_LEASE)
@@ -1153,7 +1568,7 @@ pub struct FlatRegister {
     pub alive: Option<u64>,
 }
 
-/// Flat heartbeat request: key + one of zone / node / edge.
+/// Flat heartbeat request: key, optionally where the robot is.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FlatHeartbeat {
     #[serde(default = "default_key", deserialize_with = "de_scalar_string")]
@@ -1166,6 +1581,61 @@ pub struct FlatHeartbeat {
     pub node: Option<u64>,
     #[serde(default)]
     pub edge: Option<u64>,
+    /// Fine position, in either frame — `lat`/`lon` (+ optional `alt`) or
+    /// `x`/`y` (+ optional `z`), never both. Optional throughout: a robot that
+    /// reports no position still coordinates, it just cannot be drawn.
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lon: Option<f64>,
+    #[serde(default)]
+    pub alt: Option<f64>,
+    /// Metres east of the datum.
+    #[serde(default)]
+    pub x: Option<f64>,
+    /// Metres north of the datum.
+    #[serde(default)]
+    pub y: Option<f64>,
+    /// Metres up from the datum.
+    #[serde(default)]
+    pub z: Option<f64>,
+    /// Heading as REP-103 yaw: radians counter-clockwise from east. The compass
+    /// bearing is derived from it, so send what an ENU stack already publishes
+    /// rather than converting at the edge.
+    #[serde(default)]
+    pub yaw: Option<f64>,
+}
+
+impl FlatHeartbeat {
+    /// Which frame this heartbeat reports a position in, if any.
+    ///
+    /// `Err` when it names both frames, or half of one: a body with `lat` and
+    /// no `lon` is a mistake at the sender, and picking a half to believe would
+    /// bury it.
+    pub fn position(&self) -> Result<Option<ReportedPosition>, &'static str> {
+        let global = self.lat.is_some() || self.lon.is_some();
+        let local = self.x.is_some() || self.y.is_some();
+        match (global, local) {
+            (true, true) => Err("send either lat/lon or x/y, not both"),
+            (false, false) => Ok(None),
+            (true, false) => match (self.lat, self.lon) {
+                (Some(lat), Some(lon)) => Ok(Some(ReportedPosition::Global {
+                    lat,
+                    lon,
+                    alt: self.alt.unwrap_or(0.0),
+                })),
+                _ => Err("a global position needs both lat and lon"),
+            },
+            (false, true) => match (self.x, self.y) {
+                (Some(x), Some(y)) => Ok(Some(ReportedPosition::Local {
+                    x,
+                    y,
+                    z: self.z.unwrap_or(0.0),
+                })),
+                _ => Err("a local position needs both x and y"),
+            },
+        }
+    }
 }
 
 /// Flat claim request: key + robot + one or more ids (type from the address).

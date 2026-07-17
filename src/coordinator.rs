@@ -1177,6 +1177,35 @@ impl Coordinator {
         }
     }
 
+    /// Record a robot's reported pose.
+    ///
+    /// `position` and `heading` are independent: a robot may send either, both,
+    /// or neither. `None` means "not reported in this heartbeat", never "moved
+    /// to nowhere" — so a heading-only report leaves the last known position
+    /// standing instead of erasing it.
+    pub fn update_robot_pose(
+        &mut self,
+        robot_id: RobotId,
+        position: Option<crate::robot::RobotPosition>,
+        heading: Option<crate::robot::RobotHeading>,
+        at_ms: u64,
+    ) -> bool {
+        if position.is_none() && heading.is_none() {
+            return false;
+        }
+        let Some(state) = self.find_robot_state_mut(robot_id) else {
+            return false;
+        };
+        if position.is_some() {
+            state.position = position;
+        }
+        if heading.is_some() {
+            state.heading = heading;
+        }
+        state.pose_at_ms = Some(at_ms);
+        true
+    }
+
     pub fn update_robot_progress(
         &mut self,
         robot_id: RobotId,

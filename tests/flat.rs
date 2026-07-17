@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use datapod::{Geo, Point, Polygon};
 use syncbot::wire::{
-    ClaimRequestWire, ClaimTargetWire, ReleaseLeaseRequest, ServeState, add_lease, flat_claim,
-    flat_heartbeat, flat_register, flat_release, release_lease, remove_claim, submit_claim,
-    unregister_robot,
+    ClaimRequestWire, ClaimTargetWire, ReleaseLeaseRequest, ReportedPosition, ServeState,
+    add_lease, flat_claim, flat_heartbeat, flat_register, flat_release, release_lease,
+    remove_claim, submit_claim, unregister_robot,
 };
 use syncbot::{
     ClaimAccessMode, ClaimId, ClaimTargetKind, ClaimWindow, Coordinator, Lease, LeaseId, MissionId,
@@ -80,14 +80,14 @@ fn register_is_idempotent_deny_on_reuse() {
 fn heartbeat_requires_registration_and_key() {
     let s = build_state();
     // not registered -> reason 2
-    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None);
+    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None, None, None);
     assert_eq!((r.decision, r.reason), (0, 2));
     flat_register(&s, "7", "1234", None);
     // wrong key -> mismatched key (reason 1)
-    let r = flat_heartbeat(&s, "7", "9999", Some(42), None, None);
+    let r = flat_heartbeat(&s, "7", "9999", Some(42), None, None, None, None);
     assert_eq!((r.decision, r.reason), (0, 1));
     // correct key -> ack ok
-    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None);
+    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None, None, None);
     assert_eq!((r.decision, r.reason), (1, 0));
 }
 
@@ -277,12 +277,12 @@ fn uuid_robot_id_full_flow() {
 
     // heartbeat by UUID, correct key -> ack
     assert_eq!(
-        flat_heartbeat(&s, uuid, "1234", Some(42), None, None).decision,
+        flat_heartbeat(&s, uuid, "1234", Some(42), None, None, None, None).decision,
         1
     );
     // wrong key -> mismatched key
     assert_eq!(
-        flat_heartbeat(&s, uuid, "9999", Some(42), None, None).reason,
+        flat_heartbeat(&s, uuid, "9999", Some(42), None, None, None, None).reason,
         1
     );
 
@@ -299,7 +299,7 @@ fn uuid_robot_id_full_flow() {
     // an unregistered UUID heartbeats -> not registered (reason 2)
     let other = "22222222-2222-2222-2222-222222222222";
     assert_eq!(
-        flat_heartbeat(&s, other, "1234", Some(42), None, None).reason,
+        flat_heartbeat(&s, other, "1234", Some(42), None, None, None, None).reason,
         2
     );
 
@@ -378,13 +378,13 @@ fn heartbeat_zone_minus_one_is_unknown_location() {
     let s = build_state();
     flat_register(&s, "7", "1234", None);
     // -1 = robot hasn't claimed any zone / location unknown -> still a valid ack
-    let r = flat_heartbeat(&s, "7", "1234", Some(-1), None, None);
+    let r = flat_heartbeat(&s, "7", "1234", Some(-1), None, None, None, None);
     assert_eq!((r.decision, r.reason), (1, 0));
     // a real zone also acks
-    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None);
+    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None, None, None);
     assert_eq!((r.decision, r.reason), (1, 0));
     // no position at all acks too
-    let r = flat_heartbeat(&s, "7", "1234", None, None, None);
+    let r = flat_heartbeat(&s, "7", "1234", None, None, None, None, None);
     assert_eq!((r.decision, r.reason), (1, 0));
 }
 
@@ -593,4 +593,212 @@ fn access_mode_2_accepted_3_still_bad_request() {
     // access_mode 3 remains reserved -> reason 5 (BAD_REQUEST).
     let r = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[60], Some(3), None);
     assert_eq!((r.decision, r.reason), (0, 5));
+}
+
+/// Root + one numeric zone, with a datum bound and `coord_mode` left at its
+/// default of Global — the shape roboviz actually pushes.
+fn build_state_with_datum() -> ServeState {
+    let mut root = ZoneBuilder::new()
+        .with_name("root")
+        .with_kind("workspace")
+        .with_boundary(rectangle(0.0, 0.0, 100.0, 100.0))
+        .with_datum(Geo::new(52.0, 5.0, 0.0))
+        .build()
+        .expect("root zone");
+    let zone = ZoneBuilder::new()
+        .with_name("a")
+        .with_kind("zone")
+        .with_boundary(rectangle(10.0, 10.0, 50.0, 50.0))
+        .with_datum(Geo::new(52.0, 5.0, 0.0))
+        .with_property(NUMERIC_ID_PROPERTY, "42")
+        .build()
+        .expect("zone");
+    root.add_child(zone).expect("add zone");
+    let mut ws = Workspace::new(root);
+    ws.set_datum(Geo::new(52.0, 5.0, 0.0));
+    let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
+    ServeState::new(Coordinator::with_index(idx))
+}
+
+fn robot_position(state: &ServeState) -> syncbot::RobotPosition {
+    let coord = state.coordinator();
+    let coord = coord.read().expect("coordinator");
+    coord
+        .robot_states()
+        .first()
+        .expect("one robot")
+        .position
+        .expect("a position was reported")
+}
+
+/// The whole point of relaxing the coord_mode gate: roboviz pushes global-mode
+/// workspaces, and a robot reporting metres in one must still be placeable.
+#[test]
+fn a_global_mode_workspace_still_converts_robot_positions() {
+    let s = build_state_with_datum();
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+
+    // 100 m east, 50 m north of the datum.
+    let r = flat_heartbeat(
+        &s,
+        "7",
+        "1234",
+        None,
+        None,
+        None,
+        Some(ReportedPosition::Local {
+            x: 100.0,
+            y: 50.0,
+            z: 0.0,
+        }),
+        None,
+    );
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    let position = robot_position(&s);
+    assert!(position.converted, "a datum is bound, so it must convert");
+    assert_eq!(position.reported, syncbot::PositionFrame::Local);
+    assert_eq!((position.x, position.y), (100.0, 50.0), "kept as sent");
+    // East of the datum means a larger longitude, north means a larger
+    // latitude. Rough bounds: this pins the direction, not the ellipsoid.
+    assert!(position.lon > 5.0, "100 m east must raise longitude");
+    assert!(position.lat > 52.0, "50 m north must raise latitude");
+    assert!((position.lat - 52.0).abs() < 0.01 && (position.lon - 5.0).abs() < 0.01);
+}
+
+#[test]
+fn a_global_position_round_trips_back_to_where_it_started() {
+    let s = build_state_with_datum();
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+
+    let r = flat_heartbeat(
+        &s,
+        "7",
+        "1234",
+        None,
+        None,
+        None,
+        Some(ReportedPosition::Global {
+            lat: 52.001,
+            lon: 5.001,
+            alt: 12.0,
+        }),
+        None,
+    );
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    let position = robot_position(&s);
+    assert!(position.converted);
+    assert_eq!(position.reported, syncbot::PositionFrame::Global);
+    assert_eq!(
+        (position.lat, position.lon),
+        (52.001, 5.001),
+        "kept as sent"
+    );
+    // ~111 m north and ~68 m east at this latitude; the point is that the
+    // derived metres are sane, not that they hit a specific ellipsoid value.
+    assert!(
+        position.y > 50.0 && position.y < 200.0,
+        "y was {}",
+        position.y
+    );
+    assert!(
+        position.x > 30.0 && position.x < 150.0,
+        "x was {}",
+        position.x
+    );
+}
+
+/// With no datum there is nothing to convert against. The reported frame is
+/// kept and `converted` says the rest is unknown — rather than a zeroed
+/// lat/lon reading as "somewhere off west Africa".
+#[test]
+fn without_a_datum_a_position_is_kept_but_not_converted() {
+    let s = build_state(); // Workspace::new leaves datum None
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+
+    let r = flat_heartbeat(
+        &s,
+        "7",
+        "1234",
+        None,
+        None,
+        None,
+        Some(ReportedPosition::Local {
+            x: 10.0,
+            y: 20.0,
+            z: 1.0,
+        }),
+        None,
+    );
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    let position = robot_position(&s);
+    assert!(
+        !position.converted,
+        "no datum, so nothing to convert against"
+    );
+    assert_eq!((position.x, position.y, position.z), (10.0, 20.0, 1.0));
+    assert_eq!(
+        (position.lat, position.lon),
+        (0.0, 0.0),
+        "unknown, not measured"
+    );
+}
+
+/// NaN would spread through every later conversion and comparison in silence.
+#[test]
+fn a_position_that_is_not_a_number_is_refused() {
+    let s = build_state_with_datum();
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+
+    for bad in [
+        ReportedPosition::Local {
+            x: f64::NAN,
+            y: 0.0,
+            z: 0.0,
+        },
+        ReportedPosition::Global {
+            lat: 91.0, // off the globe
+            lon: 5.0,
+            alt: 0.0,
+        },
+    ] {
+        let r = flat_heartbeat(&s, "7", "1234", None, None, None, Some(bad), None);
+        assert_eq!((r.decision, r.reason), (0, 3), "refused: {bad:?}");
+    }
+    let r = flat_heartbeat(&s, "7", "1234", None, None, None, None, Some(f64::INFINITY));
+    assert_eq!(
+        (r.decision, r.reason),
+        (0, 3),
+        "a non-finite yaw is refused"
+    );
+}
+
+/// Position and heading are independent, and `None` means "not reported now",
+/// never "moved to nowhere".
+#[test]
+fn a_heading_only_heartbeat_keeps_the_last_position() {
+    let s = build_state_with_datum();
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+    flat_heartbeat(
+        &s,
+        "7",
+        "1234",
+        None,
+        None,
+        None,
+        Some(ReportedPosition::Local {
+            x: 7.0,
+            y: 8.0,
+            z: 0.0,
+        }),
+        None,
+    );
+
+    let r = flat_heartbeat(&s, "7", "1234", None, None, None, None, Some(0.0));
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    let position = robot_position(&s);
+    assert_eq!((position.x, position.y), (7.0, 8.0), "position survived");
 }

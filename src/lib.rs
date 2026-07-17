@@ -65,7 +65,9 @@ pub use crate::claim::{
     ClaimTargetKind, ClaimWindow, Lease, LeaseDisposition,
 };
 
-pub use crate::robot::{RobotProgressState, RobotState};
+pub use crate::robot::{
+    PositionFrame, RobotHeading, RobotPosition, RobotProgressState, RobotState,
+};
 
 pub use crate::coordinator::{
     ArbitrationContext, ArbitrationDecision, ClaimTargetSemantics, Coordinator, ScheduleConflict,

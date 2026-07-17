@@ -1,4 +1,4 @@
-//! Serve the syncbot REST API over a workspace loaded from disk.
+//! Serve the syncbot REST API over a workspace.
 //!
 //! Unlike `rest_server.rs` (which builds a fixed in-memory workspace), this
 //! takes a zoneout workspace **directory** as input and serves whatever zones
@@ -9,6 +9,18 @@
 //! ```sh
 //! cargo run --example serve_workspace --features "rest robo" -- [workspace_dir] [bind_addr]
 //! ```
+//!
+//! With `--no-map` it starts with nothing to serve and waits for a workspace to
+//! be pushed to `POST /ares/v1/workspace`, so an editor can be the source of
+//! truth instead of a directory both sides have to agree on:
+//!
+//! ```sh
+//! cargo run --example serve_workspace --features rest -- --no-map [bind_addr]
+//! curl -X POST http://127.0.0.1:8080/ares/v1/workspace --data-binary @workspace.json
+//! ```
+//!
+//! A pushed workspace can be replaced at any time; robots keep the claims they
+//! hold, since claims are keyed by resource uuid.
 //!
 //! With the `robo` feature enabled this same process also exposes ARES
 //! Zenoh/ROS2DDS service endpoints for `zenoh-bridge-ros2dds`:
@@ -46,25 +58,59 @@ use zoneout::Workspace;
 #[cfg(feature = "robo")]
 const DEFAULT_ZENOH_LISTEN: &str = "tcp/0.0.0.0:7447";
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 1)]
-async fn main() -> ExitCode {
-    init_logging();
+/// Wait for Ctrl-C **or** SIGTERM.
+///
+/// Only Ctrl-C used to be handled, so every other way a server dies — `kill`,
+/// `systemctl stop`, a container stop — skipped the graceful path entirely and
+/// dropped the final state flush on the floor.
+///
+/// It does *not* guarantee peerbus' shared memory is released: only the handle
+/// that created a segment unlinks it, so a core that attaches to one an earlier
+/// core left behind leaves the name in place however cleanly it exits. Stale
+/// segments are therefore expected, and are made harmless at the other end —
+/// see `discard_requests_predating_this_core`.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(signal) => signal,
+            Err(e) => {
+                warn!(error = %e, "cannot listen for SIGTERM; Ctrl-C only");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => info!("interrupted; shutting down"),
+            _ = terminate.recv() => info!("terminated; shutting down"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
 
-    let mut args = std::env::args().skip(1);
-    let dir = args.next().unwrap_or_else(|| "examples/fixed".to_string());
-    let addr = args.next().unwrap_or_else(|| "0.0.0.0:8080".to_string());
+fn new_coordinator(idx: Option<Arc<WorkspaceIndex>>) -> Coordinator {
+    match idx {
+        Some(idx) => Coordinator::with_index(idx),
+        None => Coordinator::new(),
+    }
+}
 
-    // 1. Load the workspace from disk.
-    let ws = match Workspace::load(&dir) {
+/// Load a workspace directory into an index, refusing anything with
+/// validation errors. `Err(())` means the failure has already been logged.
+fn load_index(dir: &str) -> Result<Arc<WorkspaceIndex>, ()> {
+    let ws = match Workspace::load(dir) {
         Ok(ws) => ws,
         Err(e) => {
             error!(workspace = %dir, error = %e, "failed to load workspace");
-            return ExitCode::FAILURE;
+            return Err(());
         }
     };
     info!(workspace = %dir, "loaded workspace");
 
-    // 2. Build the index and report any structural issues.
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     let issues = idx.validation_issues();
     let errors = issues
@@ -87,12 +133,39 @@ async fn main() -> ExitCode {
         }
         if errors > 0 {
             error!("refusing to serve a workspace with validation errors");
-            return ExitCode::FAILURE;
+            return Err(());
         }
     }
+    Ok(idx)
+}
 
-    // 3. Banner: list zones and their numeric aliases (if any).
-    print_zones(&idx);
+#[tokio::main(flavor = "multi_thread", worker_threads = 1)]
+async fn main() -> ExitCode {
+    init_logging();
+
+    let mut args = std::env::args().skip(1).peekable();
+    // `--no-map` starts with nothing to serve and waits for a workspace to be
+    // pushed to POST /ares/v1/workspace, which lets an editor be the source of
+    // truth instead of a directory both sides have to agree on.
+    let no_map = args.peek().is_some_and(|arg| arg == "--no-map");
+    if no_map {
+        args.next();
+    }
+    let dir = (!no_map).then(|| args.next().unwrap_or_else(|| "examples/fixed".to_string()));
+    let addr = args.next().unwrap_or_else(|| "0.0.0.0:8080".to_string());
+
+    // 1..3. Load the workspace from disk, unless we're waiting for a push.
+    let idx = match &dir {
+        Some(dir) => match load_index(dir) {
+            Ok(idx) => Some(idx),
+            Err(()) => return ExitCode::FAILURE,
+        },
+        None => None,
+    };
+    match &idx {
+        Some(idx) => print_zones(idx),
+        None => println!("\nno workspace loaded; waiting for one to be pushed"),
+    }
 
     // 4. Serve.
     // OPT-IN persistence: only when `SYNCBOT_STATE` is set. Unset/empty →
@@ -108,18 +181,18 @@ async fn main() -> ExitCode {
                     robots = snapshot.robot_states.len(),
                     "restored syncbot state from disk"
                 );
-                Coordinator::restore(snapshot, Some(Arc::clone(&idx)))
+                Coordinator::restore(snapshot, idx.clone())
             }
             Ok(None) => {
                 info!(state_file = %path, "no existing state file; starting fresh");
-                Coordinator::with_index(Arc::clone(&idx))
+                new_coordinator(idx.clone())
             }
             Err(e) => {
                 warn!(state_file = %path, error = %e, "failed to load state file; starting fresh");
-                Coordinator::with_index(Arc::clone(&idx))
+                new_coordinator(idx.clone())
             }
         },
-        None => Coordinator::with_index(Arc::clone(&idx)),
+        None => new_coordinator(idx.clone()),
     };
     // OPT-IN admin auth: only when `SYNCBOT_ADMIN_AUTH` is truthy. Unset/other →
     // admin endpoints stay OPEN, behaviour identical to before.
@@ -184,16 +257,22 @@ async fn main() -> ExitCode {
         }
     };
 
-    println!("\nsyncbot serving workspace '{dir}' on http://{addr}");
+    let serving = dir.clone().unwrap_or_else(|| "(awaiting push)".to_string());
+    println!("\nsyncbot serving workspace '{serving}' on http://{addr}");
     println!("try: curl http://{addr}/ares/v1/health");
-    info!(addr = %addr, workspace = %dir, "REST server listening");
+    if dir.is_none() {
+        println!(
+            "push one: curl -X POST http://{addr}/ares/v1/workspace --data-binary @workspace.json"
+        );
+    }
+    info!(addr = %addr, workspace = %serving, "REST server listening");
 
     // Always shut down gracefully so peerbus can unlink its SHM segments.
-    // Persistence additionally flushes the last snapshot after Ctrl-C.
+    // Persistence additionally flushes the last snapshot on the way out.
     let coord_handle = state.coordinator();
     let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            shutdown_signal().await;
             if let Some(path) = persist_path {
                 if let Err(e) = syncbot::persist::flush(&coord_handle, std::path::Path::new(&path))
                 {

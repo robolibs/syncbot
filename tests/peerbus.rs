@@ -80,7 +80,7 @@ fn canonical_peerbus_flow_preserves_flat_semantics() {
     assert_eq!(client.register("8", "5678", None).unwrap().decision, 1);
     assert_eq!(
         client
-            .heartbeat("7", "1234", Some(-1), Some(139), None)
+            .heartbeat("7", "1234", Some(-1), Some(139), None, None, None)
             .unwrap()
             .decision,
         1

@@ -372,6 +372,30 @@ impl WorkspaceIndex {
         Ok(Point::new(enu.east(), enu.north(), enu.up()))
     }
 
+    /// Local point → global, anchored on the datum alone.
+    ///
+    /// [`local_to_global`](Self::local_to_global) refuses outside
+    /// `CoordMode::Local`, because in global mode the *workspace's* geometry is
+    /// already lat/lon and a local frame for it would mean nothing. A robot's
+    /// frame is a different question: it reports x/y/z against the datum
+    /// whatever the workspace happens to store, so gating that on the
+    /// workspace's storage mode would leave fleet positions unconvertible — and
+    /// so incomparable — for no reason. Needs only a datum.
+    pub fn pose_local_to_global(&self, local: Point) -> Option<Geo> {
+        let reference = self.workspace.datum().copied()?;
+        Some(to_wgs_from_enu(Enu::new(
+            local.x, local.y, local.z, reference,
+        )))
+    }
+
+    /// Global → local point, anchored on the datum alone. See
+    /// [`pose_local_to_global`](Self::pose_local_to_global).
+    pub fn pose_global_to_local(&self, global: Geo) -> Option<Point> {
+        let reference = self.workspace.datum().copied()?;
+        let enu = to_enu(reference, global);
+        Some(Point::new(enu.east(), enu.north(), enu.up()))
+    }
+
     pub fn zone_property(&self, zone_id: Uuid, key: &str) -> Option<String> {
         let zone = self.zone(zone_id)?;
         zone.property(key).cloned()

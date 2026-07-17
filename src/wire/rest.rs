@@ -24,10 +24,21 @@ enum WireFormat {
     Xml,
 }
 
+/// Body ceiling for a pushed workspace. axum defaults to 2 MB, which would
+/// reject exactly the large workspaces the chunked peerbus transfer exists to
+/// carry. This bounds the HTTP hop only; the core enforces its own ceiling.
+const MAX_WORKSPACE_BODY_BYTES: usize = 256 * 1024 * 1024;
+
 pub fn router(client: crate::wire::peerbus::Client) -> Router {
     Router::new()
         .route("/ares/v1/health", get(health))
         .route("/ares/v1/fleet/snapshot", get(fleet_snapshot))
+        .route(
+            "/ares/v1/workspace",
+            post(set_workspace).layer(axum::extract::DefaultBodyLimit::max(
+                MAX_WORKSPACE_BODY_BYTES,
+            )),
+        )
         .route("/ares/v1/zones", get(list_zones))
         .route("/ares/v1/zones/{id}", get(zone))
         .route("/ares/v1/robots", post(register))
@@ -43,8 +54,11 @@ pub fn router(client: crate::wire::peerbus::Client) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
-async fn health(headers: HeaderMap) -> Response {
-    respond(preferred_format(&headers), Ok(crate::wire::health()))
+async fn health(
+    headers: HeaderMap,
+    State(client): State<crate::wire::peerbus::Client>,
+) -> Response {
+    respond(preferred_format(&headers), client.health())
 }
 
 async fn fleet_snapshot(
@@ -52,6 +66,18 @@ async fn fleet_snapshot(
     State(client): State<crate::wire::peerbus::Client>,
 ) -> Response {
     respond(preferred_format(&headers), client.fleet_snapshot())
+}
+
+/// Replace the served workspace. The body is a flat `zoneout::WorkspaceJson`,
+/// passed through verbatim — the core owns parsing and validation, so this
+/// adapter stays a transport and the same bytes mean the same thing on every
+/// transport.
+async fn set_workspace(
+    headers: HeaderMap,
+    State(client): State<crate::wire::peerbus::Client>,
+    body: Bytes,
+) -> Response {
+    respond(preferred_format(&headers), client.set_workspace(&body))
 }
 
 async fn list_zones(
@@ -93,9 +119,18 @@ async fn heartbeat(
         Ok(req) => req,
         Err(err) => return respond::<()>(format, Err(err)),
     };
+    // A contradictory body (both frames, or half of one) is answered with the
+    // reason rather than a bare reason code, since the fix is in the caller's
+    // JSON and the code alone wouldn't say which half is wrong.
+    let position = match req.position() {
+        Ok(position) => position,
+        Err(message) => return respond::<()>(format, Err(ApiError::new(message))),
+    };
     respond(
         format,
-        client.heartbeat(&robot, &req.key, req.zone, req.node, req.edge),
+        client.heartbeat(
+            &robot, &req.key, req.zone, req.node, req.edge, position, req.yaw,
+        ),
     )
 }
 
