@@ -86,12 +86,17 @@ pub async fn serve_ares_json_services(
             client.clone(),
             |client, raw| {
                 let req: FlatHeartbeatEnvelope = from_json(&raw)?;
+                // The same helper every other adapter uses, so a robot reports
+                // its pose identically whichever transport it speaks.
+                let position = req.heartbeat.position().map_err(ApiError::new)?;
                 to_json(client.heartbeat(
                     &req.robot,
                     &req.heartbeat.key,
                     req.heartbeat.zone,
                     req.heartbeat.node,
                     req.heartbeat.edge,
+                    position,
+                    req.heartbeat.yaw,
                 )?)
             },
         )

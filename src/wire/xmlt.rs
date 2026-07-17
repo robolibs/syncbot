@@ -114,7 +114,16 @@ async fn heartbeat(
     Path(robot): Path<String>,
     Xml(req): Xml<crate::wire::FlatHeartbeat>,
 ) -> XmlResult<crate::wire::FlatReply> {
-    result(client.heartbeat(&robot, &req.key, req.zone, req.node, req.edge))
+    // The same helper every other adapter uses, so a robot reports its pose
+    // identically whichever transport it speaks. A contradictory body is
+    // answered with the message, since the fix is in the caller's document.
+    let position = match req.position() {
+        Ok(position) => position,
+        Err(message) => return result(Err(ApiError::new(message))),
+    };
+    result(client.heartbeat(
+        &robot, &req.key, req.zone, req.node, req.edge, position, req.yaw,
+    ))
 }
 
 macro_rules! claim_handler {

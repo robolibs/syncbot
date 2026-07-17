@@ -82,12 +82,17 @@ pub async fn serve(
             client.clone(),
             |client, payload| {
                 let req: FlatHeartbeatEnvelope = decode_required(payload)?;
+                // The same helper every other adapter uses, so a robot reports
+                // its pose identically whichever transport it speaks.
+                let position = req.heartbeat.position().map_err(ApiError::new)?;
                 client.heartbeat(
                     &req.robot,
                     &req.heartbeat.key,
                     req.heartbeat.zone,
                     req.heartbeat.node,
                     req.heartbeat.edge,
+                    position,
+                    req.heartbeat.yaw,
                 )
             },
         )
