@@ -24,10 +24,13 @@ crate-type = ["rlib", "cdylib"]
 default = []
 python = ["dep:pyo3"]
 python-extension = ["python"]
-peerbus = ["dep:peerbus"]
-rest = ["peerbus", "dep:axum", "dep:tokio", "dep:tower", "dep:tower-http", "dep:tracing", "dep:tracing-subscriber"]
+peerbus = ["dep:peerbus", "dep:tracing"]
+rest = ["peerbus", "dep:axum", "dep:tokio", "dep:tower", "dep:tower-http", "dep:tracing-subscriber"]
 robo = ["peerbus", "dep:tokio", "dep:zenoh"]
 xmlt = ["peerbus", "dep:axum", "dep:quick-xml"]
+# Keep the rerun example out of default `cargo build --examples` /
+# `cargo test --all-targets`; `--all-features` intentionally enables it.
+rerun-viz = ["dep:rerun"]
 
 [dependencies]
 zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", tag = "0.1.2" }
@@ -51,6 +54,18 @@ tracing-subscriber = { version = "0.3", features = ["ansi", "env-filter", "fmt"]
 uuid = { version = "1.10", features = ["v4", "serde"] }
 zenoh = { version = "1.9.0", optional = true }
 quick-xml = { version = "0.36", features = ["serialize"], optional = true }
+rerun = { version = "0.31.2", default-features = false, features = [
+    "sdk",
+    "server",
+], optional = true }
+
+[dev-dependencies]
+# Same version the sibling crates use (machbus, peerbus).
+proptest = "1"
+
+[[example]]
+name = "fleet_viz"
+required-features = ["rerun-viz", "peerbus"]
 
 [[example]]
 name = "rest_server"

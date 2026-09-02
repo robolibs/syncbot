@@ -1,0 +1,31 @@
+[package]
+name = "syncbot-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+syncbot = { path = "..", features = ["rest"] }
+zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", tag = "0.1.2" }
+
+[[bin]]
+name = "workspace_push"
+path = "fuzz_targets/workspace_push.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "canonical_datapod"
+path = "fuzz_targets/canonical_datapod.rs"
+test = false
+doc = false
+bench = false
+
+# Cargo workspace exclusion: the fuzz crate is its own sandbox.
+[workspace]

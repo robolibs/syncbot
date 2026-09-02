@@ -18,6 +18,9 @@ ROS2_INTERFACE_SETUP ?= $(ROS2_BUILD_ROOT)/install/share/ares_interfaces/local_s
 ROS2_BIN ?= /opt/ros/jazzy/bin/ros2
 ROS2_PYTHON ?=
 ROS2_BRIDGE ?= zenoh-bridge-ros2dds
+FUZZ_TARGETS ?= workspace_push canonical_datapod
+FUZZ_TARGET ?= workspace_push
+FUZZ_SECONDS ?= 60
 
 HAS_REL := $(shell command -v git-rel 2>/dev/null)
 
@@ -25,7 +28,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t test-peerbus test-all ros2-interface test-usecase-rest test-usecase-ros2 test-usecase-mixed test-usecase check check-peerbus check-all check-python-adapter fmt bench clean bind bind-c bind-py help h
+.PHONY: build b compile c run r test t test-peerbus test-all ros2-interface test-usecase-rest test-usecase-ros2 test-usecase-mixed test-usecase check check-peerbus check-all check-python-adapter fmt bench clean viz fuzz fuzz-all fixed-map bind bind-c bind-py help h
 
 build:
 	@$(CARGO) build --lib
@@ -113,6 +116,26 @@ fmt:
 clean:
 	@$(CARGO) clean
 
+viz:
+	@$(CARGO) run --example fleet_viz --features "rerun-viz peerbus" -- $(RUN_ARGS)
+
+# cargo-fuzz needs nightly, which the default dev shell deliberately does not
+# provide; flake.nix carries a `fuzz` shell for it. FUZZ_TARGET picks one,
+# FUZZ_SECONDS how long to run. Corpora persist under fuzz/corpus/.
+fuzz:
+	@nix develop .#fuzz --command bash -c \
+		'cd fuzz && cargo fuzz run $(FUZZ_TARGET) -- \
+			-max_total_time=$(FUZZ_SECONDS) -rss_limit_mb=4096'
+
+fuzz-all:
+	@for target in $(FUZZ_TARGETS); do \
+		echo "=== fuzzing $$target for $(FUZZ_SECONDS)s"; \
+		$(MAKE) fuzz FUZZ_TARGET=$$target FUZZ_SECONDS=$(FUZZ_SECONDS) || exit 1; \
+	done
+
+fixed-map:
+	@$(CARGO) run --example generate_fixed
+
 bind: bind-c bind-py
 
 bind-c:
@@ -122,11 +145,6 @@ bind-c:
 
 bind-py:
 	@maturin build --features python
-
-docs:
-	@command -v mdbook >/dev/null 2>&1 || { echo "mdbook is not installed. Please install it first."; exit 1; }
-	@mdbook build $(TOP_DIR)/book --dest-dir $(TOP_DIR)/docs
-	@git add --all && git commit -m "docs: building website/mdbook"
 
 release:
 	@if [ -z "$(HAS_REL)" ]; then \
@@ -155,14 +173,17 @@ help:
 	@echo "  test-usecase-mixed Run the cross-transport REST/XML + ROS2 battery"
 	@echo "  ros2-interface Build ares_interfaces/srv/Json for the live ROS2 battery"
 	@echo "  test-usecase Run every live transport battery from misc/USECASE.typ"
+	@echo "  viz          Live rerun view of the running fleet"
+	@echo "  fuzz         Fuzz one target (FUZZ_TARGET=, FUZZ_SECONDS=)"
+	@echo "  fuzz-all     Fuzz every target in turn"
+	@echo "  fixed-map    Regenerate the examples/fixed workspace"
 	@echo "  bind         Generate both C and Python bindings"
 	@echo "  check        Run cargo check on all targets"
 	@echo "  check-peerbus Check the canonical peerbus core/client"
 	@echo "  check-all    Check all transport adapters"
-	@echo "  check-python-adapter Syntax-check the out-of-process Python adapter"
+	@echo "  check-python-adapter Parse + header-layout self-check for the Python adapter"
 	@echo "  fmt          Format the workspace"
 	@echo "  clean        Remove Cargo build artifacts"
-	@echo "  docs         Build the documentation"
 	@echo "  release      Release a new version"
 	@echo
 	@echo "Examples:"
