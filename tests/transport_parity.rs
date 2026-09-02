@@ -86,6 +86,7 @@ fn state() -> ServeState {
 
     let index = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     ServeState::new(Coordinator::with_index(index))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 fn identity() -> String {

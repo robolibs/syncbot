@@ -52,6 +52,7 @@ fn build_state() -> ServeState {
 
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     ServeState::new(Coordinator::with_index(idx))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 #[test]
@@ -66,9 +67,17 @@ fn register_is_idempotent_deny_on_reuse() {
     // bad id (not int/uuid) -> reason 3
     let r = flat_register(&s, "notanid", "1234", None);
     assert_eq!((r.decision, r.reason), (0, 3));
-    // unsupported key scheme -> reason 4
-    let r = flat_register(&s, "8", "did:key=abc", None);
+    // A real but unsupported DID method -> reason 4.
+    let r = flat_register(
+        &s,
+        "8",
+        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        None,
+    );
     assert_eq!((r.decision, r.reason), (0, 4));
+    // Something that is not a key at all -> reason 1 (mismatched key).
+    let r = flat_register(&s, "9", "did:key=not-a-did", None);
+    assert_eq!((r.decision, r.reason), (0, 1));
 }
 
 #[test]
@@ -147,6 +156,7 @@ fn build_nested_state() -> ServeState {
 
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     ServeState::new(Coordinator::with_index(idx))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 #[test]
@@ -457,6 +467,7 @@ fn build_shared_state() -> ServeState {
 
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(Workspace::new(root))));
     ServeState::new(Coordinator::with_index(idx))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 #[test]
@@ -532,6 +543,7 @@ fn build_state_with_datum() -> ServeState {
     ws.set_datum(Geo::new(52.0, 5.0, 0.0));
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     ServeState::new(Coordinator::with_index(idx))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 fn robot_position(state: &ServeState) -> syncbot::RobotPosition {

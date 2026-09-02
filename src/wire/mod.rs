@@ -155,6 +155,15 @@ impl ServeState {
             .unwrap_or_default()
     }
 
+    /// Set the cost of deriving stored key verifiers on the inner
+    /// coordinator. See `Coordinator::set_kdf_params`.
+    pub fn with_kdf_params(self, params: keylock::kdf::pwhash::Config) -> Self {
+        if let Ok(mut coord) = write_coord(&self) {
+            coord.set_kdf_params(params);
+        }
+        self
+    }
+
     /// Allow keyless registration, binding those robots to the shared
     /// [`DEFAULT_KEY`]. Convenient for a closed bench, unsafe anywhere else.
     pub fn with_default_key_allowed(mut self, allow: bool) -> Self {
@@ -762,7 +771,7 @@ impl FlatReply {
 }
 
 /// Whether `key_raw` authenticates as `robot_id`'s bound key.
-fn key_ok(coord: &Coordinator, robot_id: RobotId, key_raw: &str) -> bool {
+fn key_ok(coord: &mut Coordinator, robot_id: RobotId, key_raw: &str) -> bool {
     match Key::parse(key_raw) {
         Ok(k) => coord.validate_key(robot_id, &k),
         Err(_) => false,
@@ -932,7 +941,7 @@ pub fn flat_heartbeat(
     if !coord.has_robot(robot_id) {
         return FlatReply::deny(reason::heartbeat::NOT_REGISTERED);
     }
-    if !key_ok(&coord, robot_id, key_raw) {
+    if !key_ok(&mut coord, robot_id, key_raw) {
         return FlatReply::deny(reason::MISMATCHED_KEY);
     }
     // A non-finite coordinate would poison every later conversion and comparison
@@ -1078,7 +1087,7 @@ fn flat_claim_targets(
         Some(id) => id,
         None => return FlatReply::deny(reason::MISMATCHED_KEY),
     };
-    if !key_ok(&coord, robot_id, key_raw) {
+    if !key_ok(&mut coord, robot_id, key_raw) {
         return FlatReply::deny(reason::MISMATCHED_KEY);
     }
     if requested.is_empty() || requested.len() > MAX_CLAIM_TARGETS {
@@ -1183,7 +1192,7 @@ pub fn flat_release(
         Some(id) => id,
         None => return FlatReply::deny(reason::MISMATCHED_KEY),
     };
-    if !key_ok(&coord, robot_id, key_raw) {
+    if !key_ok(&mut coord, robot_id, key_raw) {
         return FlatReply::deny(reason::MISMATCHED_KEY);
     }
     let Some(index) = coord.index_arc() else {

@@ -66,10 +66,10 @@ fn flat_register_parses_xml() {
         quick_xml::de::from_str("<m><robot>7</robot><key>1234</key></m>").expect("de");
     assert_eq!(req.robot, "7");
     assert_eq!(req.key, "1234");
-    // did:pass key survives as a string
+    // A `pass:` key survives as an opaque string through XML
     let req: FlatRegister =
-        quick_xml::de::from_str("<m><robot>7</robot><key>did:pass=secret</key></m>").expect("de");
-    assert_eq!(req.key, "did:pass=secret");
+        quick_xml::de::from_str("<m><robot>7</robot><key>pass:secret</key></m>").expect("de");
+    assert_eq!(req.key, "pass:secret");
 }
 
 #[test]

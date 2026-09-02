@@ -47,6 +47,7 @@ fn state_with_zones(count: u64) -> ServeState {
     }
     let index = Arc::new(WorkspaceIndex::new(Arc::new(Workspace::new(root))));
     ServeState::new(Coordinator::with_index(index))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 /// A serialized workspace nested `depth` zones deep, built through the real
@@ -368,4 +369,195 @@ fn a_push_reports_the_claims_it_orphaned() {
         "both held claims name uuids the new workspace does not have"
     );
     assert_eq!(accepted.zones, 4, "root plus three zones");
+}
+
+// -- 2.2.1 step 2 / 2.2.2: keys are hashed, not stored -----------------------
+
+/// The whole point of hashing at rest: a stolen state file must not be a list
+/// of passwords. Nothing in the serialized snapshot may contain a secret.
+#[test]
+fn a_snapshot_contains_no_recoverable_key() {
+    let state = state_with_zones(1).with_kdf_params(syncbot::core::key::insecure_test_cost());
+    assert_eq!(flat_register(&state, "7", "1234", None).decision, 1);
+    assert_eq!(
+        flat_register(&state, "8", "pass:hunter2-correct-horse", None).decision,
+        1
+    );
+
+    let snapshot = state.coordinator().read().unwrap().snapshot();
+    let json = serde_json::to_string(&snapshot).expect("serialize");
+
+    for secret in ["hunter2-correct-horse", "pass:hunter2"] {
+        assert!(
+            !json.contains(secret),
+            "the snapshot leaks {secret:?}:\n{json}"
+        );
+    }
+    // The numeric key must not appear as a bare stored value either.
+    assert!(
+        !json.contains("\"Numeric\""),
+        "the snapshot still stores a plaintext Key variant:\n{json}"
+    );
+    // ...but it does carry keylock PHC hashes, which name their own algorithm
+    // and cost, so a reader can tell what a stored secret is protected by.
+    assert!(
+        json.matches("$argon2id$v=19$").count() == 2,
+        "expected one PHC hash per robot: {json}"
+    );
+}
+
+/// Salts must be per-key, or two robots sharing a password share a digest and
+/// one leaked pairing breaks both.
+#[test]
+fn two_robots_with_the_same_key_get_different_digests() {
+    let state = state_with_zones(1).with_kdf_params(syncbot::core::key::insecure_test_cost());
+    flat_register(&state, "7", "1234", None);
+    flat_register(&state, "8", "1234", None);
+
+    let snapshot = state.coordinator().read().unwrap().snapshot();
+    let digests: Vec<_> = snapshot
+        .robot_keys
+        .values()
+        .map(|verifier| serde_json::to_string(verifier).expect("serialize"))
+        .collect();
+    assert_eq!(digests.len(), 2);
+    assert_ne!(
+        digests[0], digests[1],
+        "identical passwords produced identical verifiers — the salt is not per-key"
+    );
+}
+
+/// Hashing must not weaken the check it replaced: the right key still opens,
+/// a wrong one still does not, and neither does a different key form.
+#[test]
+fn hashed_keys_still_authenticate_exactly() {
+    let state = state_with_zones(2).with_kdf_params(syncbot::core::key::insecure_test_cost());
+    flat_register(&state, "7", "1234", None);
+
+    assert_eq!(
+        flat_claim(&state, ClaimTargetKind::Zone, "1234", "7", &[0], None, None).decision,
+        1,
+        "the right key must work"
+    );
+    assert_eq!(
+        flat_claim(&state, ClaimTargetKind::Zone, "9999", "7", &[1], None, None).reason,
+        1,
+        "a wrong key must be refused"
+    );
+    // A password that renders like the numeric key is still a different key.
+    assert_eq!(
+        flat_claim(
+            &state,
+            ClaimTargetKind::Zone,
+            "did:pass=1234",
+            "7",
+            &[1],
+            None,
+            None
+        )
+        .reason,
+        1,
+        "did:pass=1234 is not the numeric key 1234"
+    );
+}
+
+/// The verification cache must accelerate the right key without ever
+/// accepting a wrong one — including after a correct verification has
+/// populated it.
+#[test]
+fn the_verification_cache_never_admits_a_wrong_key() {
+    let state = state_with_zones(3).with_kdf_params(syncbot::core::key::insecure_test_cost());
+    flat_register(&state, "7", "1234", None);
+
+    // Warm the cache with a correct verification.
+    assert_eq!(
+        flat_claim(&state, ClaimTargetKind::Zone, "1234", "7", &[0], None, None).decision,
+        1
+    );
+    // A wrong key must still be refused, cache or no cache...
+    for wrong in ["9999", "0", "did:pass=1234"] {
+        assert_eq!(
+            flat_claim(&state, ClaimTargetKind::Zone, wrong, "7", &[1], None, None).reason,
+            1,
+            "{wrong} was admitted"
+        );
+    }
+    // ...and the right one still works afterwards.
+    assert_eq!(
+        flat_claim(&state, ClaimTargetKind::Zone, "1234", "7", &[1], None, None).decision,
+        1
+    );
+}
+
+/// `did:key` is rejected, and the reason is a missing protocol rather than a
+/// missing algorithm — keylock has Ed25519, but the flat wire carries one
+/// static scalar with no challenge to sign, so any signature would replay.
+#[test]
+fn did_key_is_still_refused() {
+    use syncbot::core::key::{Key, KeyError};
+
+    assert_eq!(
+        Key::parse("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
+        Err(KeyError::Unsupported("did:key".into()))
+    );
+
+    let state = state_with_zones(1);
+    let refused = flat_register(
+        &state,
+        "7",
+        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        None,
+    );
+    assert_eq!(
+        (refused.decision, refused.reason),
+        (0, 4),
+        "an unsupported key scheme reports reason 4"
+    );
+}
+
+/// Hashing makes a *failed* check expensive too, so a stream of wrong keys is
+/// a denial of service — each one is a full Argon2 derivation under the write
+/// lock. After a short run of misses, new derivations are refused outright.
+#[test]
+fn repeated_wrong_keys_stop_costing_a_derivation() {
+    use std::time::Instant;
+
+    // Production-cost KDF on purpose: the throttle exists precisely because
+    // this is expensive, so a cheap KDF would not show it working.
+    let state = state_with_zones(2);
+    assert_eq!(flat_register(&state, "7", "1234", None).decision, 1);
+
+    // The first few misses each pay a derivation.
+    let began = Instant::now();
+    for _ in 0..5 {
+        assert_eq!(
+            flat_claim(&state, ClaimTargetKind::Zone, "9999", "7", &[0], None, None).reason,
+            1
+        );
+    }
+    let unthrottled = began.elapsed();
+
+    // Past the threshold they are refused without deriving.
+    let began = Instant::now();
+    for _ in 0..20 {
+        assert_eq!(
+            flat_claim(&state, ClaimTargetKind::Zone, "9999", "7", &[0], None, None).reason,
+            1
+        );
+    }
+    let throttled = began.elapsed();
+
+    assert!(
+        throttled * 2 < unthrottled,
+        "20 throttled attempts ({throttled:?}) should be far cheaper than 5 \
+         unthrottled ones ({unthrottled:?}); the throttle is not engaging"
+    );
+
+    // A robot already verified is unaffected — someone else guessing at its id
+    // must not lock it out. (Registration warms the cache.)
+    assert_eq!(
+        flat_claim(&state, ClaimTargetKind::Zone, "1234", "7", &[1], None, None).decision,
+        1,
+        "the real robot must still be served during an attack on its id"
+    );
 }

@@ -16,7 +16,7 @@ use crate::claim::{
     ClaimWindow, LeaseId,
 };
 use crate::core::ids::{MissionId, RobotId};
-use crate::core::key::Key;
+use crate::core::key::{Key, KeyVerifier};
 use crate::index::WorkspaceIndex;
 use crate::policy::{ZonePolicyKind, derive_effective_edge_semantics, parse_zone_policy};
 use crate::robot::{RobotProgressState, RobotState};
@@ -874,9 +874,28 @@ pub struct Coordinator {
     index: Option<Arc<WorkspaceIndex>>,
     claim_manager: ClaimManager,
     robot_states: Vec<RobotState>,
-    /// Auth key bound to each robot at registration. Checked on every later
-    /// call. See `src/core/key.rs`.
-    robot_keys: BTreeMap<RobotId, Key>,
+    /// Argon2id verifier bound to each robot at registration — never the key
+    /// itself, so a leaked snapshot does not hand over the fleet.
+    robot_keys: BTreeMap<RobotId, KeyVerifier>,
+    /// Secrets already proven correct this process, as keyed BLAKE2b
+    /// fingerprints.
+    ///
+    /// Verifying a key is a full Argon2id derivation — ~11 ms, deliberately —
+    /// and it would otherwise run on every heartbeat, claim and release, under
+    /// the write lock. So the expensive answer is remembered: the fingerprint
+    /// is cheap to compute and useless off this host, because the pepper is
+    /// per-process and never persisted.
+    verified: BTreeMap<RobotId, Vec<u8>>,
+    /// Per-process pepper for `verified`. Random at construction; a cache
+    /// entry therefore means nothing to anyone who reads it later.
+    fingerprint_pepper: Vec<u8>,
+    /// Consecutive failed verifications per robot, and when the streak began.
+    ///
+    /// Hashing keys makes a *failed* check expensive too — ~11 ms of Argon2
+    /// under the write lock — so an attacker spamming wrong keys is a cheap
+    /// denial of service. Past a short run of failures new derivations are
+    /// refused outright until the streak ages out.
+    failures: BTreeMap<RobotId, (u32, std::time::Instant)>,
     /// Maps a registered UUID robot identifier (canonical string) to its
     /// internal numeric `RobotId`. Integer ids map to themselves and are not
     /// stored here. See `resolve_or_mint_robot_id`.
@@ -894,6 +913,9 @@ pub struct Coordinator {
     robot_alive: BTreeMap<RobotId, AliveInfo>,
     /// Ids an operator has allowed to register. `None` is first-come.
     provisioned: Option<BTreeSet<RobotId>>,
+    /// Cost of deriving a stored key verifier. Configurable because it is an
+    /// operator trade-off — and because a test suite cannot afford the real one.
+    kdf_params: keylock::kdf::pwhash::Config,
 }
 
 /// Why a registration did not take.
@@ -905,6 +927,28 @@ pub enum RegistrationRefusal {
     NotProvisioned,
     /// The coordinator is holding as many robots as it will.
     Full,
+}
+
+/// Failed verifications for one robot before new derivations are refused.
+const MAX_KEY_FAILURES: u32 = 5;
+
+/// How long a failure streak suppresses new derivations.
+const KEY_FAILURE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A fresh pepper for the verification cache. Falls back to a time-derived
+/// value if the system RNG is unavailable; the pepper only has to be unguessable
+/// to an outside reader, and a failure here must not stop the core booting.
+fn new_pepper() -> Vec<u8> {
+    let mut pepper = vec![0u8; 32];
+    if keylock::crypto::rng::randombytes_buf(&mut pepper).is_err() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        pepper[..8].copy_from_slice(&now.to_le_bytes());
+        pepper[8..16].copy_from_slice(&(std::process::id() as u64).to_le_bytes());
+    }
+    pepper
 }
 
 /// Base for synthetic ids minted for UUID robots (2^56).
@@ -938,11 +982,15 @@ impl Default for Coordinator {
             claim_manager: ClaimManager::new(),
             robot_states: Vec::new(),
             robot_keys: BTreeMap::new(),
+            verified: BTreeMap::new(),
+            fingerprint_pepper: new_pepper(),
+            failures: BTreeMap::new(),
             robot_id_by_uuid: BTreeMap::new(),
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
             pending_uuid_bindings: BTreeMap::new(),
             robot_alive: BTreeMap::new(),
             provisioned: None,
+            kdf_params: keylock::kdf::pwhash::Config::default(),
         }
     }
 }
@@ -958,11 +1006,15 @@ impl Coordinator {
             claim_manager: ClaimManager::with_index(index),
             robot_states: Vec::new(),
             robot_keys: BTreeMap::new(),
+            verified: BTreeMap::new(),
+            fingerprint_pepper: new_pepper(),
+            failures: BTreeMap::new(),
             robot_id_by_uuid: BTreeMap::new(),
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
             pending_uuid_bindings: BTreeMap::new(),
             robot_alive: BTreeMap::new(),
             provisioned: None,
+            kdf_params: keylock::kdf::pwhash::Config::default(),
         }
     }
 
@@ -1076,6 +1128,8 @@ impl Coordinator {
     pub fn clear(&mut self) {
         self.robot_states.clear();
         self.robot_keys.clear();
+        self.verified.clear();
+        self.failures.clear();
         self.robot_id_by_uuid.clear();
         self.pending_uuid_bindings.clear();
         self.robot_alive.clear();
@@ -1148,11 +1202,36 @@ impl Coordinator {
         None
     }
 
+    /// A cheap, host-local fingerprint of a presented key, for the
+    /// verification cache. Keyed so it is not a rainbow-table lookup.
+    fn fingerprint(&self, key: &Key) -> Vec<u8> {
+        keylock::hash::blake2b::keyed(&key.material(), &self.fingerprint_pepper, 32)
+            .unwrap_or_default()
+    }
+
     /// Flat registration: bind `key` to a fresh robot identified only by
     /// `robot_id`. The coordinator owns all other state. Returns `false` if the
     /// registration was refused; the existing robot and its key are left
     /// untouched. Ask [`Self::registration_refusal`] for the reason.
     pub fn register_with_key(&mut self, robot_id: RobotId, key: Key) -> bool {
+        self.register_with_verifier(robot_id, key, self.kdf_params)
+    }
+
+    /// Set the cost of deriving stored key verifiers. Raising it hardens a
+    /// stolen snapshot against offline attack; it does not affect keys already
+    /// stored, which keep verifying under the parameters they were made with.
+    pub fn set_kdf_params(&mut self, params: keylock::kdf::pwhash::Config) {
+        self.kdf_params = params;
+    }
+
+    /// As [`Self::register_with_key`], with explicit KDF cost. Tests use a
+    /// cheap setting so a suite is not dominated by key derivation.
+    pub fn register_with_verifier(
+        &mut self,
+        robot_id: RobotId,
+        key: Key,
+        cost: keylock::kdf::pwhash::Config,
+    ) -> bool {
         if self.registration_refusal(robot_id).is_some() {
             // Registration did not take: drop any tentative UUID->id binding
             // minted for this id so the mapping is not poisoned. (A no-op for
@@ -1164,8 +1243,16 @@ impl Coordinator {
             robot_id,
             ..RobotState::default()
         };
+        let Ok(verifier) = KeyVerifier::derive_with_cost(&key, cost) else {
+            self.pending_uuid_bindings.remove(&robot_id);
+            return false;
+        };
         self.robot_states.push(state);
-        self.robot_keys.insert(robot_id, key);
+        self.robot_keys.insert(robot_id, verifier);
+        // The registering robot has just proven this key; no need to make its
+        // first heartbeat pay for another derivation.
+        let fingerprint = self.fingerprint(&key);
+        self.verified.insert(robot_id, fingerprint);
         // Registration succeeded: commit the tentative UUID->id binding, if any.
         if let Some(canon) = self.pending_uuid_bindings.remove(&robot_id) {
             self.robot_id_by_uuid.insert(canon, robot_id);
@@ -1175,11 +1262,47 @@ impl Coordinator {
 
     /// Whether `key` authenticates as `robot_id`'s registered key. Returns
     /// `false` if the robot is not registered or has no bound key.
-    pub fn validate_key(&self, robot_id: RobotId, key: &Key) -> bool {
-        match self.robot_keys.get(&robot_id) {
-            Some(stored) => stored.matches(key),
-            None => false,
+    ///
+    /// Takes `&mut self` because a successful verification is remembered: the
+    /// Argon2id derivation is milliseconds and this sits on the hot path of
+    /// every wire call. A repeat presentation of the same secret costs a
+    /// BLAKE2b hash and a constant-time compare instead.
+    pub fn validate_key(&mut self, robot_id: RobotId, key: &Key) -> bool {
+        let Some(stored) = self.robot_keys.get(&robot_id) else {
+            return false;
+        };
+        let fingerprint = self.fingerprint(key);
+
+        // Cache first, deliberately: a robot whose key is already known stays
+        // fast *and* cannot be locked out by someone else guessing at its id.
+        if let Some(known) = self.verified.get(&robot_id)
+            && keylock::crypto::constant_time::verify::secure_compare(known, &fingerprint)
+        {
+            self.failures.remove(&robot_id);
+            return true;
         }
+
+        // Only new derivations are throttled, and only after a run of misses.
+        if let Some((count, since)) = self.failures.get(&robot_id).copied() {
+            if count >= MAX_KEY_FAILURES {
+                if since.elapsed() < KEY_FAILURE_COOLDOWN {
+                    return false;
+                }
+                self.failures.remove(&robot_id);
+            }
+        }
+
+        if stored.verify(key) {
+            self.verified.insert(robot_id, fingerprint);
+            self.failures.remove(&robot_id);
+            return true;
+        }
+        let entry = self
+            .failures
+            .entry(robot_id)
+            .or_insert((0, std::time::Instant::now()));
+        entry.0 = entry.0.saturating_add(1);
+        false
     }
 
     /// Whether a robot with this id is registered.
@@ -1211,6 +1334,8 @@ impl Coordinator {
                 .release_leases_for_robot(robot_id, Some(updated_at_tick));
             self.robot_states.remove(pos);
             self.robot_keys.remove(&robot_id);
+            self.verified.remove(&robot_id);
+            self.failures.remove(&robot_id);
             self.robot_id_by_uuid.retain(|_, v| *v != robot_id);
             self.robot_alive.remove(&robot_id);
             return true;
@@ -1536,11 +1661,15 @@ impl Coordinator {
             claim_manager,
             robot_states: snapshot.robot_states,
             robot_keys: snapshot.robot_keys,
+            verified: BTreeMap::new(),
+            fingerprint_pepper: new_pepper(),
+            failures: BTreeMap::new(),
             robot_id_by_uuid: snapshot.robot_id_by_uuid,
             next_synthetic_robot_id: snapshot.next_synthetic_robot_id,
             pending_uuid_bindings: BTreeMap::new(),
             robot_alive: snapshot.robot_alive,
             provisioned: None,
+            kdf_params: keylock::kdf::pwhash::Config::default(),
         }
     }
 }

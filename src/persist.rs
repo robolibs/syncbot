@@ -5,14 +5,17 @@
 //! it (the servers only do so when `SYNCBOT_STATE` is set). With the feature
 //! unused the server stays fully in-memory and no file is ever touched.
 //!
-//! # The snapshot holds secrets
+//! # The snapshot holds verifiers, not keys
 //!
-//! Every robot's auth key round-trips through this file in plaintext, because
-//! that is how [`Key`] compares them today (see `src/core/key.rs`; hashing is
-//! deferred to the sibling `keylock` crate). Anyone who can read the state
-//! file can impersonate every robot in it. The file is therefore created
-//! `0600`, and it belongs on the same trust footing as a private key — not in
-//! a world-readable directory, a backup that travels, or a container image.
+//! Robot keys round-trip as Argon2id verifiers — salt and digest, never the
+//! secret — so a leaked snapshot cannot be replayed as a fleet takeover; it
+//! costs an offline Argon2 attack per guess. The file is still created `0600`
+//! and still deserves care, but it is no longer a list of passwords.
+//!
+//! A snapshot written before this change stores plaintext keys and will fail
+//! to load. That is deliberate and safe: callers treat a load failure as
+//! "start fresh" (see `examples/serve_workspace.rs`), so robots simply
+//! re-register rather than the core booting with keys it cannot check.
 //!
 //! The [`WorkspaceIndex`] is deliberately NOT part of a snapshot — the
 //! workspace is loaded separately at startup and re-attached on
@@ -33,7 +36,7 @@ use std::collections::BTreeMap;
 use crate::claim::{ClaimRequest, Lease};
 use crate::coordinator::{AliveInfo, Coordinator};
 use crate::core::ids::RobotId;
-use crate::core::key::Key;
+use crate::core::key::KeyVerifier;
 
 /// Serializable image of a [`ClaimManager`](crate::claim::ClaimManager).
 ///
@@ -58,7 +61,7 @@ pub struct ClaimManagerSnapshot {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CoordinatorSnapshot {
     pub robot_states: Vec<crate::robot::RobotState>,
-    pub robot_keys: BTreeMap<RobotId, Key>,
+    pub robot_keys: BTreeMap<RobotId, KeyVerifier>,
     pub robot_id_by_uuid: BTreeMap<String, RobotId>,
     pub next_synthetic_robot_id: u64,
     pub robot_alive: BTreeMap<RobotId, AliveInfo>,

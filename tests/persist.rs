@@ -100,7 +100,7 @@ fn snapshot_restore_round_trips_through_json() {
         zone_id, zone_id2,
         "the two workspaces mint distinct zone ids"
     );
-    let restored = Coordinator::restore(decoded, Some(Arc::clone(&idx2)));
+    let mut restored = Coordinator::restore(decoded, Some(Arc::clone(&idx2)));
 
     // Robot still registered.
     assert!(restored.has_robot(ROBOT));
@@ -146,7 +146,7 @@ fn robot_alive_and_synthetic_counter_survive_restore() {
     let decoded: CoordinatorSnapshot = serde_json::from_str(&json).unwrap();
 
     let (idx2, _) = make_index();
-    let restored = Coordinator::restore(decoded, Some(idx2));
+    let mut restored = Coordinator::restore(decoded, Some(idx2));
 
     // UUID→id mapping and key survived.
     assert_eq!(restored.resolve_robot_id(uuid), Some(synth));
@@ -192,7 +192,7 @@ fn atomic_write_round_trip_and_missing_file() {
 
     // Restore from the loaded snapshot and confirm state carried over.
     let (idx2, _) = make_index();
-    let restored = Coordinator::restore(loaded, Some(idx2));
+    let mut restored = Coordinator::restore(loaded, Some(idx2));
     assert!(restored.has_robot(ROBOT));
     assert!(restored.validate_key(ROBOT, &Key::Numeric(1234)));
 
@@ -299,7 +299,8 @@ mod behaviour {
     #[test]
     fn a_restored_core_decides_the_same_way() {
         let workspace = index();
-        let before = ServeState::new(Coordinator::with_index(Arc::clone(&workspace)));
+        let before = ServeState::new(Coordinator::with_index(Arc::clone(&workspace)))
+            .with_kdf_params(syncbot::core::key::insecure_test_cost());
         flat_register(&before, "7", "1234", None);
         flat_register(&before, "8", "5678", None);
         assert_eq!(
@@ -328,7 +329,8 @@ mod behaviour {
 
         // Restart.
         let snapshot = before.coordinator().read().unwrap().snapshot();
-        let after = ServeState::new(Coordinator::restore(snapshot, Some(workspace)));
+        let after = ServeState::new(Coordinator::restore(snapshot, Some(workspace)))
+            .with_kdf_params(syncbot::core::key::insecure_test_cost());
 
         // The holder still holds it.
         let still_blocked =
@@ -362,7 +364,8 @@ mod behaviour {
     #[test]
     fn minted_claim_ids_do_not_collide_with_restored_ones() {
         let workspace = index();
-        let before = ServeState::new(Coordinator::with_index(Arc::clone(&workspace)));
+        let before = ServeState::new(Coordinator::with_index(Arc::clone(&workspace)))
+            .with_kdf_params(syncbot::core::key::insecure_test_cost());
         flat_register(&before, "7", "1234", None);
         for zone in 0..3u64 {
             flat_claim(
@@ -386,7 +389,8 @@ mod behaviour {
             .collect();
 
         let snapshot = before.coordinator().read().unwrap().snapshot();
-        let after = ServeState::new(Coordinator::restore(snapshot, Some(workspace)));
+        let after = ServeState::new(Coordinator::restore(snapshot, Some(workspace)))
+            .with_kdf_params(syncbot::core::key::insecure_test_cost());
 
         flat_register(&after, "8", "5678", None);
         let minted = after
@@ -406,7 +410,8 @@ mod behaviour {
     #[test]
     fn a_lease_deadline_survives_a_restart() {
         let workspace = index();
-        let before = ServeState::new(Coordinator::with_index(Arc::clone(&workspace)));
+        let before = ServeState::new(Coordinator::with_index(Arc::clone(&workspace)))
+            .with_kdf_params(syncbot::core::key::insecure_test_cost());
         flat_register(&before, "7", "1234", None);
         assert_eq!(
             flat_claim(
@@ -432,7 +437,8 @@ mod behaviour {
             .expect("a leased claim has a deadline");
 
         let snapshot = before.coordinator().read().unwrap().snapshot();
-        let after = ServeState::new(Coordinator::restore(snapshot, Some(workspace)));
+        let after = ServeState::new(Coordinator::restore(snapshot, Some(workspace)))
+            .with_kdf_params(syncbot::core::key::insecure_test_cost());
         let restored = after
             .coordinator()
             .read()
@@ -459,7 +465,8 @@ mod behaviour {
     /// `WorkspaceAccepted::stale_claims` exists to report.
     #[test]
     fn claims_do_not_follow_a_workspace_rebuilt_with_new_uuids() {
-        let before = ServeState::new(Coordinator::with_index(index()));
+        let before = ServeState::new(Coordinator::with_index(index()))
+            .with_kdf_params(syncbot::core::key::insecure_test_cost());
         flat_register(&before, "7", "1234", None);
         assert_eq!(
             flat_claim(
@@ -477,7 +484,8 @@ mod behaviour {
 
         let snapshot = before.coordinator().read().unwrap().snapshot();
         // A *different* workspace: same numeric aliases, different uuids.
-        let after = ServeState::new(Coordinator::restore(snapshot, Some(index())));
+        let after = ServeState::new(Coordinator::restore(snapshot, Some(index())))
+            .with_kdf_params(syncbot::core::key::insecure_test_cost());
 
         flat_register(&after, "8", "5678", None);
         let free = flat_claim(&after, ClaimTargetKind::Zone, "5678", "8", &[0], None, None);

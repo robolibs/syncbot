@@ -144,11 +144,17 @@ Each call may carry a `key`. Two forms:
   inset: 5pt, stroke: rgb("#e2e8f0"),
   table.header([Key], [Meaning]),
   [an integer, e.g. `1234`], [a simple numeric password],
-  [`did:pass=<secret>`], [a password in DID form],
+  [`pass:<secret>`], [a password; anything after the prefix],
+  [`did:key:<multibase>`], [an Ed25519 identity — reserved, see below],
 )
 
 The key is set at *register* and bound to the robot. Every later call resends it;
-a wrong key is rejected with reason `1` (*mismatched key*).
+a wrong key is rejected with reason `1` (*mismatched key*). The server stores a
+salted Argon2id hash, never the key itself, so a stolen state file is not a list
+of passwords.
+
+`did:key` is reserved and rejected (reason `4`): proving a private key needs a
+challenge to sign, which this wire does not yet carry.
 
 *The key is optional.* If you omit it the server uses a shared default password
 — convenient but insecure (anyone can act as a robot that skipped the key). If a

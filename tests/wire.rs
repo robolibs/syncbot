@@ -56,7 +56,8 @@ fn build_state() -> (ServeState, uuid::Uuid, uuid::Uuid) {
 
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     (
-        ServeState::new(Coordinator::with_index(idx)),
+        ServeState::new(Coordinator::with_index(idx))
+            .with_kdf_params(syncbot::core::key::insecure_test_cost()),
         node_a_uuid,
         node_b_uuid,
     )
@@ -128,7 +129,8 @@ fn plan_route_rejects_an_unknown_node_id() {
 /// error says so rather than reporting an empty graph.
 #[test]
 fn plan_route_without_a_workspace_reports_it() {
-    let state = ServeState::new(Coordinator::new());
+    let state = ServeState::new(Coordinator::new())
+        .with_kdf_params(syncbot::core::key::insecure_test_cost());
 
     let err = plan_route_request(
         &state,

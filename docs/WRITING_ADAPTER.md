@@ -194,6 +194,50 @@ reach the bus. Do not read the reason-1 (`mismatched key`) path as protection
 against a hostile local process — it is not, and was never meant to be. Run the
 core where you would run anything else holding fleet control.
 
+## Keys
+
+A robot presents its key as a scalar, in one of three forms:
+
+| Presented | Meaning |
+|---|---|
+| `1234` | a numeric password |
+| `pass:<secret>` | a password; anything after the prefix, verbatim |
+| `did:key:<multibase>` | an Ed25519 identity — parsed, not yet accepted |
+
+DID forms are parsed by `authbox`, the crate that owns DID syntax. A password
+is deliberately *not* a DID: an earlier form spelled it `did:pass=<secret>`,
+which is not valid DID syntax at all (DIDs separate on colons), and dressing a
+secret as an identifier restricted it to the DID method-id charset — no `!`, no
+spaces — for no benefit.
+
+What the core *stores* is never the key — it is `keylock::kdf::pwhash`'s
+password hash, a standard PHC string:
+
+```text
+$argon2id$v=19$m=19456,t=2,p=1$<salt>$<digest>
+```
+
+So a stolen state file costs an offline Argon2 attack per guess rather than
+handing over the fleet. The salt is per key, so two robots sharing a password
+do not share a digest, and the cost parameters travel inside the string, so
+raising them later does not invalidate keys already stored.
+
+Two consequences an adapter author should know:
+
+- **The first check of a key is slow on purpose** (~11 ms). Every later check
+  of the same secret is a cache hit (~300 ns), so a heartbeat loop pays it
+  once, not once per beat.
+- **A wrong key is slow too**, which makes a stream of them a denial of
+  service. After a short run of failures the core refuses further derivations
+  for that robot until the streak ages out. A robot whose key is already known
+  is checked from the cache first, so someone guessing at its id cannot lock
+  it out.
+
+`did:key` (Ed25519) is parsed and **rejected** with reason `4`. That is a
+missing protocol, not a missing algorithm: proving possession of a private key
+needs a fresh challenge to sign, and this wire carries one static scalar per
+request, which would replay. It needs a challenge/response op first.
+
 ## Registration
 
 `register` binds a key to a robot id, and two operator decisions govern it:

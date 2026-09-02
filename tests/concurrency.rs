@@ -54,6 +54,7 @@ fn state(zones: u64) -> ServeState {
     }
     let index = Arc::new(WorkspaceIndex::new(Arc::new(Workspace::new(root))));
     ServeState::new(Coordinator::with_index(index))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 /// SAFETY under load: however the interleaving falls out, no exclusive zone
