@@ -5,6 +5,15 @@
 //! it (the servers only do so when `SYNCBOT_STATE` is set). With the feature
 //! unused the server stays fully in-memory and no file is ever touched.
 //!
+//! # The snapshot holds secrets
+//!
+//! Every robot's auth key round-trips through this file in plaintext, because
+//! that is how [`Key`] compares them today (see `src/core/key.rs`; hashing is
+//! deferred to the sibling `keylock` crate). Anyone who can read the state
+//! file can impersonate every robot in it. The file is therefore created
+//! `0600`, and it belongs on the same trust footing as a private key — not in
+//! a world-readable directory, a backup that travels, or a container image.
+//!
 //! The [`WorkspaceIndex`] is deliberately NOT part of a snapshot — the
 //! workspace is loaded separately at startup and re-attached on
 //! [`Coordinator::restore`]. `ClaimManager`'s monotonic `next_id`
@@ -13,6 +22,8 @@
 
 use std::fs;
 use std::io;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -92,6 +103,9 @@ pub fn write_atomic(path: &Path, snapshot: &CoordinatorSnapshot) -> io::Result<(
     let tmp = dir.join(tmp_name);
 
     fs::write(&tmp, &json)?;
+    // The snapshot carries every robot's key in plaintext, so narrow the
+    // permissions before it is visible under its final name.
+    restrict_permissions(&tmp)?;
     match fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -100,6 +114,18 @@ pub fn write_atomic(path: &Path, snapshot: &CoordinatorSnapshot) -> io::Result<(
             Err(e)
         }
     }
+}
+
+/// Restrict a state file to its owner. A no-op on platforms without Unix
+/// permission bits, where the caller owns the directory's access control.
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Snapshot the coordinator behind a shared lock and atomically write it to

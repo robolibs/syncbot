@@ -17,7 +17,8 @@ use zoneout::{CoordMode, EdgeData, NodeData, Workspace, Zone};
 
 use crate::core::error::{Error, Result};
 use crate::policy::{
-    TrafficIssueSeverity, validate_edge_traffic_properties, validate_zone_traffic_properties,
+    EdgeTrafficSemantics, TrafficIssueSeverity, ZonePolicy, parse_edge_traffic_semantics,
+    parse_zone_policy, validate_edge_traffic_properties, validate_zone_traffic_properties,
 };
 
 /// Property key for an optional numeric ID alias on zones / nodes / edges.
@@ -148,8 +149,36 @@ pub struct ValidationIssue {
     pub message: String,
 }
 
+/// One traversable step out of a node, resolved once at index build time.
+///
+/// `from_source` records which way the edge is being walked, because a
+/// direction-locked edge is legal in one direction and not the other.
+#[derive(Debug, Clone, Copy)]
+pub struct Adjacency {
+    /// The node at the far end.
+    pub node_id: Uuid,
+    pub edge_id: Uuid,
+    pub weight: f64,
+    /// Whether walking this way leaves the edge's source endpoint.
+    pub from_source: bool,
+}
+
 pub struct WorkspaceIndex {
     workspace: Arc<Workspace>,
+    /// Node uuid → the edges leaving it. Built once per `rebuild`, because
+    /// Dijkstra otherwise rescans every edge in the graph per node it expands,
+    /// which is `O(V·E)` for what should be `O(E log V)`.
+    adjacency: HashMap<Uuid, Vec<Adjacency>>,
+    /// Parsed `traffic.*` policies, resolved once per `rebuild`.
+    ///
+    /// Parsing clones the whole property map, and claim evaluation re-parses
+    /// the same few zones inside loops over requests x leases x targets. The
+    /// workspace is immutable between rebinds, so caching is exact.
+    zone_policies: HashMap<Uuid, ZonePolicy>,
+    edge_semantics: HashMap<Uuid, EdgeTrafficSemantics>,
+    /// Every zone's ancestors, so containment questions are a set lookup
+    /// instead of a fresh `Vec` and a walk up the tree each time.
+    zone_ancestors: HashMap<Uuid, HashSet<Uuid>>,
     zone_ids: HashSet<Uuid>,
     nodes: HashMap<Uuid, VertexId<NodeData>>,
     edges: HashMap<Uuid, EdgeId>,
@@ -172,6 +201,10 @@ impl WorkspaceIndex {
     pub fn new(workspace: Arc<Workspace>) -> Self {
         let mut idx = Self {
             workspace,
+            adjacency: HashMap::new(),
+            zone_policies: HashMap::new(),
+            edge_semantics: HashMap::new(),
+            zone_ancestors: HashMap::new(),
             zone_ids: HashSet::new(),
             nodes: HashMap::new(),
             edges: HashMap::new(),
@@ -274,17 +307,47 @@ impl WorkspaceIndex {
         out
     }
 
+    /// Every zone below `zone_id`, breadth-first.
+    ///
+    /// Iterative on purpose: the zone tree can arrive from an untrusted
+    /// workspace push, and recursion over attacker-controlled nesting is a
+    /// stack overflow — which aborts the process rather than returning an
+    /// error. Depth is bounded at the door instead (see `max_zone_depth`).
     pub fn descendant_zones(&self, zone_id: Uuid) -> Vec<&Zone> {
         let mut out = Vec::new();
-        self.collect_descendants(zone_id, &mut out);
+        let mut pending = vec![zone_id];
+        while let Some(current) = pending.pop() {
+            for child in self.child_zones(current) {
+                out.push(child);
+                pending.push(child.id());
+            }
+        }
         out
     }
 
-    fn collect_descendants<'b>(&'b self, zone_id: Uuid, out: &mut Vec<&'b Zone>) {
-        for child in self.child_zones(zone_id) {
-            out.push(child);
-            self.collect_descendants(child.id(), out);
+    /// How deeply the zone tree nests, counting the root as depth 1.
+    ///
+    /// Used to refuse an unreasonable pushed workspace before anything walks
+    /// it. Computed iteratively for the same reason.
+    pub fn max_zone_depth(&self) -> usize {
+        let Some(root) = self.root_zone_id() else {
+            return 0;
+        };
+        let mut deepest = 0usize;
+        let mut pending = vec![(root, 1usize)];
+        let mut visited: HashSet<Uuid> = HashSet::new();
+        while let Some((zone_id, depth)) = pending.pop() {
+            if !visited.insert(zone_id) {
+                continue; // a malformed tree must not loop forever
+            }
+            deepest = deepest.max(depth);
+            if let Some(children) = self.children.get(&zone_id) {
+                for child in children {
+                    pending.push((*child, depth + 1));
+                }
+            }
         }
+        deepest
     }
 
     pub fn nodes_in_zone(&self, zone_id: Uuid) -> Vec<&NodeData> {
@@ -316,6 +379,51 @@ impl WorkspaceIndex {
                 .filter_map(|zid| self.workspace.find_zone(*zid))
                 .collect(),
         }
+    }
+
+    /// The edges leaving `node_id`, or an empty slice for an unknown node.
+    pub fn neighbors(&self, node_id: Uuid) -> &[Adjacency] {
+        self.adjacency
+            .get(&node_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// This zone's parsed traffic policy. Prefer this to calling
+    /// `parse_zone_policy` on the properties: it is the same value, resolved
+    /// once at build time.
+    pub fn zone_policy(&self, zone_id: Uuid) -> Option<&ZonePolicy> {
+        self.zone_policies.get(&zone_id)
+    }
+
+    /// This edge's parsed traffic semantics, structural direction excluded.
+    pub fn edge_semantics(&self, edge_id: Uuid) -> Option<&EdgeTrafficSemantics> {
+        self.edge_semantics.get(&edge_id)
+    }
+
+    /// The parsed policies of every zone containing `node_id`.
+    pub fn node_zone_policies(&self, node_id: Uuid) -> Vec<&ZonePolicy> {
+        self.zones_of_node(node_id)
+            .into_iter()
+            .filter_map(|zone| self.zone_policy(zone.id()))
+            .collect()
+    }
+
+    /// The parsed policies of every zone containing `edge_id`.
+    pub fn edge_zone_policies(&self, edge_id: Uuid) -> Vec<&ZonePolicy> {
+        self.zones_of_edge(edge_id)
+            .into_iter()
+            .filter_map(|zone| self.zone_policy(zone.id()))
+            .collect()
+    }
+
+    /// Whether `ancestor` is `zone_id` itself or one of its ancestors.
+    pub fn zone_contains(&self, ancestor: Uuid, zone_id: Uuid) -> bool {
+        ancestor == zone_id
+            || self
+                .zone_ancestors
+                .get(&zone_id)
+                .is_some_and(|ancestors| ancestors.contains(&ancestor))
     }
 
     pub fn edge_between(&self, node_a_id: Uuid, node_b_id: Uuid) -> Option<&EdgeData> {
@@ -654,6 +762,10 @@ impl WorkspaceIndex {
     }
 
     fn rebuild(&mut self) {
+        self.adjacency.clear();
+        self.zone_policies.clear();
+        self.edge_semantics.clear();
+        self.zone_ancestors.clear();
         self.zone_ids.clear();
         self.nodes.clear();
         self.edges.clear();
@@ -672,7 +784,6 @@ impl WorkspaceIndex {
 
         Self::index_zone_tree(
             self.workspace.root_zone(),
-            None,
             &mut self.zone_ids,
             &mut self.parents,
             &mut self.children,
@@ -723,6 +834,40 @@ impl WorkspaceIndex {
             }
         }
 
+        for edge in g.edges() {
+            let (Some(src), Some(tgt)) = (g.source(edge.id), g.target(edge.id)) else {
+                continue;
+            };
+            let (Some(src_node), Some(tgt_node)) = (g.get_vertex(src), g.get_vertex(tgt)) else {
+                continue;
+            };
+            let Some(prop) = g.edge_property(edge.id) else {
+                continue;
+            };
+            let weight = g.get_weight(edge.id).unwrap_or(0.0);
+            self.adjacency
+                .entry(src_node.id)
+                .or_default()
+                .push(Adjacency {
+                    node_id: tgt_node.id,
+                    edge_id: prop.id,
+                    weight,
+                    from_source: true,
+                });
+            // A self-loop is one step out of the node, not two.
+            if src != tgt {
+                self.adjacency
+                    .entry(tgt_node.id)
+                    .or_default()
+                    .push(Adjacency {
+                        node_id: src_node.id,
+                        edge_id: prop.id,
+                        weight,
+                        from_source: false,
+                    });
+            }
+        }
+
         for &zid in &self.zone_ids {
             let Some(zone) = self.workspace.find_zone(zid) else {
                 continue;
@@ -735,38 +880,59 @@ impl WorkspaceIndex {
                     &mut self.duplicate_zone_numeric_ids,
                 );
             }
+            self.zone_policies
+                .insert(zid, parse_zone_policy(zone.properties()));
+
+            let mut ancestors = HashSet::new();
+            let mut current = self.parents.get(&zid).copied();
+            while let Some(parent) = current {
+                if !ancestors.insert(parent) {
+                    break; // a cycle in a malformed tree must not hang the build
+                }
+                current = self.parents.get(&parent).copied();
+            }
+            self.zone_ancestors.insert(zid, ancestors);
+        }
+
+        for (&edge_uuid, &eid) in &self.edges {
+            if let Some(prop) = self.workspace.graph().edge_property(eid) {
+                self.edge_semantics.insert(
+                    edge_uuid,
+                    parse_edge_traffic_semantics(&prop.properties, false),
+                );
+            }
         }
     }
 
+    /// Walk the zone tree, recording ids and parent/child links.
+    ///
+    /// An explicit worklist rather than recursion: this runs over a workspace
+    /// that may have arrived from an untrusted push, where deep nesting would
+    /// otherwise overflow the stack and abort the process.
     fn index_zone_tree(
-        zone: &Zone,
-        parent: Option<&Zone>,
+        root: &Zone,
         zone_ids: &mut HashSet<Uuid>,
         parents: &mut HashMap<Uuid, Uuid>,
         children: &mut HashMap<Uuid, Vec<Uuid>>,
         duplicate_zone_ids: &mut Vec<Uuid>,
     ) {
-        let zid = zone.id();
-        if zone_ids.contains(&zid) {
-            if !duplicate_zone_ids.contains(&zid) {
-                duplicate_zone_ids.push(zid);
+        let mut pending: Vec<(&Zone, Option<Uuid>)> = vec![(root, None)];
+        while let Some((zone, parent)) = pending.pop() {
+            let zid = zone.id();
+            if zone_ids.contains(&zid) {
+                if !duplicate_zone_ids.contains(&zid) {
+                    duplicate_zone_ids.push(zid);
+                }
+            } else {
+                zone_ids.insert(zid);
             }
-        } else {
-            zone_ids.insert(zid);
-        }
-        if let Some(p) = parent {
-            parents.insert(zid, p.id());
-            children.entry(p.id()).or_default().push(zid);
-        }
-        for child in zone.children() {
-            Self::index_zone_tree(
-                child,
-                Some(zone),
-                zone_ids,
-                parents,
-                children,
-                duplicate_zone_ids,
-            );
+            if let Some(parent_id) = parent {
+                parents.insert(zid, parent_id);
+                children.entry(parent_id).or_default().push(zid);
+            }
+            for child in zone.children() {
+                pending.push((child, Some(zid)));
+            }
         }
     }
 }

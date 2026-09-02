@@ -5,7 +5,7 @@
 //! `Coordinator` ties everything together with a list of `RobotState`s plus
 //! its own `ClaimManager`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -524,6 +524,10 @@ pub fn route_progress_index(state: &RobotState) -> u64 {
     start_node_index
 }
 
+/// Zones the next `horizon` steps of a route pass through.
+///
+/// Informational — which areas a robot is about to be in, for display and
+/// diagnostics. These are NOT claim targets; see `claim_targets_from_route`.
 pub fn route_zone_targets_from_progress(
     route_plan: &RoutePlan,
     start_node_index: u64,
@@ -559,14 +563,17 @@ pub fn route_zone_targets_from_progress(
     zone_ids
 }
 
+/// The resources a robot must hold to drive `route_plan`: the nodes it stops
+/// at and the edges it crosses.
+///
+/// Traversed *zones* are deliberately not claimed. Passing through a zone is
+/// intent, not ownership — the claim manager derives that intent from these
+/// node and edge targets (see `ClaimManager::intent_zones`). Claiming the
+/// zones outright would reserve the whole area, so two robots on disjoint
+/// paths through one open zone could not both proceed. A robot that genuinely
+/// wants to reserve an area sends a zone claim, deliberately.
 pub fn claim_targets_from_route(route_plan: &RoutePlan) -> Vec<ClaimTarget> {
     let mut targets = Vec::new();
-    for &z in &route_plan.traversed_zone_ids {
-        targets.push(ClaimTarget {
-            kind: ClaimTargetKind::Zone,
-            resource_id: z,
-        });
-    }
     for &e in &route_plan.traversed_edge_ids {
         targets.push(ClaimTarget {
             kind: ClaimTargetKind::Edge,
@@ -655,14 +662,9 @@ pub fn rolling_horizon_claim_request(
         .saturating_sub(start_node_index as usize);
     let node_limit = available_nodes.min((state.horizon + 1) as usize);
     let edge_limit = available_edges.min(state.horizon as usize);
-    let zone_targets = route_zone_targets_from_progress(plan, start_node_index, state.horizon);
 
-    for zid in zone_targets {
-        request.targets.push(ClaimTarget {
-            kind: ClaimTargetKind::Zone,
-            resource_id: zid,
-        });
-    }
+    // Zones within the horizon are not claimed; the manager derives intent on
+    // them from the nodes and edges below. See `claim_targets_from_route`.
     for i in 0..edge_limit {
         let eid = plan.traversed_edge_ids[start_node_index as usize + i];
         request.targets.push(ClaimTarget {
@@ -873,7 +875,7 @@ pub struct Coordinator {
     claim_manager: ClaimManager,
     robot_states: Vec<RobotState>,
     /// Auth key bound to each robot at registration. Checked on every later
-    /// call. See `src/core/key.rs` and `PLAN.md`.
+    /// call. See `src/core/key.rs`.
     robot_keys: BTreeMap<RobotId, Key>,
     /// Maps a registered UUID robot identifier (canonical string) to its
     /// internal numeric `RobotId`. Integer ids map to themselves and are not
@@ -890,10 +892,31 @@ pub struct Coordinator {
     pending_uuid_bindings: BTreeMap<RobotId, String>,
     /// Heartbeat liveness tracking per robot: expected interval + last seen.
     robot_alive: BTreeMap<RobotId, AliveInfo>,
+    /// Ids an operator has allowed to register. `None` is first-come.
+    provisioned: Option<BTreeSet<RobotId>>,
+}
+
+/// Why a registration did not take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationRefusal {
+    /// The id is already bound to a key.
+    AlreadyRegistered,
+    /// An operator provisioned a list of ids and this is not on it.
+    NotProvisioned,
+    /// The coordinator is holding as many robots as it will.
+    Full,
 }
 
 /// Base for synthetic ids minted for UUID robots (2^56).
 const SYNTHETIC_ROBOT_ID_BASE: u64 = 1 << 56;
+
+/// Most robots one coordinator will register.
+///
+/// Registration deliberately never expires — a robot is allowed to come back,
+/// and forgetting it the moment it goes quiet would be worse. But that makes
+/// registration a memory-growth vector, and the fleet snapshot grows with it,
+/// so it is bounded. Well past any real fleet.
+pub const MAX_REGISTERED_ROBOTS: usize = 4096;
 
 /// Per-robot heartbeat liveness: the expected interval (seconds) the robot
 /// promised at registration, and the wall-clock time (epoch millis) of its last
@@ -919,6 +942,7 @@ impl Default for Coordinator {
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
             pending_uuid_bindings: BTreeMap::new(),
             robot_alive: BTreeMap::new(),
+            provisioned: None,
         }
     }
 }
@@ -938,6 +962,7 @@ impl Coordinator {
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
             pending_uuid_bindings: BTreeMap::new(),
             robot_alive: BTreeMap::new(),
+            provisioned: None,
         }
     }
 
@@ -997,6 +1022,13 @@ impl Coordinator {
     /// once it heartbeats again. Returns the robots whose claims were actually
     /// freed (so callers can log them). Idempotent — robots already freed are
     /// not reported again.
+    /// Drop claims whose lease window has closed. Cheap enough to call on
+    /// every claim as well as on the sweep, which closes the gap between a
+    /// lease expiring and the next sweep noticing.
+    pub fn expire_claims(&mut self, now_ms: u64) -> u64 {
+        self.claim_manager.expire_requests(now_ms) + self.claim_manager.expire_leases(now_ms)
+    }
+
     pub fn sweep_inactive(&mut self, now_ms: u64) -> Vec<RobotId> {
         let mut freed = Vec::new();
         for robot_id in self.inactive_robots_at(now_ms) {
@@ -1085,12 +1117,43 @@ impl Coordinator {
         self.robot_id_by_uuid.get(&canon).copied()
     }
 
+    /// The robot ids allowed to register, if the operator provisioned a list.
+    ///
+    /// `None` means anyone may register any id, first come first served —
+    /// which lets an attacker take an id before the real robot boots and hold
+    /// it with a key nobody else knows, permanently. Provisioning closes that.
+    pub fn set_provisioned_robots(&mut self, allowed: Option<BTreeSet<RobotId>>) {
+        self.provisioned = allowed;
+    }
+
+    /// Whether `robot_id` may register at all.
+    pub fn is_provisioned(&self, robot_id: RobotId) -> bool {
+        match self.provisioned.as_ref() {
+            None => true,
+            Some(allowed) => allowed.contains(&robot_id),
+        }
+    }
+
+    /// Why a registration was refused.
+    pub fn registration_refusal(&self, robot_id: RobotId) -> Option<RegistrationRefusal> {
+        if !self.is_provisioned(robot_id) {
+            return Some(RegistrationRefusal::NotProvisioned);
+        }
+        if self.robot_keys.contains_key(&robot_id) || self.find_robot_state(robot_id).is_some() {
+            return Some(RegistrationRefusal::AlreadyRegistered);
+        }
+        if self.robot_states.len() >= MAX_REGISTERED_ROBOTS {
+            return Some(RegistrationRefusal::Full);
+        }
+        None
+    }
+
     /// Flat registration: bind `key` to a fresh robot identified only by
     /// `robot_id`. The coordinator owns all other state. Returns `false` if the
-    /// id is already registered (caller maps that to the "already registered"
-    /// reason); the existing robot and its key are left untouched.
+    /// registration was refused; the existing robot and its key are left
+    /// untouched. Ask [`Self::registration_refusal`] for the reason.
     pub fn register_with_key(&mut self, robot_id: RobotId, key: Key) -> bool {
-        if self.robot_keys.contains_key(&robot_id) || self.find_robot_state(robot_id).is_some() {
+        if self.registration_refusal(robot_id).is_some() {
             // Registration did not take: drop any tentative UUID->id binding
             // minted for this id so the mapping is not poisoned. (A no-op for
             // integer ids and for already-committed UUID robots.)
@@ -1219,16 +1282,26 @@ impl Coordinator {
         state.current_node_id = current_node_id;
         state.current_edge_id = current_edge_id;
         if let (Some(plan), Some(node_id)) = (state.route_plan.as_ref(), current_node_id) {
-            if let Some(pos) = plan.traversed_node_ids.iter().position(|id| *id == node_id) {
-                state.next_route_step_index = pos as u64;
-                state.progress_state = if pos + 1 >= plan.traversed_node_ids.len() {
-                    RobotProgressState::Idle
-                } else {
-                    RobotProgressState::FollowingRoute
-                };
-                state.hold_reason = None;
-                state.needs_replan = false;
-                state.wait_ticks = 0;
+            match plan.traversed_node_ids.iter().position(|id| *id == node_id) {
+                Some(pos) => {
+                    state.next_route_step_index = pos as u64;
+                    state.progress_state = if pos + 1 >= plan.traversed_node_ids.len() {
+                        RobotProgressState::Idle
+                    } else {
+                        RobotProgressState::FollowingRoute
+                    };
+                    state.hold_reason = None;
+                    state.needs_replan = false;
+                    state.wait_ticks = 0;
+                }
+                // A robot reporting a node that is not on its plan has left the
+                // route. Saying so beats leaving its progress untouched, which
+                // made a strayed robot look identical to one on track.
+                None => {
+                    state.progress_state = RobotProgressState::Replanning;
+                    state.hold_reason = Some("off_route".into());
+                    state.needs_replan = true;
+                }
             }
         } else if current_edge_id.is_some() {
             state.progress_state = RobotProgressState::FollowingRoute;
@@ -1467,6 +1540,7 @@ impl Coordinator {
             next_synthetic_robot_id: snapshot.next_synthetic_robot_id,
             pending_uuid_bindings: BTreeMap::new(),
             robot_alive: snapshot.robot_alive,
+            provisioned: None,
         }
     }
 }

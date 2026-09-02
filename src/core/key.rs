@@ -10,7 +10,8 @@
 //!
 //! Comparison is a direct (plaintext) match for now. The hardening path is the
 //! sibling `keylock` crate: Argon2 for `did:pass`, Ed25519/X25519 for
-//! `did:key`. See `PLAN.md`.
+//! `did:key`. Until then a key is compared as plaintext, so it is only as
+//! private as the transport carrying it and the state file holding it.
 
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +44,7 @@ impl Key {
             let (method, value) = rest.split_once('=').ok_or(KeyError::Malformed)?;
             return match method {
                 "pass" => Ok(Key::Pass(value.to_string())),
-                // did:key is the crypto path — deferred (see PLAN.md / keylock).
+                // did:key is the crypto path — deferred to keylock.
                 "key" => Err(KeyError::Unsupported("did:key".to_string())),
                 other => Err(KeyError::Unsupported(format!("did:{other}"))),
             };
@@ -55,8 +56,7 @@ impl Key {
     /// but done in constant time to avoid a timing side channel: the secret
     /// bytes are XOR-accumulated so the comparison does not short-circuit on the
     /// first differing byte. Values of different variants or different lengths
-    /// never match. (Hashing — Argon2 for `did:pass` — is deferred to keylock;
-    /// see PLAN.md.)
+    /// never match. (Hashing — Argon2 for `did:pass` — is deferred to keylock.)
     pub fn matches(&self, other: &Key) -> bool {
         match (self, other) {
             (Key::Numeric(a), Key::Numeric(b)) => ct_eq_bytes(&a.to_le_bytes(), &b.to_le_bytes()),

@@ -1,7 +1,7 @@
 //! syncbot — multi-robot navigation, claims, and scheduling on top of
 //! `zoneout`.
 //!
-//! See `PLAN.md` at the crate root for the design overview. The public
+//! The wire contract is documented in `docs/WRITING_ADAPTER.md`. The public
 //! surface is kept flat at `syncbot::*` via re-exports below.
 
 // Crate-wide lint policy. The explicit form of these lints is clearer for a
