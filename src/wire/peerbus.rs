@@ -40,9 +40,11 @@ pub const HEARTBEAT_TOPIC: &str = "ares/v1/robots/heartbeat";
 pub const CLAIM_ZONE_TOPIC: &str = "ares/v1/claims/zone";
 pub const CLAIM_NODE_TOPIC: &str = "ares/v1/claims/node";
 pub const CLAIM_EDGE_TOPIC: &str = "ares/v1/claims/edge";
+pub const CLAIM_ROUTE_TOPIC: &str = "ares/v1/claims/route";
 pub const RELEASE_ZONE_TOPIC: &str = "ares/v1/leases/release/zone";
 pub const RELEASE_NODE_TOPIC: &str = "ares/v1/leases/release/node";
 pub const RELEASE_EDGE_TOPIC: &str = "ares/v1/leases/release/edge";
+pub const ROUTES_PLAN_TOPIC: &str = "ares/v1/routes/plan";
 pub const ZONES_LIST_TOPIC: &str = "ares/v1/zones/list";
 pub const ZONE_GET_TOPIC: &str = "ares/v1/zones/get";
 pub const FLEET_SNAPSHOT_TOPIC: &str = "ares/v1/fleet/snapshot";
@@ -115,6 +117,27 @@ pub struct Claim {
     pub id: Vec<u64>,
 }
 
+/// Canonical atomic route claim: the nodes a robot stops at and the edges it
+/// crosses, in one all-or-nothing request. Two `u64` sections rather than one,
+/// because a route spans both kinds and claiming them separately is not
+/// atomic.
+#[datapod::datapod(name = "ares.v1.claim.route")]
+pub struct ClaimRoute {
+    pub lease_time: u64,
+    pub access_mode: u8,
+    pub has_access_mode: u8,
+    pub has_lease_time: u8,
+    pub _pad: [u8; 5],
+    #[dp(bytes, section = "robot")]
+    pub robot: Vec<u8>,
+    #[dp(bytes, section = "key")]
+    pub key: Vec<u8>,
+    #[dp(bytes, section = "node")]
+    pub node: Vec<u64>,
+    #[dp(bytes, section = "edge")]
+    pub edge: Vec<u64>,
+}
+
 /// Canonical lease release request.
 #[datapod::datapod(name = "ares.v1.release")]
 pub struct Release {
@@ -149,6 +172,18 @@ pub struct ResourceGet {
     pub id: Vec<u8>,
 }
 
+/// Route planning request. `start` and `goal` are UTF-8 tokens, each either a
+/// UUID or a numeric workspace alias, matching every other address form.
+#[datapod::datapod(name = "ares.v1.route.plan")]
+pub struct RoutePlanRequest {
+    pub use_penalties: u8,
+    pub _pad: [u8; 7],
+    #[dp(bytes, section = "start")]
+    pub start: Vec<u8>,
+    #[dp(bytes, section = "goal")]
+    pub goal: Vec<u8>,
+}
+
 /// Canonical envelope for the existing structured read models.
 ///
 /// The datapod header carries success/failure and the payload carries the
@@ -173,6 +208,8 @@ pub struct ReadReply {
 /// in flight at once; it exists so two clients pushing concurrently cannot
 /// interleave into one corrupt document. The core applies the workspace when
 /// it holds all `total` chunks.
+/// `key` is the operator key authorising the replacement, carried on every
+/// chunk so the core can refuse the transfer without buffering it.
 #[datapod::datapod(name = "ares.v1.workspace.chunk")]
 pub struct WorkspaceChunk {
     pub transfer: u64,
@@ -180,6 +217,8 @@ pub struct WorkspaceChunk {
     pub total: u32,
     #[dp(bytes, section = "body")]
     pub body: Vec<u8>,
+    #[dp(bytes, section = "key")]
+    pub key: Vec<u8>,
 }
 
 impl From<FlatReply> for Reply {
@@ -209,7 +248,9 @@ enum Operation {
     Register,
     Heartbeat,
     Claim(ClaimTargetKind),
+    ClaimRoute,
     Release(ClaimTargetKind),
+    RoutePlan,
     ZonesList,
     ZoneGet,
     FleetSnapshot,
@@ -231,12 +272,13 @@ struct PendingWorkspace {
     total: u32,
     chunks: std::collections::BTreeMap<u32, Vec<u8>>,
     bytes: usize,
+    key: Vec<u8>,
 }
 
 impl WorkspaceAssembler {
     /// Returns the whole document once the final missing chunk arrives, or
     /// `None` while it's still incomplete.
-    fn accept(&mut self, chunk: WorkspaceChunk) -> ApiResult<Option<Vec<u8>>> {
+    fn accept(&mut self, chunk: WorkspaceChunk) -> ApiResult<Option<(Vec<u8>, Vec<u8>)>> {
         if chunk.total == 0 {
             return Err(ApiError::new("workspace push declares zero chunks"));
         }
@@ -254,6 +296,7 @@ impl WorkspaceAssembler {
                 total: chunk.total,
                 chunks: std::collections::BTreeMap::new(),
                 bytes: 0,
+                key: chunk.key.clone(),
             });
 
         // A client that changes its mind mid-push would silently produce a
@@ -282,7 +325,11 @@ impl WorkspaceAssembler {
             .transfers
             .remove(&chunk.transfer)
             .expect("just entered");
-        Ok(Some(pending.chunks.into_values().flatten().collect()))
+        let key = pending.key.clone();
+        Ok(Some((
+            pending.chunks.into_values().flatten().collect(),
+            key,
+        )))
     }
 }
 
@@ -319,6 +366,7 @@ impl CoreService {
                 Operation::Claim(ClaimTargetKind::Edge),
                 node.req_server(CLAIM_EDGE_TOPIC)?,
             ),
+            (Operation::ClaimRoute, node.req_server(CLAIM_ROUTE_TOPIC)?),
             (
                 Operation::Release(ClaimTargetKind::Zone),
                 node.req_server(RELEASE_ZONE_TOPIC)?,
@@ -331,6 +379,7 @@ impl CoreService {
                 Operation::Release(ClaimTargetKind::Edge),
                 node.req_server(RELEASE_EDGE_TOPIC)?,
             ),
+            (Operation::RoutePlan, node.req_server(ROUTES_PLAN_TOPIC)?),
             (Operation::ZonesList, node.req_server(ZONES_LIST_TOPIC)?),
             (Operation::ZoneGet, node.req_server(ZONE_GET_TOPIC)?),
             (
@@ -433,7 +482,7 @@ fn handle_request(
     assembler: &mut WorkspaceAssembler,
 ) -> DatapodMsg {
     let message = DatapodMsg::new(request.type_hash(), request.wire().to_vec());
-    let reply = match operation {
+    match operation {
         Operation::Register => decode::<Register>(&message)
             .map(|req| {
                 crate::wire::flat_register(
@@ -487,6 +536,20 @@ fn handle_request(
             })
             .unwrap_or_else(|error| bad_request(operation, error))
             .into_message(),
+        Operation::ClaimRoute => decode::<ClaimRoute>(&message)
+            .map(|req| {
+                crate::wire::flat_claim_route(
+                    state,
+                    key(&req.key),
+                    utf8(&req.robot).unwrap_or(""),
+                    &req.node,
+                    &req.edge,
+                    (req.has_access_mode != 0).then_some(req.access_mode),
+                    (req.has_lease_time != 0).then_some(req.lease_time),
+                )
+            })
+            .unwrap_or_else(|error| bad_request(operation, error))
+            .into_message(),
         Operation::Release(kind) => decode::<Release>(&message)
             .map(|req| {
                 crate::wire::flat_release(
@@ -499,6 +562,25 @@ fn handle_request(
             })
             .unwrap_or_else(|error| bad_request(operation, error))
             .into_message(),
+        Operation::RoutePlan => decode::<RoutePlanRequest>(&message)
+            .map_err(|err| ApiError::new(format!("invalid routes/plan request: {err}")))
+            .and_then(|req| {
+                let start = parse_resource_ref(
+                    utf8(&req.start).map_err(|err| ApiError::new(format!("start node: {err}")))?,
+                )?;
+                let goal = parse_resource_ref(
+                    utf8(&req.goal).map_err(|err| ApiError::new(format!("goal node: {err}")))?,
+                )?;
+                crate::wire::plan_route_request(
+                    state,
+                    crate::wire::PlanRouteRequest {
+                        start_node_id: start,
+                        goal_node_id: goal,
+                        use_penalties: req.use_penalties != 0,
+                    },
+                )
+            })
+            .into_read_message(),
         Operation::ZonesList => decode::<ReadEmpty>(&message)
             .map_err(|err| ApiError::new(format!("invalid zones/list request: {err}")))
             .and_then(|_| crate::wire::list_zones(state))
@@ -524,14 +606,29 @@ fn handle_request(
         // "buffered, keep going" from "applied".
         Operation::WorkspaceSet => decode::<WorkspaceChunk>(&message)
             .map_err(|err| ApiError::new(format!("invalid workspace/set request: {err}")))
-            .and_then(|chunk| assembler.accept(chunk))
+            .and_then(|chunk| {
+                // Authorise before buffering, so an unauthorised client cannot
+                // pin memory by starting a transfer it may not finish.
+                let key = utf8(&chunk.key)
+                    .map_err(|err| ApiError::new(format!("operator key: {err}")))?
+                    .to_string();
+                state.check_workspace_key((!key.is_empty()).then_some(key.as_str()))?;
+                assembler.accept(chunk)
+            })
             .and_then(|document| match document {
-                Some(bytes) => crate::wire::set_workspace(state, bytes.as_slice()).map(Some),
+                Some((bytes, key)) => {
+                    let key = String::from_utf8_lossy(&key).into_owned();
+                    crate::wire::set_workspace(
+                        state,
+                        bytes.as_slice(),
+                        (!key.is_empty()).then_some(key.as_str()),
+                    )
+                    .map(Some)
+                }
                 None => Ok(None),
             })
             .into_read_message(),
-    };
-    reply
+    }
 }
 
 trait IntoReplyMessage {
@@ -565,6 +662,126 @@ impl<T: Serialize> IntoReadMessage for Result<T, ApiError> {
         };
         DatapodMsg::from_datapod(&reply)
     }
+}
+
+/// Attempt every canonical decode against raw bytes, returning the first
+/// canonical name that accepts them. See [`crate::wire::fuzz_decode_canonical`].
+///
+/// Each type is tried under *its own* type hash. Handing every decoder a
+/// placeholder hash instead would have them reject on identity before reading
+/// a single wire byte — which fuzzes nothing, and looks like success.
+pub fn decode_any(bytes: &[u8]) -> Option<&'static str> {
+    macro_rules! try_decode {
+        ($name:literal, $ty:ty, $probe:expr) => {
+            // The hash is a property of the type, taken from an encoded
+            // instance of it; the fuzzer's bytes then stand in for the wire.
+            let hash = DatapodMsg::from_datapod(&$probe).type_hash();
+            if DatapodMsg::new(hash, bytes.to_vec())
+                .to_datapod::<$ty>()
+                .is_ok()
+            {
+                return Some($name);
+            }
+        };
+    }
+
+    try_decode!(
+        "ares.v1.register",
+        Register,
+        Register {
+            alive: 0,
+            has_alive: 0,
+            _pad: [0; 7],
+            robot: Vec::new(),
+            key: Vec::new(),
+        }
+    );
+    try_decode!(
+        "ares.v1.heartbeat",
+        Heartbeat,
+        Heartbeat {
+            zone: 0,
+            node: 0,
+            edge: 0,
+            pos_a: 0.0,
+            pos_b: 0.0,
+            pos_c: 0.0,
+            yaw: 0.0,
+            has_zone: 0,
+            has_node: 0,
+            has_edge: 0,
+            pos_frame: 0,
+            has_yaw: 0,
+            _pad: [0; 3],
+            robot: Vec::new(),
+            key: Vec::new(),
+        }
+    );
+    try_decode!(
+        "ares.v1.claim",
+        Claim,
+        Claim {
+            lease_time: 0,
+            access_mode: 0,
+            has_access_mode: 0,
+            has_lease_time: 0,
+            _pad: [0; 5],
+            robot: Vec::new(),
+            key: Vec::new(),
+            id: Vec::new(),
+        }
+    );
+    try_decode!(
+        "ares.v1.claim.route",
+        ClaimRoute,
+        ClaimRoute {
+            lease_time: 0,
+            access_mode: 0,
+            has_access_mode: 0,
+            has_lease_time: 0,
+            _pad: [0; 5],
+            robot: Vec::new(),
+            key: Vec::new(),
+            node: Vec::new(),
+            edge: Vec::new(),
+        }
+    );
+    try_decode!(
+        "ares.v1.release",
+        Release,
+        Release {
+            id: 0,
+            robot: Vec::new(),
+            key: Vec::new(),
+        }
+    );
+    try_decode!(
+        "ares.v1.route.plan",
+        RoutePlanRequest,
+        RoutePlanRequest {
+            use_penalties: 0,
+            _pad: [0; 7],
+            start: Vec::new(),
+            goal: Vec::new(),
+        }
+    );
+    try_decode!(
+        "ares.v1.resource.get",
+        ResourceGet,
+        ResourceGet { id: Vec::new() }
+    );
+    try_decode!(
+        "ares.v1.workspace.chunk",
+        WorkspaceChunk,
+        WorkspaceChunk {
+            transfer: 0,
+            index: 0,
+            total: 0,
+            body: Vec::new(),
+            key: Vec::new(),
+        }
+    );
+    None
 }
 
 fn decode<T>(message: &DatapodMsg) -> Result<T, datapod::WireError>
@@ -602,11 +819,12 @@ fn bad_request(operation: Operation, _: datapod::WireError) -> FlatReply {
     let reason = match operation {
         Operation::Register => crate::wire::reason::register::BAD_ID,
         Operation::Heartbeat => crate::wire::reason::heartbeat::NOT_REGISTERED,
-        Operation::Claim(_) => crate::wire::reason::claim::BAD_REQUEST,
+        Operation::Claim(_) | Operation::ClaimRoute => crate::wire::reason::claim::BAD_REQUEST,
         Operation::Release(_) => crate::wire::reason::release::UNKNOWN_OR_BAD,
         // These reply through ReadReply, never FlatReply, so they only appear
         // here to keep the match exhaustive.
-        Operation::ZonesList
+        Operation::RoutePlan
+        | Operation::ZonesList
         | Operation::ZoneGet
         | Operation::FleetSnapshot
         | Operation::WorkspaceSet
@@ -623,8 +841,12 @@ pub struct Client {
 
 struct ClientInner {
     _node: Node,
+    /// One lock per topic, not one lock over the map. A `call` blocks until the
+    /// core replies, so a shared lock would serialize every adapter's traffic
+    /// through whichever request happened to be in flight — across unrelated
+    /// topics. The map itself is built once at connect and never mutated.
     requests:
-        Mutex<std::collections::BTreeMap<&'static str, peerbus::ReqClient<DatapodMsg, DatapodMsg>>>,
+        std::collections::BTreeMap<&'static str, Mutex<peerbus::ReqClient<DatapodMsg, DatapodMsg>>>,
 }
 
 impl Client {
@@ -641,9 +863,11 @@ impl Client {
             CLAIM_ZONE_TOPIC,
             CLAIM_NODE_TOPIC,
             CLAIM_EDGE_TOPIC,
+            CLAIM_ROUTE_TOPIC,
             RELEASE_ZONE_TOPIC,
             RELEASE_NODE_TOPIC,
             RELEASE_EDGE_TOPIC,
+            ROUTES_PLAN_TOPIC,
             ZONES_LIST_TOPIC,
             ZONE_GET_TOPIC,
             FLEET_SNAPSHOT_TOPIC,
@@ -652,13 +876,13 @@ impl Client {
         ] {
             requests.insert(
                 topic,
-                node.req_client::<DatapodMsg, DatapodMsg>(core_peer.as_str(), topic)?,
+                Mutex::new(node.req_client::<DatapodMsg, DatapodMsg>(core_peer.as_str(), topic)?),
             );
         }
         Ok(Self {
             inner: Arc::new(ClientInner {
                 _node: node,
-                requests: Mutex::new(requests),
+                requests,
             }),
         })
     }
@@ -745,6 +969,32 @@ impl Client {
         )
     }
 
+    /// Claim a whole route — nodes and edges together — atomically.
+    pub fn claim_route(
+        &self,
+        key: &str,
+        robot: &str,
+        node: &[u64],
+        edge: &[u64],
+        access_mode: Option<u8>,
+        lease_time: Option<u64>,
+    ) -> Result<FlatReply, ApiError> {
+        self.call(
+            CLAIM_ROUTE_TOPIC,
+            &ClaimRoute {
+                lease_time: lease_time.unwrap_or_default(),
+                access_mode: access_mode.unwrap_or_default(),
+                has_access_mode: u8::from(access_mode.is_some()),
+                has_lease_time: u8::from(lease_time.is_some()),
+                _pad: [0; 5],
+                robot: robot.as_bytes().to_vec(),
+                key: key.as_bytes().to_vec(),
+                node: node.to_vec(),
+                edge: edge.to_vec(),
+            },
+        )
+    }
+
     pub fn release(
         &self,
         kind: ClaimTargetKind,
@@ -758,6 +1008,24 @@ impl Client {
                 id,
                 robot: robot.as_bytes().to_vec(),
                 key: key.as_bytes().to_vec(),
+            },
+        )
+    }
+
+    /// Plan a route between two node tokens (UUID or numeric alias).
+    pub fn plan_route(
+        &self,
+        start: &str,
+        goal: &str,
+        use_penalties: bool,
+    ) -> Result<crate::wire::PlanRouteResponse, ApiError> {
+        self.call_read(
+            ROUTES_PLAN_TOPIC,
+            &RoutePlanRequest {
+                use_penalties: u8::from(use_penalties),
+                _pad: [0; 7],
+                start: start.as_bytes().to_vec(),
+                goal: goal.as_bytes().to_vec(),
             },
         )
     }
@@ -793,6 +1061,7 @@ impl Client {
     pub fn set_workspace(
         &self,
         document: &[u8],
+        key: &str,
     ) -> Result<crate::wire::WorkspaceAccepted, ApiError> {
         if document.is_empty() {
             return Err(ApiError::new("workspace push is empty"));
@@ -811,6 +1080,7 @@ impl Client {
                     index: index as u32,
                     total,
                     body: body.to_vec(),
+                    key: key.as_bytes().to_vec(),
                 },
             )?;
             applied = accepted;
@@ -857,14 +1127,12 @@ impl Client {
         T: DataPod,
         T::Header: LeWireHeader,
     {
-        let mut requests = self
+        let slot = self
             .inner
             .requests
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let client = requests
-            .get_mut(topic)
+            .get(topic)
             .ok_or_else(|| ApiError::new(format!("unknown canonical peerbus topic {topic}")))?;
+        let mut client = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let request = DatapodMsg::from_datapod(request);
         let response = client.call(&request).map_err(peerbus_error)?;
         Ok(DatapodMsg::new(
@@ -922,6 +1190,7 @@ mod tests {
             index,
             total,
             body: body.to_vec(),
+            key: b"admin".to_vec(),
         }
     }
 
@@ -931,7 +1200,10 @@ mod tests {
 
         let done = assembler.accept(chunk(1, 0, 1, b"{}")).expect("accepted");
 
-        assert_eq!(done.as_deref(), Some(b"{}".as_slice()));
+        assert_eq!(
+            done.map(|(body, _)| body).as_deref(),
+            Some(b"{}".as_slice())
+        );
     }
 
     #[test]
@@ -942,7 +1214,10 @@ mod tests {
         assert!(assembler.accept(chunk(1, 1, 3, b"def")).unwrap().is_none());
         let done = assembler.accept(chunk(1, 2, 3, b"ghi")).unwrap();
 
-        assert_eq!(done.as_deref(), Some(b"abcdefghi".as_slice()));
+        assert_eq!(
+            done.map(|(body, _)| body).as_deref(),
+            Some(b"abcdefghi".as_slice())
+        );
     }
 
     /// Nothing promises chunks arrive in order, so the index decides where a
@@ -955,7 +1230,10 @@ mod tests {
         assert!(assembler.accept(chunk(1, 0, 3, b"abc")).unwrap().is_none());
         let done = assembler.accept(chunk(1, 1, 3, b"def")).unwrap();
 
-        assert_eq!(done.as_deref(), Some(b"abcdefghi".as_slice()));
+        assert_eq!(
+            done.map(|(body, _)| body).as_deref(),
+            Some(b"abcdefghi".as_slice())
+        );
     }
 
     /// The whole point of the transfer id: two clients pushing at once must
@@ -969,8 +1247,14 @@ mod tests {
         let first = assembler.accept(chunk(1, 1, 2, b"bb")).unwrap();
         let second = assembler.accept(chunk(2, 1, 2, b"yy")).unwrap();
 
-        assert_eq!(first.as_deref(), Some(b"aabb".as_slice()));
-        assert_eq!(second.as_deref(), Some(b"xxyy".as_slice()));
+        assert_eq!(
+            first.map(|(body, _)| body).as_deref(),
+            Some(b"aabb".as_slice())
+        );
+        assert_eq!(
+            second.map(|(body, _)| body).as_deref(),
+            Some(b"xxyy".as_slice())
+        );
     }
 
     #[test]
@@ -1007,6 +1291,341 @@ mod tests {
 
         assert!(result.is_err(), "should refuse past the ceiling");
         assert!(assembler.transfers.is_empty(), "and drop what it buffered");
+    }
+
+    /// Header byte counts for every canonical datapod, measured with empty
+    /// payload sections. Out-of-process adapters pack these headers by hand
+    /// (see `examples/python_adapter/adapter.py`), and datapod identity is
+    /// size+alignment hashed, so a field added here silently rejects every
+    /// such adapter until it is updated. Keep this in step with the schema
+    /// table in `docs/WRITING_ADAPTER.md`.
+    #[test]
+    fn canonical_header_sizes_are_frozen() {
+        let sizes = [
+            (
+                "ares.v1.register",
+                DatapodMsg::from_datapod(&Register {
+                    alive: 0,
+                    has_alive: 0,
+                    _pad: [0; 7],
+                    robot: Vec::new(),
+                    key: Vec::new(),
+                })
+                .wire()
+                .len(),
+                32,
+            ),
+            (
+                "ares.v1.heartbeat",
+                DatapodMsg::from_datapod(&Heartbeat {
+                    zone: 0,
+                    node: 0,
+                    edge: 0,
+                    pos_a: 0.0,
+                    pos_b: 0.0,
+                    pos_c: 0.0,
+                    yaw: 0.0,
+                    has_zone: 0,
+                    has_node: 0,
+                    has_edge: 0,
+                    pos_frame: 0,
+                    has_yaw: 0,
+                    _pad: [0; 3],
+                    robot: Vec::new(),
+                    key: Vec::new(),
+                })
+                .wire()
+                .len(),
+                80,
+            ),
+            (
+                "ares.v1.claim",
+                DatapodMsg::from_datapod(&Claim {
+                    lease_time: 0,
+                    access_mode: 0,
+                    has_access_mode: 0,
+                    has_lease_time: 0,
+                    _pad: [0; 5],
+                    robot: Vec::new(),
+                    key: Vec::new(),
+                    id: Vec::new(),
+                })
+                .wire()
+                .len(),
+                40,
+            ),
+            (
+                "ares.v1.claim.route",
+                DatapodMsg::from_datapod(&ClaimRoute {
+                    lease_time: 0,
+                    access_mode: 0,
+                    has_access_mode: 0,
+                    has_lease_time: 0,
+                    _pad: [0; 5],
+                    robot: Vec::new(),
+                    key: Vec::new(),
+                    node: Vec::new(),
+                    edge: Vec::new(),
+                })
+                .wire()
+                .len(),
+                48,
+            ),
+            (
+                "ares.v1.release",
+                DatapodMsg::from_datapod(&Release {
+                    id: 0,
+                    robot: Vec::new(),
+                    key: Vec::new(),
+                })
+                .wire()
+                .len(),
+                24,
+            ),
+            (
+                "ares.v1.workspace.chunk",
+                DatapodMsg::from_datapod(&WorkspaceChunk {
+                    transfer: 0,
+                    index: 0,
+                    total: 0,
+                    body: Vec::new(),
+                    key: Vec::new(),
+                })
+                .wire()
+                .len(),
+                32,
+            ),
+            (
+                "ares.v1.reply",
+                DatapodMsg::from_datapod(&Reply {
+                    blocked: 0,
+                    decision: 0,
+                    reason: 0,
+                    has_blocked: 0,
+                    _pad: [0; 5],
+                })
+                .wire()
+                .len(),
+                16,
+            ),
+        ];
+        for (name, actual, expected) in sizes {
+            assert_eq!(
+                actual, expected,
+                "{name} header is {actual} bytes, not {expected}; \
+                 update examples/python_adapter/adapter.py and docs/WRITING_ADAPTER.md"
+            );
+        }
+    }
+
+    /// Exact encoded bytes and type hash of one fully-populated instance of
+    /// every canonical datapod.
+    ///
+    /// `canonical_header_sizes_are_frozen` catches a field being *added*. It
+    /// cannot catch two same-size fields being *swapped*: size and alignment
+    /// are unchanged, so the type hash still matches and every message decodes
+    /// silently into the wrong fields — a claim on the wrong zone, which is
+    /// worse than a rejection. These bytes catch it.
+    ///
+    /// Regenerate ONLY alongside a deliberate schema revision, with a new
+    /// canonical name per the compatibility rules in
+    /// `docs/WRITING_ADAPTER.md`:
+    ///
+    /// ```text
+    /// cargo test --features peerbus --lib print_golden_wire_bytes -- --ignored --nocapture
+    /// ```
+    #[test]
+    fn canonical_wire_bytes_are_frozen() {
+        let expected: &[(&str, u64, &str)] = &[
+            (
+                "ares.v1.register",
+                4489651317633298084,
+                "8877665544332211010000000000000000000000070000000700000002000000726f626f742d376b31",
+            ),
+            (
+                "ares.v1.heartbeat",
+                11929958203526894691,
+                "fdffffffffffffff080706050403020118171615141312110000000000204a400000000000001640000000000000f43f000000000000e8bf010100010100000000000000070000000700000002000000726f626f742d376b31",
+            ),
+            (
+                "ares.v1.claim",
+                8721409874987841883,
+                "1e000000000000000201010000000000000000000700000007000000020000000900000010000000726f626f742d376b312a000000000000002b00000000000000",
+            ),
+            (
+                "ares.v1.claim.route",
+                10315010630888837044,
+                "1e0000000000000001010100000000000000000007000000070000000200000009000000100000001900000008000000726f626f742d376b31e903000000000000ea03000000000000d107000000000000",
+            ),
+            (
+                "ares.v1.release",
+                12275913315249212202,
+                "282726252423222100000000070000000700000002000000726f626f742d376b31",
+            ),
+            (
+                "ares.v1.reply",
+                15837292231368537539,
+                "2b000000000000000002010000000000",
+            ),
+            (
+                "ares.v1.route.plan",
+                12486718087882156207,
+                "0100000000000000000000000400000004000000040000003130303131303033",
+            ),
+            (
+                "ares.v1.resource.get",
+                7228468034526520903,
+                "0000000003000000323035",
+            ),
+            (
+                "ares.v1.workspace.chunk",
+                16336082357629830881,
+                "38373635343332310100000003000000000000000200000002000000050000007b7d61646d696e",
+            ),
+        ];
+
+        let actual = golden_fixtures();
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "a canonical datapod was added or removed without updating the goldens"
+        );
+        for ((name, message), (expected_name, expected_hash, expected_hex)) in
+            actual.iter().zip(expected)
+        {
+            assert_eq!(name, expected_name, "golden fixtures are out of order");
+            assert_eq!(
+                message.type_hash(),
+                *expected_hash,
+                "{name}: type identity changed — adapters compiled against the old \
+                 schema will have their requests rejected"
+            );
+            let hex: String = message.wire().iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(
+                hex, *expected_hex,
+                "{name}: encoding changed. If two same-size fields were swapped the \
+                 type hash would NOT have caught it and every adapter would decode \
+                 into the wrong fields. Give the revised schema a new canonical name."
+            );
+        }
+    }
+
+    /// Print goldens for `canonical_wire_bytes_are_frozen`. Run with
+    /// `--ignored --nocapture` after a deliberate schema change.
+    #[test]
+    #[ignore]
+    fn print_golden_wire_bytes() {
+        for (name, message) in golden_fixtures() {
+            let hex: String = message.wire().iter().map(|b| format!("{b:02x}")).collect();
+            println!("(\"{name}\", {}, \"{hex}\"),", message.type_hash());
+        }
+    }
+
+    /// One fully-populated instance of every canonical datapod, with
+    /// distinctive field values so a reorder shows up as different bytes.
+    fn golden_fixtures() -> Vec<(&'static str, DatapodMsg)> {
+        vec![
+            (
+                "ares.v1.register",
+                DatapodMsg::from_datapod(&Register {
+                    alive: 0x1122_3344_5566_7788,
+                    has_alive: 1,
+                    _pad: [0; 7],
+                    robot: b"robot-7".to_vec(),
+                    key: b"k1".to_vec(),
+                }),
+            ),
+            (
+                "ares.v1.heartbeat",
+                DatapodMsg::from_datapod(&Heartbeat {
+                    zone: -3,
+                    node: 0x0102_0304_0506_0708,
+                    edge: 0x1112_1314_1516_1718,
+                    pos_a: 52.25,
+                    pos_b: 5.5,
+                    pos_c: 1.25,
+                    yaw: -0.75,
+                    has_zone: 1,
+                    has_node: 1,
+                    has_edge: 0,
+                    pos_frame: POS_FRAME_GLOBAL,
+                    has_yaw: 1,
+                    _pad: [0; 3],
+                    robot: b"robot-7".to_vec(),
+                    key: b"k1".to_vec(),
+                }),
+            ),
+            (
+                "ares.v1.claim",
+                DatapodMsg::from_datapod(&Claim {
+                    lease_time: 30,
+                    access_mode: 2,
+                    has_access_mode: 1,
+                    has_lease_time: 1,
+                    _pad: [0; 5],
+                    robot: b"robot-7".to_vec(),
+                    key: b"k1".to_vec(),
+                    id: vec![42, 43],
+                }),
+            ),
+            (
+                "ares.v1.claim.route",
+                DatapodMsg::from_datapod(&ClaimRoute {
+                    lease_time: 30,
+                    access_mode: 1,
+                    has_access_mode: 1,
+                    has_lease_time: 1,
+                    _pad: [0; 5],
+                    robot: b"robot-7".to_vec(),
+                    key: b"k1".to_vec(),
+                    node: vec![1001, 1002],
+                    edge: vec![2001],
+                }),
+            ),
+            (
+                "ares.v1.release",
+                DatapodMsg::from_datapod(&Release {
+                    id: 0x2122_2324_2526_2728,
+                    robot: b"robot-7".to_vec(),
+                    key: b"k1".to_vec(),
+                }),
+            ),
+            (
+                "ares.v1.reply",
+                DatapodMsg::from_datapod(&Reply {
+                    blocked: 43,
+                    decision: 0,
+                    reason: 2,
+                    has_blocked: 1,
+                    _pad: [0; 5],
+                }),
+            ),
+            (
+                "ares.v1.route.plan",
+                DatapodMsg::from_datapod(&RoutePlanRequest {
+                    use_penalties: 1,
+                    _pad: [0; 7],
+                    start: b"1001".to_vec(),
+                    goal: b"1003".to_vec(),
+                }),
+            ),
+            (
+                "ares.v1.resource.get",
+                DatapodMsg::from_datapod(&ResourceGet {
+                    id: b"205".to_vec(),
+                }),
+            ),
+            (
+                "ares.v1.workspace.chunk",
+                DatapodMsg::from_datapod(&WorkspaceChunk {
+                    transfer: 0x3132_3334_3536_3738,
+                    index: 1,
+                    total: 3,
+                    body: b"{}".to_vec(),
+                    key: b"admin".to_vec(),
+                }),
+            ),
+        ]
     }
 
     fn unique_identity() -> String {

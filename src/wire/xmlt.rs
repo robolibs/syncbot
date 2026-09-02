@@ -1,4 +1,9 @@
 //! Standalone HTTP/XML adapter for the canonical ARES peerbus service.
+//!
+//! There is no `POST /workspace` here, unlike the JSON adapter: a pushed
+//! workspace is a `zoneout::WorkspaceJson` document forwarded to the core
+//! byte-for-byte, and it has no XML form to translate. An XML client that
+//! needs to replace the map pushes it to the JSON adapter.
 
 use axum::Router;
 use axum::body::Bytes;
@@ -65,6 +70,7 @@ pub fn router(client: crate::wire::peerbus::Client) -> Router {
     Router::new()
         .route("/ares/v1/health", get(health))
         .route("/ares/v1/fleet/snapshot", get(fleet_snapshot))
+        .route("/ares/v1/routes/plan", post(plan_route))
         .route("/ares/v1/zones", get(list_zones))
         .route("/ares/v1/zones/{id}", get(zone))
         .route("/ares/v1/robots", post(register))
@@ -73,20 +79,30 @@ pub fn router(client: crate::wire::peerbus::Client) -> Router {
         .route("/ares/v1/claims/zone", post(claim_zone))
         .route("/ares/v1/claims/node", post(claim_node))
         .route("/ares/v1/claims/edge", post(claim_edge))
+        .route("/ares/v1/claims/route", post(claim_route))
         .route("/ares/v1/leases/release/zone", post(release_zone))
         .route("/ares/v1/leases/release/node", post(release_node))
         .route("/ares/v1/leases/release/edge", post(release_edge))
         .with_state(client)
 }
 
-async fn health() -> Xml<crate::wire::Health> {
-    Xml(crate::wire::health())
+async fn health(
+    State(client): State<crate::wire::peerbus::Client>,
+) -> XmlResult<crate::wire::Health> {
+    result(client.health())
 }
 
 async fn fleet_snapshot(
     State(client): State<crate::wire::peerbus::Client>,
 ) -> XmlResult<crate::wire::FleetSnapshot> {
     result(client.fleet_snapshot())
+}
+
+async fn plan_route(
+    State(client): State<crate::wire::peerbus::Client>,
+    Xml(req): Xml<crate::wire::FlatPlanRoute>,
+) -> XmlResult<crate::wire::PlanRouteResponse> {
+    result(client.plan_route(&req.start_node_id, &req.goal_node_id, req.use_penalties))
 }
 
 async fn list_zones(
@@ -147,6 +163,20 @@ macro_rules! claim_handler {
 claim_handler!(claim_zone, ClaimTargetKind::Zone);
 claim_handler!(claim_node, ClaimTargetKind::Node);
 claim_handler!(claim_edge, ClaimTargetKind::Edge);
+
+async fn claim_route(
+    State(client): State<crate::wire::peerbus::Client>,
+    Xml(req): Xml<crate::wire::FlatClaimRoute>,
+) -> XmlResult<crate::wire::FlatReply> {
+    result(client.claim_route(
+        &req.key,
+        &req.robot,
+        &req.node,
+        &req.edge,
+        req.access_mode,
+        req.lease_time,
+    ))
+}
 
 macro_rules! release_handler {
     ($name:ident, $kind:expr) => {

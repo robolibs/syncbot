@@ -110,13 +110,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         None => Coordinator::with_index(Arc::clone(&idx)),
     };
-    // OPT-IN admin auth: only when `SYNCBOT_ADMIN_AUTH` is truthy. Unset/other →
-    // admin endpoints stay OPEN, behaviour identical to before.
-    let admin_auth = env_truthy("SYNCBOT_ADMIN_AUTH");
-    if admin_auth {
-        info!("admin auth ENABLED: mutation endpoints require the owning robot's key");
+    // OPT-IN workspace replacement: only a client holding this operator key
+    // may redraw the map. Unset, POST /ares/v1/workspace is refused outright
+    // rather than left open — a robot key must never grant map control.
+    let admin_key = std::env::var("SYNCBOT_ADMIN_KEY")
+        .ok()
+        .filter(|key| !key.is_empty());
+    let allow_default_key = std::env::var("SYNCBOT_ALLOW_DEFAULT_KEY")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let state = ServeState::new(coord)
+        .with_default_key_allowed(allow_default_key)
+        .with_admin_key(admin_key.as_deref())
+        .map_err(|_| {
+            std::io::Error::other(
+                "SYNCBOT_ADMIN_KEY is not a valid key (an integer, or did:pass=...)",
+            )
+        })?;
+    if admin_key.is_some() {
+        info!("workspace replacement ENABLED for clients presenting the operator key");
+    } else {
+        info!("workspace replacement disabled; set SYNCBOT_ADMIN_KEY to enable it");
     }
-    let state = ServeState::new(coord).with_admin_auth(admin_auth);
     // peerbus owns an internal Tokio runtime. Construct it on a plain thread,
     // outside this example's async runtime, to avoid nested-runtime panics.
     let peerbus_state = state.clone();
@@ -182,17 +197,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     Ok(())
-}
-
-/// Truthy env flag: `1`/`true`/`yes` (case-insensitive). Anything else, or
-/// unset, is false.
-fn env_truthy(name: &str) -> bool {
-    std::env::var(name)
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "yes"
-        })
-        .unwrap_or(false)
 }
 
 fn init_logging() {

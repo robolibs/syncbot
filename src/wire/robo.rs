@@ -45,8 +45,8 @@ pub async fn serve(
     let mut tasks = Vec::new();
 
     tasks.push(
-        spawn_queryable(session, "health", client.clone(), |_client, _| {
-            Ok(crate::wire::health())
+        spawn_queryable(session, "health", client.clone(), |client, _| {
+            client.health()
         })
         .await?,
     );
@@ -60,6 +60,13 @@ pub async fn serve(
     tasks.push(
         spawn_queryable(session, "fleet/snapshot", client.clone(), |client, _| {
             client.fleet_snapshot()
+        })
+        .await?,
+    );
+    tasks.push(
+        spawn_queryable(session, "routes/plan", client.clone(), |client, payload| {
+            let req: crate::wire::FlatPlanRoute = decode_required(payload)?;
+            client.plan_route(&req.start_node_id, &req.goal_node_id, req.use_penalties)
         })
         .await?,
     );
@@ -119,6 +126,26 @@ pub async fn serve(
             .await?,
         );
     }
+
+    tasks.push(
+        spawn_queryable(
+            session,
+            "claims/route",
+            client.clone(),
+            |client, payload| {
+                let req: crate::wire::FlatClaimRoute = decode_required(payload)?;
+                client.claim_route(
+                    &req.key,
+                    &req.robot,
+                    &req.node,
+                    &req.edge,
+                    req.access_mode,
+                    req.lease_time,
+                )
+            },
+        )
+        .await?,
+    );
 
     for (path, kind) in [
         ("leases/release/zone", ClaimTargetKind::Zone),

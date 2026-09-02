@@ -29,6 +29,12 @@
 //! - ROS2 type: `ares_interfaces/srv/Json`
 //! - Zenoh keys: `ares/v1/...`
 //!
+//! Optional state persistence: set `SYNCBOT_STATE` to a file path and the
+//! server restores from it on boot, flushes every 2s, and flushes again on
+//! shutdown. Unset, the server is fully in-memory and no file is touched.
+//! The file holds every robot's auth key in plaintext, so it is created `0600`
+//! and should be treated like a private key.
+//!
 //! Optional Zenoh environment:
 //!
 //! ```sh
@@ -194,13 +200,35 @@ async fn main() -> ExitCode {
         },
         None => new_coordinator(idx.clone()),
     };
-    // OPT-IN admin auth: only when `SYNCBOT_ADMIN_AUTH` is truthy. Unset/other →
-    // admin endpoints stay OPEN, behaviour identical to before.
-    let admin_auth = env_truthy("SYNCBOT_ADMIN_AUTH");
-    if admin_auth {
-        info!("admin auth ENABLED: mutation endpoints require the owning robot's key");
+    // OPT-IN workspace replacement: only a client holding this operator key
+    // may redraw the map. Unset, POST /ares/v1/workspace is refused outright
+    // rather than left open — a robot key must never grant map control.
+    let admin_key = std::env::var("SYNCBOT_ADMIN_KEY")
+        .ok()
+        .filter(|key| !key.is_empty());
+    // OPT-IN keyless registration: every robot that omits a key shares one
+    // password, so anyone can act as any of them. Off unless asked for.
+    let allow_default_key = std::env::var("SYNCBOT_ALLOW_DEFAULT_KEY")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if allow_default_key {
+        warn!("keyless registration ENABLED: robots without a key share one password");
     }
-    let state = ServeState::new(coord).with_admin_auth(admin_auth);
+    let state = match ServeState::new(coord)
+        .with_default_key_allowed(allow_default_key)
+        .with_admin_key(admin_key.as_deref())
+    {
+        Ok(state) => state,
+        Err(_) => {
+            error!("SYNCBOT_ADMIN_KEY is not a valid key (an integer, or did:pass=...)");
+            return ExitCode::FAILURE;
+        }
+    };
+    if admin_key.is_some() {
+        info!("workspace replacement ENABLED for clients presenting the operator key");
+    } else {
+        info!("workspace replacement disabled; set SYNCBOT_ADMIN_KEY to enable it");
+    }
     // peerbus owns an internal Tokio runtime. Construct it on a plain thread,
     // outside this example's async runtime, to avoid nested-runtime panics.
     let peerbus_state = state.clone();
@@ -387,17 +415,6 @@ fn json_array(values: &[String]) -> String {
         .map(|value| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
         .collect::<Vec<_>>();
     format!("[{}]", quoted.join(","))
-}
-
-/// Truthy env flag: `1`/`true`/`yes` (case-insensitive). Anything else, or
-/// unset, is false.
-fn env_truthy(name: &str) -> bool {
-    std::env::var(name)
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "yes"
-        })
-        .unwrap_or(false)
 }
 
 fn init_logging() {

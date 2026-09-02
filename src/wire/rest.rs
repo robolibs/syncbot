@@ -14,9 +14,14 @@ use serde::de::DeserializeOwned;
 use tower_http::trace::TraceLayer;
 
 use crate::claim::ClaimTargetKind;
-use crate::wire::{ApiError, FlatClaim, FlatHeartbeat, FlatRegister, FlatRelease};
+use crate::wire::{
+    ApiError, FlatClaim, FlatClaimRoute, FlatHeartbeat, FlatPlanRoute, FlatRegister, FlatRelease,
+};
 
 pub const REST_PREFIX: &str = "/ares/v1";
+
+/// Header carrying the operator key on a workspace replacement.
+pub const ADMIN_KEY_HEADER: &str = "x-ares-admin-key";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WireFormat {
@@ -39,6 +44,7 @@ pub fn router(client: crate::wire::peerbus::Client) -> Router {
                 MAX_WORKSPACE_BODY_BYTES,
             )),
         )
+        .route("/ares/v1/routes/plan", post(plan_route))
         .route("/ares/v1/zones", get(list_zones))
         .route("/ares/v1/zones/{id}", get(zone))
         .route("/ares/v1/robots", post(register))
@@ -47,6 +53,7 @@ pub fn router(client: crate::wire::peerbus::Client) -> Router {
         .route("/ares/v1/claims/zone", post(claim_zone))
         .route("/ares/v1/claims/node", post(claim_node))
         .route("/ares/v1/claims/edge", post(claim_edge))
+        .route("/ares/v1/claims/route", post(claim_route))
         .route("/ares/v1/leases/release/zone", post(release_zone))
         .route("/ares/v1/leases/release/node", post(release_node))
         .route("/ares/v1/leases/release/edge", post(release_edge))
@@ -72,12 +79,41 @@ async fn fleet_snapshot(
 /// passed through verbatim — the core owns parsing and validation, so this
 /// adapter stays a transport and the same bytes mean the same thing on every
 /// transport.
+///
+/// The operator key rides in `x-ares-admin-key` rather than the body, because
+/// the body is the caller's document and must not need rewriting to carry
+/// ours. It is an *operator* key: a robot key authorises claiming one zone,
+/// never redrawing the map every robot is claiming against.
 async fn set_workspace(
     headers: HeaderMap,
     State(client): State<crate::wire::peerbus::Client>,
     body: Bytes,
 ) -> Response {
-    respond(preferred_format(&headers), client.set_workspace(&body))
+    let key = headers
+        .get(ADMIN_KEY_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    respond(
+        preferred_format(&headers),
+        client.set_workspace(&body, &key),
+    )
+}
+
+async fn plan_route(
+    headers: HeaderMap,
+    State(client): State<crate::wire::peerbus::Client>,
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let req = match parse_body::<FlatPlanRoute>(format, &body) {
+        Ok(req) => req,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(
+        preferred_format(&headers),
+        client.plan_route(&req.start_node_id, &req.goal_node_id, req.use_penalties),
+    )
 }
 
 async fn list_zones(
@@ -164,6 +200,29 @@ macro_rules! claim_handler {
 claim_handler!(claim_zone, ClaimTargetKind::Zone);
 claim_handler!(claim_node, ClaimTargetKind::Node);
 claim_handler!(claim_edge, ClaimTargetKind::Edge);
+
+async fn claim_route(
+    headers: HeaderMap,
+    State(client): State<crate::wire::peerbus::Client>,
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let req = match parse_body::<FlatClaimRoute>(format, &body) {
+        Ok(req) => req,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(
+        format,
+        client.claim_route(
+            &req.key,
+            &req.robot,
+            &req.node,
+            &req.edge,
+            req.access_mode,
+            req.lease_time,
+        ),
+    )
+}
 
 macro_rules! release_handler {
     ($name:ident, $kind:expr) => {

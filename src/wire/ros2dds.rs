@@ -41,8 +41,8 @@ pub async fn serve_ares_json_services(
     let mut tasks = Vec::new();
 
     tasks.push(
-        spawn_json_service(session, "ares/v1/health", client.clone(), |_client, _| {
-            to_json(crate::wire::health())
+        spawn_json_service(session, "ares/v1/health", client.clone(), |client, _| {
+            to_json(client.health()?)
         })
         .await?,
     );
@@ -64,6 +64,22 @@ pub async fn serve_ares_json_services(
             "ares/v1/fleet/snapshot",
             client.clone(),
             |client, _| to_json(client.fleet_snapshot()?),
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/routes/plan",
+            client.clone(),
+            |client, raw| {
+                let req: crate::wire::FlatPlanRoute = from_json(&raw)?;
+                to_json(client.plan_route(
+                    &req.start_node_id,
+                    &req.goal_node_id,
+                    req.use_penalties,
+                )?)
+            },
         )
         .await?,
     );
@@ -123,6 +139,26 @@ pub async fn serve_ares_json_services(
             .await?,
         );
     }
+
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/claims/route",
+            client.clone(),
+            |client, raw| {
+                let req: crate::wire::FlatClaimRoute = from_json(&raw)?;
+                to_json(client.claim_route(
+                    &req.key,
+                    &req.robot,
+                    &req.node,
+                    &req.edge,
+                    req.access_mode,
+                    req.lease_time,
+                )?)
+            },
+        )
+        .await?,
+    );
 
     for (key, kind) in [
         ("ares/v1/leases/release/zone", ClaimTargetKind::Zone),
@@ -230,7 +266,7 @@ pub fn encode_json_response(success: bool, response: &str) -> Vec<u8> {
 }
 
 fn pad_to_4(out: &mut Vec<u8>) {
-    while out.len() % 4 != 0 {
+    while !out.len().is_multiple_of(4) {
         out.push(0);
     }
 }
