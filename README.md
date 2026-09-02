@@ -623,7 +623,7 @@ src/
 
 ## See also
 
-- [`PLAN.md`](./PLAN.md) — design rationale and conversion roadmap
+- [`docs/WRITING_ADAPTER.md`](./docs/WRITING_ADAPTER.md) — the frozen wire contract
 - [`CHANGELOG.md`](./CHANGELOG.md) — release notes
 - C++ source: [`../../robolibs_cpp/syncbot`](../../robolibs_cpp/syncbot)
 - Sibling Rust port: [`../zoneout`](../zoneout)

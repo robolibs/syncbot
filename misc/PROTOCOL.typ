@@ -32,7 +32,7 @@
   #v(0.4em)
   #text(size: 11pt, fill: muted)[How a robot connects to ARES: register, heartbeat, claim, release]
   #v(1em)
-  #tag[REST/XML] #h(0.5em) #tag[ROS2DDS]
+  #tag[REST/JSON] #h(0.5em) #tag[REST/XML] #h(0.5em) #tag[ROS2DDS]
 ]
 
 #v(1em)
@@ -42,9 +42,9 @@
   and gets back a tiny *decision + reason*. That is the whole protocol — this
   page is all most integrations need.
 
-  REST/XML and ROS2DDS are shown here. JSON, native Zenoh, route planning,
-  scheduling, snapshots and the fine-level "tier-2" calls live in
-  *`PROTOCOL-advanced.typ`*.
+  REST/JSON, REST/XML and ROS2DDS are shown here — the same four calls in three
+  encodings. Native Zenoh, route planning, scheduling, snapshots and the
+  fine-level "tier-2" calls live in *`PROTOCOL-advanced.typ`*.
 ]
 
 = Connect
@@ -53,6 +53,7 @@
   columns: (30mm, 1fr),
   inset: 6pt, stroke: rgb("#e2e8f0"),
   table.header([Transport], [Address]),
+  [REST / JSON], [`http://<host>:8080/ares/v1/...` — the default; send `application/json` (or nothing at all).],
   [REST / XML], [`http://<host>:8080/ares/v1/...` — send/accept `application/xml`.],
   [ROS2DDS], [ROS2 service `/ares/v1/...`, type `ares_interfaces/srv/Json` (a JSON string in, a JSON string out), via `zenoh-bridge-ros2dds`.],
 )
@@ -64,9 +65,12 @@ curl http://<host>:8080/ares/v1/health
 # {"status":"ok","version":"0.1.0"}
 ```
 
+That is already JSON — the read endpoints answer JSON unless you ask for XML
+with `Accept: application/xml`.
+
 = ROS2: build the service type once
 
-*REST/XML users can skip this section.* The ROS2 side reaches every call through
+*REST users — JSON or XML — can skip this section.* The ROS2 side reaches every call through
 one generic service type, `ares_interfaces/srv/Json` (a JSON string in, a JSON
 string out), relayed by `zenoh-bridge-ros2dds`. Build that interface package
 once so `ros2 service call` knows the type. Lay out three files:
@@ -158,13 +162,17 @@ Every call answers with the same two fields:
 - `reason` — `0` = ok and `1` = mismatched key on *every* call; other values are
   listed per call below.
 
-In XML the reply root is always `<reply>`. (On input the request's outer tag
-name is ignored — only the inner fields matter.)
+In JSON the reply is a flat object: `{"decision":1,"reason":0}`, plus
+`"blocked"` on a denied claim. In XML the reply root is always `<reply>`. (On
+XML input the request's outer tag name is ignored — only the inner fields
+matter.)
 
 = The four calls
 
-Each call shows the XML body and the equivalent ROS2 service call. The robot id
-may be an *integer or a UUID string*.
+Each call shows the JSON body, the XML body, and the equivalent ROS2 service
+call — all three are the same request in different clothes. The robot id may be
+an *integer or a UUID string*; in JSON it is written *quoted* either way (see
+the note at the end).
 
 == Register
 
@@ -172,6 +180,12 @@ Bind a robot id to a key. Do this once. Optional `<alive>` is the heartbeat
 interval in seconds (default 2); if no heartbeat arrives for `2×` that, the
 server marks the robot inactive *and auto-releases all its claims* (so a crashed
 robot never leaves a zone stuck).
+
+```json
+POST /ares/v1/robots
+  {"robot":"7","key":"1234","alive":2}
+  {"decision":1,"reason":0}
+```
 
 ```xml
 POST /ares/v1/robots
@@ -196,6 +210,12 @@ ros2 service call /ares/v1/robots/register ares_interfaces/srv/Json \
 Liveness + where the robot is. The reply is just an ack; the server timestamps
 it. Send one of `zone` / `node` / `edge`. Use `zone = -1` when the robot holds
 no zone and its location is unknown.
+
+```json
+POST /ares/v1/robots/7/heartbeat
+  {"key":"1234","zone":42}                    // or "zone":-1 if unknown
+  {"decision":1,"reason":0}
+```
 
 ```xml
 POST /ares/v1/robots/7/heartbeat
@@ -222,9 +242,13 @@ that stopped it. Two optional fields:
 
 #table(columns: (24mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
   table.header([Field], [Meaning]),
-  [`<access_mode>`], [`0` = unspecified (→ exclusive), `1` = exclusive (default), `2` = shared; `3`+ reserved and rejected.],
-  [`<lease_time>`], [seconds the claim should hold: `0` (default) = unlimited, `X` = X seconds.],
+  [`access_mode`], [`0` = unspecified (→ exclusive), `1` = exclusive (default), `2` = shared; `3`+ reserved and rejected.],
+  [`lease_time`], [seconds the claim should hold: `0` (default) = unlimited, `X` = X seconds.],
 )
+
+*How several ids are sent.* JSON uses an array — `"id":[42]` for one,
+`"id":[42,43]` for several. XML repeats the element — `<id>42</id><id>43</id>`.
+Release takes a *single* id in both, never an array.
 
 *Shared zones.* On a zone whose capacity is greater than 1, several robots may
 hold it at once with `access_mode=2` (shared), up to that capacity; once full, a
@@ -237,6 +261,16 @@ not enforced yet: only `0` (unlimited) is currently effective, and a non-zero
 value is accepted but the claim is *not* auto-expired on a timer today. The
 expiry that does work is auto-release when a robot stops heartbeating (after
 `2×` its `alive` interval).
+
+```json
+POST /ares/v1/claims/zone
+  {"key":"1234","robot":"7","id":[42]}
+  {"decision":1,"reason":0}
+
+  // several zones, atomic, exclusive, 30-second lease — id is an ARRAY even for one
+  {"key":"1234","robot":"7","id":[42,43],"access_mode":1,"lease_time":30}
+  {"decision":0,"reason":2,"blocked":43}
+```
 
 ```xml
 POST /ares/v1/claims/zone
@@ -274,6 +308,12 @@ node/edge within that zone conflict with each other.
 
 Give back what this robot holds on a resource.
 
+```json
+POST /ares/v1/leases/release/zone
+  {"key":"1234","robot":"7","id":42}
+  {"decision":1,"reason":0}
+```
+
 ```xml
 POST /ares/v1/leases/release/zone
   <rel><key>1234</key><robot>7</robot><id>42</id></rel>
@@ -296,6 +336,17 @@ ros2 service call /ares/v1/leases/release/zone ares_interfaces/srv/Json \
 
 ```sh
 B=http://<host>:8080/ares/v1
+json() { curl -s -X POST "$B$1" -H 'content-type: application/json' -d "$2"; echo; }
+
+json /robots             '{"robot":"7","key":"1234"}'
+json /claims/zone        '{"key":"1234","robot":"7","id":[42]}'
+json /robots/7/heartbeat '{"key":"1234","zone":42}'
+json /leases/release/zone '{"key":"1234","robot":"7","id":42}'
+```
+
+The same run over XML — register, claim, heartbeat, release:
+
+```sh
 xml() { curl -s -X POST "$B$1" -H 'content-type: application/xml' -d "$2"; echo; }
 
 xml /robots            '<reg><robot>7</robot><key>1234</key></reg>'
@@ -304,7 +355,7 @@ xml /robots/7/heartbeat '<hb><key>1234</key><zone>42</zone></hb>'
 xml /leases/release/zone '<rel><key>1234</key><robot>7</robot><id>42</id></rel>'
 ```
 
-The same run over ROS2 — register, claim, heartbeat, release:
+And over ROS2:
 
 ```sh
 J=ares_interfaces/srv/Json
@@ -316,7 +367,19 @@ ros2 service call /ares/v1/leases/release/zone $J "{request: '{\"key\":\"1234\",
 ```
 
 #block(fill: rgb("#fffbeb"), stroke: warn.lighten(20%), radius: 5pt, inset: 8pt)[
-  *JSON note.* On JSON the claim `id` is an array — `{"id":[42]}` for one,
-  `{"id":[42,43]}` for several. (XML just repeats `<id>`.) Numeric `robot`/`key`
-  may be quoted strings. See `PROTOCOL-advanced.typ` for the JSON transport.
+  *Pick one and stay with it — or don't.* The three encodings are the same
+  protocol: the same ids, the same keys, the same `decision`/`reason`. A fleet
+  can mix them freely, one format per client, and a zone claimed over JSON
+  blocks a robot asking over XML or ROS2 exactly as if they shared a transport.
+
+  Two shape differences to remember. First, the claim `id` is an *array* in
+  JSON (`{"id":[42]}` even for one) and a *repeated element* in XML
+  (`<id>42</id>`), while release takes a single id in both.
+
+  Second, *quote `robot` and `key` in JSON* — `{"robot":"7","key":"1234"}`, not
+  `{"robot":7,"key":1234}`. Those two fields accept an integer *or* a UUID, so
+  they are read as text on every transport, and a bare number is rejected with
+  `invalid type: integer ... expected a string or integer scalar`. Every other
+  numeric field — `id`, `zone`, `node`, `edge`, `alive`, `access_mode`,
+  `lease_time` — is a plain JSON number.
 ]
