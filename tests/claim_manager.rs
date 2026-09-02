@@ -162,7 +162,11 @@ fn shared_request_admits_until_capacity() {
     let third = make(3, 3);
     let eval = mgr.evaluate_request(&third);
     assert_eq!(eval.decision, ClaimDecision::Deny);
-    assert!(eval.reason.contains("shared zone capacity exceeded"));
+    assert!(
+        eval.reason.contains("capacity exceeded"),
+        "got: {}",
+        eval.reason
+    );
 }
 
 #[test]
@@ -275,4 +279,53 @@ fn next_request_id_unique_and_increasing_normal_case() {
     let b = mgr.next_request_id();
     let c = mgr.next_request_id();
     assert!(a.raw() < b.raw() && b.raw() < c.raw());
+}
+
+// ---------------------------------------------------------------------------
+// Self-claims and capacity accounting (PLAN Milestone 1.1).
+// ---------------------------------------------------------------------------
+
+/// Not competing with yourself must not mean not counting yourself: a robot
+/// holding one slot in a capacity-2 zone and re-claiming must still occupy
+/// exactly one, leaving room for exactly one other robot.
+#[test]
+fn a_reclaim_occupies_one_capacity_slot_not_two() {
+    let (ws, _, zone) = make_workspace_with_zones();
+    let index = std::sync::Arc::new(WorkspaceIndex::new(std::sync::Arc::new(ws)));
+    let mut manager = ClaimManager::with_index(index);
+
+    let mut grant = |claim: u64, robot: u64| {
+        let request = ClaimRequest {
+            id: ClaimId::new(claim),
+            robot_id: RobotId::new(robot),
+            access_mode: ClaimAccessMode::Shared,
+            targets: vec![ClaimTarget {
+                kind: ClaimTargetKind::Zone,
+                resource_id: zone,
+            }],
+            ..ClaimRequest::default()
+        };
+        let decision = manager.evaluate_request(&request).decision;
+        if decision == ClaimDecision::Grant {
+            manager.upsert_request_for_robot(request);
+        }
+        decision
+    };
+
+    assert_eq!(grant(1, 7), ClaimDecision::Grant, "first occupant");
+    assert_eq!(
+        grant(2, 7),
+        ClaimDecision::Grant,
+        "robot 7 re-claiming its own slot"
+    );
+    assert_eq!(
+        grant(3, 8),
+        ClaimDecision::Grant,
+        "robot 7 must still hold only one of the two slots"
+    );
+    assert_eq!(
+        grant(4, 9),
+        ClaimDecision::Deny,
+        "both slots are taken, by robots 7 and 8"
+    );
 }

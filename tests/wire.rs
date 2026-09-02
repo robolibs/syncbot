@@ -1,5 +1,5 @@
-//! Serve-layer wire-type tests — UUID-or-INT resolution at the adapter
-//! boundary (`ClaimRequestWire`, `PlanRouteRequest`, `HeartbeatRequest`).
+//! Serve-layer wire tests — route planning and the UUID-or-INT resolution
+//! that happens at the adapter boundary (`ResourceRef`, `PlanRouteRequest`).
 
 #![cfg(any(feature = "rest", feature = "robo"))]
 
@@ -8,14 +8,8 @@ use std::sync::Arc;
 
 use datapod::{Geo, Point, Polygon};
 use graphix::vertex::EdgeType;
-use syncbot::wire::{
-    ClaimRequestWire, ClaimTargetWire, HeartbeatRequest, PlanRouteRequest, ServeState,
-    evaluate_claim, heartbeat, plan_route_request, register_robot,
-};
-use syncbot::{
-    ClaimAccessMode, ClaimDecision, ClaimId, ClaimTargetKind, ClaimWindow, Coordinator, MissionId,
-    NUMERIC_ID_PROPERTY, ResourceRef, RobotId, RobotState, WorkspaceIndex,
-};
+use syncbot::wire::{PlanRouteRequest, ServeState, plan_route_request};
+use syncbot::{Coordinator, NUMERIC_ID_PROPERTY, ResourceRef, WorkspaceIndex};
 use zoneout::{Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
@@ -29,7 +23,9 @@ fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
     }
 }
 
-fn build_state() -> (ServeState, uuid::Uuid, uuid::Uuid, uuid::Uuid) {
+/// Root + a dock zone (numeric 205) holding two connected nodes; node `a`
+/// carries numeric alias 139 and node `b` carries 140.
+fn build_state() -> (ServeState, uuid::Uuid, uuid::Uuid) {
     let mut root = ZoneBuilder::new()
         .with_name("root")
         .with_kind("workspace")
@@ -45,135 +41,108 @@ fn build_state() -> (ServeState, uuid::Uuid, uuid::Uuid, uuid::Uuid) {
         .with_property(NUMERIC_ID_PROPERTY, "205")
         .build()
         .expect("dock zone");
-    let dock_uuid = dock.id();
     root.add_child(dock).expect("add dock");
 
     let mut ws = Workspace::new(root);
-    let mut node_props = OMap::new();
-    node_props.insert(NUMERIC_ID_PROPERTY.into(), "139".into());
-    let a = ws.add_node(Point::new(15.0, 15.0, 0.0), node_props);
-    let b = ws.add_node(Point::new(40.0, 40.0, 0.0), OMap::new());
+    let mut a_props = OMap::new();
+    a_props.insert(NUMERIC_ID_PROPERTY.into(), "139".into());
+    let mut b_props = OMap::new();
+    b_props.insert(NUMERIC_ID_PROPERTY.into(), "140".into());
+    let a = ws.add_node(Point::new(15.0, 15.0, 0.0), a_props);
+    let b = ws.add_node(Point::new(40.0, 40.0, 0.0), b_props);
     let node_a_uuid = ws.graph().get_vertex(a).unwrap().id;
     let node_b_uuid = ws.graph().get_vertex(b).unwrap().id;
     let _ = ws.add_edge(a, b, 1.0, EdgeType::Undirected, OMap::new());
 
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
-    let coord = Coordinator::with_index(idx);
-    (ServeState::new(coord), dock_uuid, node_a_uuid, node_b_uuid)
+    (
+        ServeState::new(Coordinator::with_index(idx)),
+        node_a_uuid,
+        node_b_uuid,
+    )
 }
 
 #[test]
-fn evaluate_claim_resolves_numeric_resource_id() {
-    let (state, dock_uuid, _, _) = build_state();
+fn plan_route_accepts_numeric_node_ids() {
+    let (state, node_a_uuid, node_b_uuid) = build_state();
 
-    let req = ClaimRequestWire {
-        id: ClaimId::new(1),
-        robot_id: RobotId::new(1),
-        mission_id: MissionId::new(0),
-        access_mode: ClaimAccessMode::Exclusive,
-        priority: 0,
-        requested_at_tick: None,
-        window: ClaimWindow::default(),
-        targets: vec![ClaimTargetWire {
-            kind: ClaimTargetKind::Zone,
-            resource_id: ResourceRef::Numeric(205),
-        }],
-        key: None,
-    };
+    let response = plan_route_request(
+        &state,
+        PlanRouteRequest {
+            start_node_id: ResourceRef::Numeric(139),
+            goal_node_id: ResourceRef::Numeric(140),
+            use_penalties: false,
+        },
+    )
+    .expect("plan");
 
-    let eval = evaluate_claim(&state, req).expect("evaluate");
-    assert_eq!(eval.decision, ClaimDecision::Grant);
-    // The evaluation echoes the resolved UUID, not the integer.
-    // (No blocking target on a grant, but a deny would carry the UUID.)
-    let _ = dock_uuid; // resolved id used internally
+    assert!(response.found, "a → b is one edge");
+    let plan = response.plan.expect("a found route carries a plan");
+    assert_eq!(plan.start_node_id, node_a_uuid);
+    assert_eq!(plan.goal_node_id, node_b_uuid);
+    assert_eq!(plan.traversed_node_ids, vec![node_a_uuid, node_b_uuid]);
+}
+
+/// The two id forms are interchangeable per endpoint, so a client holding a
+/// UUID for one node and an alias for the other still plans.
+#[test]
+fn plan_route_mixes_uuid_and_numeric_ids() {
+    let (state, node_a_uuid, node_b_uuid) = build_state();
+
+    let response = plan_route_request(
+        &state,
+        PlanRouteRequest {
+            start_node_id: ResourceRef::Uuid(node_a_uuid),
+            goal_node_id: ResourceRef::Numeric(140),
+            use_penalties: true,
+        },
+    )
+    .expect("plan");
+
+    assert!(response.found);
+    assert_eq!(
+        response.plan.expect("plan").goal_node_id,
+        node_b_uuid,
+        "the numeric alias resolved to the same node the UUID names"
+    );
 }
 
 #[test]
-fn evaluate_claim_rejects_unknown_numeric_id() {
-    let (state, _, _, _) = build_state();
-    let req = ClaimRequestWire {
-        id: ClaimId::new(2),
-        robot_id: RobotId::new(1),
-        mission_id: MissionId::new(0),
-        access_mode: ClaimAccessMode::Exclusive,
-        priority: 0,
-        requested_at_tick: None,
-        window: ClaimWindow::default(),
-        targets: vec![ClaimTargetWire {
-            kind: ClaimTargetKind::Zone,
-            resource_id: ResourceRef::Numeric(9999),
-        }],
-        key: None,
-    };
-    let err = evaluate_claim(&state, req).expect_err("should fail");
+fn plan_route_rejects_an_unknown_node_id() {
+    let (state, node_a_uuid, _) = build_state();
+
+    let err = plan_route_request(
+        &state,
+        PlanRouteRequest {
+            start_node_id: ResourceRef::Uuid(node_a_uuid),
+            goal_node_id: ResourceRef::Numeric(9999),
+            use_penalties: false,
+        },
+    )
+    .expect_err("9999 is not a node");
+
     assert!(err.message.contains("9999"), "got: {}", err.message);
 }
 
+/// A workspace has to be bound before anything can be planned against it; the
+/// error says so rather than reporting an empty graph.
 #[test]
-fn plan_route_request_accepts_numeric_node_ids() {
-    let (state, _, node_a_uuid, _node_b_uuid) = build_state();
+fn plan_route_without_a_workspace_reports_it() {
+    let state = ServeState::new(Coordinator::new());
 
-    let req = PlanRouteRequest {
-        start_node_id: ResourceRef::Numeric(139),
-        goal_node_id: ResourceRef::Uuid(node_a_uuid),
-        use_penalties: false,
-    };
-    let resp = plan_route_request(&state, req).expect("plan_route");
-    assert!(resp.found, "expected start==goal trivial route");
-}
-
-#[test]
-fn heartbeat_accepts_numeric_node_id() {
-    let (state, _, node_a_uuid, _) = build_state();
-    register_robot(
+    let err = plan_route_request(
         &state,
-        RobotState {
-            robot_id: RobotId::new(1),
-            ..RobotState::default()
+        PlanRouteRequest {
+            start_node_id: ResourceRef::Numeric(1),
+            goal_node_id: ResourceRef::Numeric(2),
+            use_penalties: false,
         },
     )
-    .expect("register");
+    .expect_err("no workspace bound");
 
-    let req = HeartbeatRequest {
-        current_node_id: Some(ResourceRef::Numeric(139)),
-        current_edge_id: None,
-        updated_at_tick: 1,
-    };
-    let robot = heartbeat(&state, RobotId::new(1), req).expect("heartbeat");
-    assert_eq!(robot.current_node_id, Some(node_a_uuid));
-}
-
-#[test]
-fn claim_request_wire_deserializes_int_or_uuid() {
-    let json_int = r#"{
-        "id": 1,
-        "robot_id": 1,
-        "mission_id": 0,
-        "access_mode": "Exclusive",
-        "priority": 0,
-        "requested_at_tick": null,
-        "window": { "start_tick": null, "end_tick": null },
-        "targets": [{ "kind": "Zone", "resource_id": "205" }]
-    }"#;
-    let wire: ClaimRequestWire = serde_json::from_str(json_int).expect("int form");
-    assert!(matches!(
-        wire.targets[0].resource_id,
-        ResourceRef::Numeric(205)
-    ));
-
-    let json_uuid = r#"{
-        "id": 1,
-        "robot_id": 1,
-        "mission_id": 0,
-        "access_mode": "Exclusive",
-        "priority": 0,
-        "requested_at_tick": null,
-        "window": { "start_tick": null, "end_tick": null },
-        "targets": [{
-          "kind": "Zone",
-          "resource_id": "00000000-0000-0000-0000-000000000001"
-        }]
-    }"#;
-    let wire: ClaimRequestWire = serde_json::from_str(json_uuid).expect("uuid form");
-    assert!(matches!(wire.targets[0].resource_id, ResourceRef::Uuid(_)));
+    assert!(
+        err.message.contains("WorkspaceIndex"),
+        "got: {}",
+        err.message
+    );
 }

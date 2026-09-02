@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use datapod::{Geo, Point, Polygon};
+use graphix::vertex::EdgeType;
 use syncbot::wire::ServeState;
 use syncbot::wire::peerbus::{Client, CoreService};
 use syncbot::{ClaimTargetKind, Coordinator, NUMERIC_ID_PROPERTY, WorkspaceIndex};
@@ -45,7 +46,11 @@ fn state() -> ServeState {
     let mut workspace = Workspace::new(root);
     let mut properties = BTreeMap::new();
     properties.insert(NUMERIC_ID_PROPERTY.into(), "139".into());
-    workspace.add_node(Point::new(15.0, 15.0, 0.0), properties);
+    let a = workspace.add_node(Point::new(15.0, 15.0, 0.0), properties);
+    let mut properties = BTreeMap::new();
+    properties.insert(NUMERIC_ID_PROPERTY.into(), "140".into());
+    let b = workspace.add_node(Point::new(40.0, 40.0, 0.0), properties);
+    workspace.add_edge(a, b, 1.0, EdgeType::Undirected, BTreeMap::new());
 
     let index = Arc::new(WorkspaceIndex::new(Arc::new(workspace)));
     ServeState::new(Coordinator::with_index(index))
@@ -203,4 +208,71 @@ fn http_json_and_xml_adapters_call_peerbus_not_coordinator() {
     });
     drop(runtime);
     drop(app);
+}
+
+/// Route planning is the one read the core serves that is not a lookup: it
+/// runs the planner. Proved end to end over real peerbus, addressed by the
+/// numeric aliases an adapter would forward.
+#[test]
+fn route_planning_round_trips_through_peerbus_core() {
+    let identity = identity();
+    let _core = CoreService::with_identity(state(), &identity).expect("start core");
+    let client = Client::connect(identity).expect("connect adapter");
+
+    let response = client.plan_route("139", "140", false).expect("plan");
+    assert!(response.found, "139 → 140 is one edge");
+    let plan = response.plan.expect("a found route carries a plan");
+    assert_eq!(plan.traversed_node_ids.len(), 2);
+    assert_eq!(plan.traversed_edge_ids.len(), 1);
+
+    // The penalised model reaches the same nodes by a different cost model.
+    let penalised = client.plan_route("139", "140", true).expect("plan");
+    assert!(penalised.found);
+
+    // An unknown alias is an error, not an empty plan.
+    let err = client
+        .plan_route("139", "9999", false)
+        .expect_err("unknown goal");
+    assert!(err.message.contains("9999"), "got: {}", err.message);
+}
+
+/// A route claim crosses the wire as one message and one decision.
+#[test]
+fn route_claims_round_trip_through_peerbus_core() {
+    let identity = identity();
+    let _core = CoreService::with_identity(state(), &identity).expect("start core");
+    let client = Client::connect(identity).expect("connect adapter");
+
+    assert_eq!(
+        client
+            .register("7", "1234", None)
+            .expect("register")
+            .decision,
+        1
+    );
+    assert_eq!(
+        client
+            .register("8", "5678", None)
+            .expect("register")
+            .decision,
+        1
+    );
+
+    // Robot 7 takes the whole path: node 139 plus no edges in this fixture.
+    let taken = client
+        .claim_route("1234", "7", &[139], &[], None, None)
+        .expect("claim route");
+    assert_eq!((taken.decision, taken.reason), (1, 0));
+
+    // Robot 8 asking for the same node is refused.
+    let blocked = client
+        .claim_route("5678", "8", &[139], &[], None, None)
+        .expect("claim route");
+    assert_eq!((blocked.decision, blocked.reason), (0, 2));
+
+    // Robot 7 re-claiming its own route is a re-acquisition (Milestone 1.1).
+    let again = client
+        .claim_route("1234", "7", &[139], &[], None, None)
+        .expect("claim route");
+    assert_eq!((again.decision, again.reason), (1, 0));
 }

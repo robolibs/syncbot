@@ -56,6 +56,7 @@ start_server() {
     local workspace=${USECASE_WORKSPACE:-examples/fixed}
 
     SYNCBOT_PEERBUS_IDENTITY="ares-core-usecase-$$-${RANDOM}" \
+    SYNCBOT_ALLOW_DEFAULT_KEY=1 \
     SYNCBOT_ZENOH_LISTEN="tcp/127.0.0.1:${zenoh_port}" \
         "$server" "$workspace" "127.0.0.1:${http_port}" >"$log" 2>&1 &
     SERVER_PID=$!

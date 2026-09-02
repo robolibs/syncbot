@@ -9,14 +9,9 @@ use std::sync::Arc;
 
 use datapod::{Geo, Point, Polygon};
 use syncbot::wire::{
-    ClaimRequestWire, ClaimTargetWire, ReleaseLeaseRequest, ReportedPosition, ServeState,
-    add_lease, flat_claim, flat_heartbeat, flat_register, flat_release, release_lease,
-    remove_claim, submit_claim, unregister_robot,
+    ReportedPosition, ServeState, flat_claim, flat_heartbeat, flat_register, flat_release,
 };
-use syncbot::{
-    ClaimAccessMode, ClaimId, ClaimTargetKind, ClaimWindow, Coordinator, Lease, LeaseId, MissionId,
-    NUMERIC_ID_PROPERTY, ResourceRef, RobotId, WorkspaceIndex,
-};
+use syncbot::{ClaimTargetKind, Coordinator, NUMERIC_ID_PROPERTY, RobotId, WorkspaceIndex};
 use zoneout::{Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
@@ -236,35 +231,6 @@ fn multi_zone_claim_is_atomic() {
 }
 
 #[test]
-fn tier2_submit_claim_requires_key() {
-    let s = build_state();
-    flat_register(&s, "7", "1234", None);
-
-    let make = |key: Option<&str>| ClaimRequestWire {
-        id: ClaimId::new(0),
-        robot_id: RobotId::new(7),
-        mission_id: MissionId::new(0),
-        access_mode: ClaimAccessMode::Exclusive,
-        priority: 0,
-        requested_at_tick: None,
-        window: ClaimWindow::default(),
-        targets: vec![ClaimTargetWire {
-            kind: ClaimTargetKind::Zone,
-            resource_id: ResourceRef::Numeric(42),
-        }],
-        key: key.map(|k| k.to_string()),
-    };
-
-    // missing key -> rejected
-    assert!(submit_claim(&s, make(None)).is_err());
-    // wrong key -> rejected
-    assert!(submit_claim(&s, make(Some("9999"))).is_err());
-    // correct key -> accepted (grant)
-    let eval = submit_claim(&s, make(Some("1234"))).expect("submit ok");
-    assert_eq!(eval.decision, syncbot::ClaimDecision::Grant);
-}
-
-#[test]
 fn uuid_robot_id_full_flow() {
     let s = build_state();
     let uuid = "11111111-1111-1111-1111-111111111111";
@@ -308,8 +274,23 @@ fn uuid_robot_id_full_flow() {
 }
 
 #[test]
+fn keyless_registration_is_refused_unless_enabled() {
+    // Every keyless robot shares one password, so anyone can act as any of
+    // them. That is a decision an operator makes, not a default.
+    let closed = build_state();
+    let refused = flat_register(&closed, "7", "0", None);
+    assert_eq!(
+        (refused.decision, refused.reason),
+        (0, 5),
+        "keyless registration must be refused as not permitted"
+    );
+    // A robot bringing its own key is unaffected.
+    assert_eq!(flat_register(&closed, "7", "1234", None).decision, 1);
+}
+
+#[test]
 fn key_is_optional_defaults_to_shared_password() {
-    let s = build_state();
+    let s = build_state().with_default_key_allowed(true);
     // register with NO key -> uses the default password
     let r = flat_register(&s, "7", "0", None);
     assert_eq!((r.decision, r.reason), (1, 0));
@@ -447,73 +428,6 @@ fn inactive_robot_claims_auto_released() {
         flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], None, None).decision,
         1
     );
-}
-
-// ---------------------------------------------------------------------------
-// Opt-in admin auth on the mutation endpoints (unregister / remove_claim /
-// add_lease / release_lease). Default (flag OFF) is byte-identically open.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn admin_auth_off_is_open_no_key_required() {
-    // Default ServeState: admin_auth = false -> endpoints stay OPEN.
-    let s = build_state();
-    flat_register(&s, "7", "1234", None); // robot bound to a REAL key
-
-    // A claim owned by robot 7 (to exercise remove_claim's owner lookup).
-    assert_eq!(
-        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
-        1
-    );
-    let claim_id = s.coordinator().read().unwrap().claim_manager().requests()[0].id;
-
-    // add_lease with NO key succeeds even though robot 7 has a real key.
-    let lease = Lease {
-        id: LeaseId::new(1),
-        robot_id: RobotId::new(7),
-        ..Lease::default()
-    };
-    add_lease(&s, lease, None).expect("add_lease open");
-
-    // remove_claim with NO key -> actually removes it.
-    assert!(remove_claim(&s, claim_id, None).expect("remove_claim open"));
-
-    // release_lease with NO key -> actually releases it.
-    assert!(
-        release_lease(
-            &s,
-            ReleaseLeaseRequest {
-                lease_id: LeaseId::new(1),
-                released_at_tick: None,
-                key: None,
-            },
-        )
-        .expect("release_lease open")
-    );
-
-    // unregister_robot with NO key -> succeeds.
-    assert!(unregister_robot(&s, RobotId::new(7), None).expect("unregister open"));
-}
-
-#[test]
-fn admin_auth_on_protects_keyed_but_not_keyless_robot() {
-    let s = build_state().with_admin_auth(true);
-
-    // Robot 7 registered WITH a real key -> protected.
-    flat_register(&s, "7", "1234", None);
-    // Omitted key -> denied (defaults to "0", which is not robot 7's key).
-    assert!(unregister_robot(&s, RobotId::new(7), None).is_err());
-    // Wrong key -> denied.
-    assert!(unregister_robot(&s, RobotId::new(7), Some("9999".into())).is_err());
-    // Correct key -> succeeds (returns true, proving it was still registered).
-    assert!(
-        unregister_robot(&s, RobotId::new(7), Some("1234".into()))
-            .expect("unregister with correct key")
-    );
-
-    // Robot 8 registered bound to the DEFAULT key "0" (keyless) -> stays open.
-    flat_register(&s, "8", "0", None);
-    assert!(unregister_robot(&s, RobotId::new(8), None).expect("keyless unregister stays open"));
 }
 
 // ---------------------------------------------------------------------------
@@ -801,4 +715,220 @@ fn a_heading_only_heartbeat_keeps_the_last_position() {
 
     let position = robot_position(&s);
     assert_eq!((position.x, position.y), (7.0, 8.0), "position survived");
+}
+
+// ---------------------------------------------------------------------------
+// lease_time actually expires the claim.
+// ---------------------------------------------------------------------------
+
+/// `lease_time` used to be inert: it wrote a bound into the claim window in a
+/// tick space nothing advanced, so the claim was held until the robot stopped
+/// heartbeating. It now expires on its own.
+#[test]
+fn a_leased_claim_frees_itself_when_the_lease_runs_out() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+
+    // Robot 7 takes zone 42 for one second.
+    let taken = flat_claim(
+        &s,
+        ClaimTargetKind::Zone,
+        "1234",
+        "7",
+        &[42],
+        Some(1),
+        Some(1),
+    );
+    assert_eq!((taken.decision, taken.reason), (1, 0));
+
+    // Robot 8 is refused while that lease stands.
+    let blocked = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], Some(1), None);
+    assert_eq!(
+        (blocked.decision, blocked.reason),
+        (0, 2),
+        "the zone is held for another second"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(1_200));
+
+    // The next claim expires the lapsed one before evaluating, so it is free
+    // without waiting for the periodic sweep.
+    let after = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], Some(1), None);
+    assert_eq!(
+        (after.decision, after.reason),
+        (1, 0),
+        "the lease ran out, so the zone is free"
+    );
+}
+
+/// An unleased claim is still held until it is released or the robot goes
+/// quiet — expiry must not collect it.
+#[test]
+fn an_unleased_claim_is_not_expired() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
+        1
+    );
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let blocked = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], None, None);
+    assert_eq!(
+        (blocked.decision, blocked.reason),
+        (0, 2),
+        "an open-ended claim stays held"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A robot does not compete with itself (PLAN Milestone 1.1).
+// ---------------------------------------------------------------------------
+
+/// Re-asserting a claim you already hold used to be denied with reason 2 by
+/// your own ledger entry, which broke rolling-horizon claiming outright.
+#[test]
+fn a_robot_can_reclaim_what_it_already_holds() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    let first = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None);
+    assert_eq!((first.decision, first.reason), (1, 0));
+
+    let again = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None);
+    assert_eq!(
+        (again.decision, again.reason),
+        (1, 0),
+        "a holder re-acquiring is a re-acquisition, not a conflict"
+    );
+}
+
+/// Re-claiming must refresh the existing entry, not stack another one — the
+/// wire mints a fresh claim id on every call.
+#[test]
+fn reclaiming_does_not_grow_the_ledger() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    for _ in 0..5 {
+        assert_eq!(
+            flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
+            1
+        );
+    }
+
+    let held = s
+        .coordinator()
+        .read()
+        .unwrap()
+        .claim_manager()
+        .request_count();
+    assert_eq!(held, 1, "five identical claims left {held} ledger entries");
+}
+
+/// Not competing with yourself must not become "not counting yourself".
+/// Another robot still sees the claim.
+#[test]
+fn self_reclaim_does_not_release_the_ground() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+
+    flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None);
+    flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None);
+
+    let other = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], None, None);
+    assert_eq!(
+        (other.decision, other.reason),
+        (0, 2),
+        "robot 7 still holds zone 42 after re-claiming it"
+    );
+}
+
+/// A robot advancing its rolling horizon claims new ground while still
+/// holding the old — the case that motivated 1.1.
+#[test]
+fn a_robot_can_claim_ahead_while_holding_behind() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
+        1
+    );
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[43], None, None).decision,
+        1,
+        "claiming the next slice must not be refused by the previous one"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Atomic route claims (PLAN Milestone 1.4).
+// ---------------------------------------------------------------------------
+
+/// A route spans nodes and edges. Claiming them through the single-kind
+/// endpoints is two independent requests; this is one.
+#[test]
+fn a_route_claim_is_all_or_nothing() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+
+    // Robot 8 takes node 139 first.
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Node, "5678", "8", &[139], None, None).decision,
+        1
+    );
+
+    // Robot 7 asks for a route that includes node 139. It must be refused
+    // whole — no part of it may be left held.
+    let denied = syncbot::wire::flat_claim_route(&s, "1234", "7", &[139], &[], None, None);
+    assert_eq!((denied.decision, denied.reason), (0, 2));
+
+    let held_by_7 = s
+        .coordinator()
+        .read()
+        .unwrap()
+        .claim_manager()
+        .requests()
+        .iter()
+        .filter(|r| r.robot_id == RobotId::new(7))
+        .count();
+    assert_eq!(held_by_7, 0, "a denied route must leave nothing behind");
+}
+
+/// An unknown id in either section refuses the whole route and names the id.
+#[test]
+fn a_route_claim_with_an_unknown_id_is_refused_whole() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    let reply = syncbot::wire::flat_claim_route(&s, "1234", "7", &[139], &[9999], None, None);
+    assert_eq!(
+        (reply.decision, reply.reason, reply.blocked),
+        (0, 4, Some(9999)),
+        "unknown edge 9999 refuses the route and is named"
+    );
+    assert_eq!(
+        s.coordinator()
+            .read()
+            .unwrap()
+            .claim_manager()
+            .request_count(),
+        0
+    );
+}
+
+/// An empty route is a bad request, not an empty grant.
+#[test]
+fn an_empty_route_claim_is_refused() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    let reply = syncbot::wire::flat_claim_route(&s, "1234", "7", &[], &[], None, None);
+    assert_eq!((reply.decision, reply.reason), (0, 5));
 }

@@ -208,3 +208,283 @@ fn atomic_write_round_trip_and_missing_file() {
     // Cleanup.
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The snapshot carries every robot's key in plaintext, so it must not be
+/// readable by anyone but its owner.
+#[cfg(unix)]
+#[test]
+fn the_state_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("syncbot-perms-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("state.json");
+
+    syncbot::persist::write_atomic(&path, &syncbot::persist::CoordinatorSnapshot::default())
+        .expect("write");
+
+    let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "state file mode was {:o}",
+        mode & 0o777
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Behavioural fidelity across a restart (PLAN 2.3.7).
+//
+// The tests above round-trip *fields*. These assert the restored coordinator
+// *behaves* the same — which is the thing an operator actually depends on.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "rest")]
+mod behaviour {
+    use std::sync::Arc;
+
+    use datapod::{Geo, Point, Polygon};
+    use syncbot::wire::{ServeState, flat_claim, flat_register};
+    use syncbot::{ClaimTargetKind, Coordinator, NUMERIC_ID_PROPERTY, WorkspaceIndex};
+    use zoneout::{Workspace, ZoneBuilder};
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
+        Polygon {
+            vertices: vec![
+                Point::new(x0, y0, 0.0),
+                Point::new(x1, y0, 0.0),
+                Point::new(x1, y1, 0.0),
+                Point::new(x0, y1, 0.0),
+            ],
+        }
+    }
+
+    fn index() -> Arc<WorkspaceIndex> {
+        let mut root = ZoneBuilder::new()
+            .with_name("root")
+            .with_kind("workspace")
+            .with_boundary(rect(0.0, 0.0, 1000.0, 1000.0))
+            .with_datum(Geo::new(52.0, 5.0, 0.0))
+            .build()
+            .expect("root");
+        for i in 0..3u64 {
+            let x0 = 10.0 + i as f64 * 100.0;
+            root.add_child(
+                ZoneBuilder::new()
+                    .with_name(format!("z{i}"))
+                    .with_kind("zone")
+                    .with_boundary(rect(x0, 10.0, x0 + 50.0, 500.0))
+                    .with_datum(Geo::new(52.0, 5.0, 0.0))
+                    .with_property(NUMERIC_ID_PROPERTY, i.to_string())
+                    .with_property("traffic.policy", "exclusive")
+                    .build()
+                    .expect("zone"),
+            )
+            .expect("add");
+        }
+        Arc::new(WorkspaceIndex::new(Arc::new(Workspace::new(root))))
+    }
+
+    /// Snapshot a live session, restore it, and check the restored core makes
+    /// the same decisions: the claim that was blocked is still blocked, the
+    /// key that worked still works, and a wrong key is still refused.
+    ///
+    /// The index is shared across the restart, as it is in production — the
+    /// workspace is reloaded from the same directory and keeps its uuids.
+    /// Claims are keyed by resource uuid, so a workspace rebuilt with fresh
+    /// ones would legitimately orphan every claim (which is what
+    /// `WorkspaceAccepted::stale_claims` reports on a push).
+    #[test]
+    fn a_restored_core_decides_the_same_way() {
+        let workspace = index();
+        let before = ServeState::new(Coordinator::with_index(Arc::clone(&workspace)));
+        flat_register(&before, "7", "1234", None);
+        flat_register(&before, "8", "5678", None);
+        assert_eq!(
+            flat_claim(
+                &before,
+                ClaimTargetKind::Zone,
+                "1234",
+                "7",
+                &[0],
+                None,
+                None
+            )
+            .decision,
+            1
+        );
+        let blocked = flat_claim(
+            &before,
+            ClaimTargetKind::Zone,
+            "5678",
+            "8",
+            &[0],
+            None,
+            None,
+        );
+        assert_eq!((blocked.decision, blocked.reason), (0, 2));
+
+        // Restart.
+        let snapshot = before.coordinator().read().unwrap().snapshot();
+        let after = ServeState::new(Coordinator::restore(snapshot, Some(workspace)));
+
+        // The holder still holds it.
+        let still_blocked =
+            flat_claim(&after, ClaimTargetKind::Zone, "5678", "8", &[0], None, None);
+        assert_eq!(
+            (still_blocked.decision, still_blocked.reason),
+            (0, 2),
+            "robot 7's claim must survive the restart"
+        );
+        // And can still re-assert it with its own key.
+        let owner = flat_claim(&after, ClaimTargetKind::Zone, "1234", "7", &[0], None, None);
+        assert_eq!((owner.decision, owner.reason), (1, 0));
+        // A wrong key is still a wrong key.
+        let wrong = flat_claim(&after, ClaimTargetKind::Zone, "9999", "7", &[1], None, None);
+        assert_eq!((wrong.decision, wrong.reason), (0, 1));
+        // A robot that never registered is still unknown.
+        let stranger = flat_claim(
+            &after,
+            ClaimTargetKind::Zone,
+            "0000",
+            "99",
+            &[1],
+            None,
+            None,
+        );
+        assert_eq!(stranger.decision, 0);
+    }
+
+    /// A claim id minted after a restart must not collide with one restored
+    /// from the snapshot — the ledger would silently overwrite an entry.
+    #[test]
+    fn minted_claim_ids_do_not_collide_with_restored_ones() {
+        let workspace = index();
+        let before = ServeState::new(Coordinator::with_index(Arc::clone(&workspace)));
+        flat_register(&before, "7", "1234", None);
+        for zone in 0..3u64 {
+            flat_claim(
+                &before,
+                ClaimTargetKind::Zone,
+                "1234",
+                "7",
+                &[zone],
+                None,
+                None,
+            );
+        }
+        let existing: Vec<_> = before
+            .coordinator()
+            .read()
+            .unwrap()
+            .claim_manager()
+            .requests()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+
+        let snapshot = before.coordinator().read().unwrap().snapshot();
+        let after = ServeState::new(Coordinator::restore(snapshot, Some(workspace)));
+
+        flat_register(&after, "8", "5678", None);
+        let minted = after
+            .coordinator()
+            .read()
+            .unwrap()
+            .claim_manager()
+            .next_request_id();
+        assert!(
+            !existing.contains(&minted),
+            "minted {minted} collides with a restored id from {existing:?}"
+        );
+    }
+
+    /// A lease keeps its wall-clock deadline across a restart rather than
+    /// being silently renewed by it.
+    #[test]
+    fn a_lease_deadline_survives_a_restart() {
+        let workspace = index();
+        let before = ServeState::new(Coordinator::with_index(Arc::clone(&workspace)));
+        flat_register(&before, "7", "1234", None);
+        assert_eq!(
+            flat_claim(
+                &before,
+                ClaimTargetKind::Zone,
+                "1234",
+                "7",
+                &[0],
+                Some(1),
+                Some(1)
+            )
+            .decision,
+            1
+        );
+        let deadline = before
+            .coordinator()
+            .read()
+            .unwrap()
+            .claim_manager()
+            .requests()[0]
+            .window
+            .end_tick
+            .expect("a leased claim has a deadline");
+
+        let snapshot = before.coordinator().read().unwrap().snapshot();
+        let after = ServeState::new(Coordinator::restore(snapshot, Some(workspace)));
+        let restored = after
+            .coordinator()
+            .read()
+            .unwrap()
+            .claim_manager()
+            .requests()[0]
+            .window
+            .end_tick
+            .expect("deadline survives");
+        assert_eq!(deadline, restored, "a restart must not extend a lease");
+
+        std::thread::sleep(std::time::Duration::from_millis(1_200));
+        flat_register(&after, "8", "5678", None);
+        let now_free = flat_claim(&after, ClaimTargetKind::Zone, "5678", "8", &[0], None, None);
+        assert_eq!(
+            (now_free.decision, now_free.reason),
+            (1, 0),
+            "the restored lease still expires on time"
+        );
+    }
+
+    /// Claims name resources by uuid. A workspace rebuilt with fresh uuids —
+    /// not a reload of the same one — orphans them, which is exactly what
+    /// `WorkspaceAccepted::stale_claims` exists to report.
+    #[test]
+    fn claims_do_not_follow_a_workspace_rebuilt_with_new_uuids() {
+        let before = ServeState::new(Coordinator::with_index(index()));
+        flat_register(&before, "7", "1234", None);
+        assert_eq!(
+            flat_claim(
+                &before,
+                ClaimTargetKind::Zone,
+                "1234",
+                "7",
+                &[0],
+                None,
+                None
+            )
+            .decision,
+            1
+        );
+
+        let snapshot = before.coordinator().read().unwrap().snapshot();
+        // A *different* workspace: same numeric aliases, different uuids.
+        let after = ServeState::new(Coordinator::restore(snapshot, Some(index())));
+
+        flat_register(&after, "8", "5678", None);
+        let free = flat_claim(&after, ClaimTargetKind::Zone, "5678", "8", &[0], None, None);
+        assert_eq!(
+            (free.decision, free.reason),
+            (1, 0),
+            "the old claim names a uuid this workspace does not have, so zone 0 is free"
+        );
+    }
+}
