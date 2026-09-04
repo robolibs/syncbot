@@ -8,6 +8,11 @@ endif
 
 TOP_DIR := $(CURDIR)
 CARGO := cargo
+# `bash` on PATH can be a shim (a login-shell wrapper, say), which breaks the
+# usecase scripts on BASH_SOURCE. Prefer a real one.
+BASH := $(shell for b in /usr/bin/bash /bin/bash "$$(command -v bash)"; do \
+	if [ -x "$$b" ] && "$$b" -c '[ -n "$${BASH_VERSION:-}" ]' 2>/dev/null; then echo "$$b"; break; fi; \
+	done)
 EXAMPLE ?= serve_workspace
 RUN_FEATURES ?= rest robo xmlt
 RUN_ARGS ?= examples/fixed
@@ -28,7 +33,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t test-peerbus test-all ros2-interface test-usecase-rest test-usecase-ros2 test-usecase-mixed test-usecase check check-peerbus check-all check-python-adapter fmt bench clean viz fuzz fuzz-all fixed-map bind bind-c bind-py help h
+.PHONY: build b compile c run r test t test-peerbus test-all ros2-interface test-usecase-rest test-usecase-ros2 test-usecase-mixed test-usecase check check-peerbus check-all check-python-adapter fmt bench clean ci viz fuzz fuzz-all fixed-map bind bind-c bind-py help h
 
 build:
 	@$(CARGO) build --lib
@@ -71,7 +76,7 @@ test-all:
 
 test-usecase-rest:
 	@$(CARGO) build --example serve_workspace --features "rest robo xmlt"
-	@bash tests/usecase/rest.sh
+	@$(BASH) tests/usecase/rest.sh
 
 ros2-interface:
 	@bash -c 'set -eo pipefail; cmake_bin="$$(command -v cmake)"; python_bin="$$(command -v python3)"; \
@@ -88,13 +93,13 @@ test-usecase-ros2: ros2-interface
 	@$(CARGO) build --example serve_workspace --features "rest robo xmlt"
 	@ROS_SETUP="$(ROS_SETUP)" ROS2_INTERFACE_SETUP="$(ROS2_INTERFACE_SETUP)" \
 		ROS2_BIN="$(ROS2_BIN)" ROS2_PYTHON="$(ROS2_PYTHON)" ROS2_BRIDGE="$(ROS2_BRIDGE)" \
-		bash tests/usecase/ros2.sh
+		$(BASH) tests/usecase/ros2.sh
 
 test-usecase-mixed: ros2-interface
 	@$(CARGO) build --example serve_workspace --features "rest robo xmlt"
 	@ROS_SETUP="$(ROS_SETUP)" ROS2_INTERFACE_SETUP="$(ROS2_INTERFACE_SETUP)" \
 		ROS2_BIN="$(ROS2_BIN)" ROS2_PYTHON="$(ROS2_PYTHON)" ROS2_BRIDGE="$(ROS2_BRIDGE)" \
-		bash tests/usecase/mixed.sh
+		$(BASH) tests/usecase/mixed.sh
 
 test-usecase: test-usecase-rest test-usecase-ros2 test-usecase-mixed
 
@@ -115,6 +120,20 @@ fmt:
 
 clean:
 	@$(CARGO) clean
+
+# Everything that would gate a merge, in one command. Codeberg Actions is not
+# enabled for this repository, so this is the gate — run it before pushing.
+ci:
+	@echo "== check (all adapters)"      && $(CARGO) check --all-targets --features "peerbus rest robo xmlt"
+	@echo "== check (python bindings)"   && $(CARGO) check --features python
+	@echo "== check (rerun visualizer)"  && $(CARGO) check --example fleet_viz --features "rerun-viz peerbus"
+	@echo "== clippy"                    && $(CARGO) clippy --all-targets --features "peerbus rest robo xmlt" -- -D warnings
+	@echo "== fmt"                       && $(CARGO) fmt --package $(PROJECT_NAME) -- --check
+	@echo "== tests"                     && $(CARGO) test --all-targets --features "peerbus rest robo xmlt"
+	@echo "== python adapter"            && $(MAKE) --no-print-directory check-python-adapter
+	@echo "== live REST/XML battery"     && $(MAKE) --no-print-directory test-usecase-rest
+	@echo
+	@echo "ci: all green"
 
 viz:
 	@$(CARGO) run --example fleet_viz --features "rerun-viz peerbus" -- $(RUN_ARGS)
@@ -173,6 +192,7 @@ help:
 	@echo "  test-usecase-mixed Run the cross-transport REST/XML + ROS2 battery"
 	@echo "  ros2-interface Build ares_interfaces/srv/Json for the live ROS2 battery"
 	@echo "  test-usecase Run every live transport battery from misc/USECASE.typ"
+	@echo "  ci           Everything that gates a merge (run before pushing)"
 	@echo "  viz          Live rerun view of the running fleet"
 	@echo "  fuzz         Fuzz one target (FUZZ_TARGET=, FUZZ_SECONDS=)"
 	@echo "  fuzz-all     Fuzz every target in turn"
