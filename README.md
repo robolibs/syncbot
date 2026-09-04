@@ -28,6 +28,7 @@ make check-all                       # check every transport adapter
 make test-all                        # run every Rust target with all adapters
 make check-python-adapter            # syntax-check the Python adapter
 make test-usecase-rest               # live REST/XML curl battery
+make check-python-binding            # build the PyO3 extension and test it
 ```
 
 ## Transport adapters
@@ -556,17 +557,30 @@ state = syncbot.vda_state_from_robot(robot_state_dict)
 
 ### Python class surface
 
-| Class            | Methods (selected)                                            |
-|------------------|---------------------------------------------------------------|
-| `Workspace`      | `Workspace.load(path)`, `root_zone_id()`                      |
-| `WorkspaceIndex` | `WorkspaceIndex(ws)`, `root_zone_id()`, `validation_issues()`, `is_valid()`, `zones_of_node(uuid)`, `refresh()` |
-| `ClaimManager`   | `ClaimManager(index=None)`, `add/upsert/remove_request`, `add/release/refresh/revoke/expire_lease(s)`, `evaluate_request`, `requests()`, `leases()` |
-| `Coordinator`    | `Coordinator(index=None)`, `register/unregister_robot`, `robot_state`, `assign_route_plan`, `update_robot_progress`, `schedule_robot_route`, `handle_missed_schedule_slot`, `release_behind_progress`, `refresh/revoke_robot_leases` |
+| Class              | Methods (selected)                                          |
+|--------------------|-------------------------------------------------------------|
+| `WorkspaceBuilder` | `WorkspaceBuilder(name, boundary, datum)`, `add_zone`, `add_node`, `add_edge`, `build()` |
+| `Workspace`        | `Workspace.load(path)`, `save(path)`, `root_zone_id()`, `datum()`, `node/edge_count()` |
+| `WorkspaceIndex`   | `WorkspaceIndex(ws)`, `zones()`, `nodes()`, `edges()`, `zone/node(uuid)`, `zone_policy`, `edge_semantics`, `zones_of_node/edge`, `zone/node/edge_by_numeric_id`, `edge_between`, `local_to_global`, `global_to_local`, `datum()`, `validation_issues()`, `is_valid()`, `refresh()` |
+| `ClaimManager`     | `ClaimManager(index=None)`, `add/upsert/remove_request`, `upsert_request_for_robot`, `remove_requests_for_robot`, `add/release/refresh/revoke/expire_lease(s)`, `release_leases_for_robot`, `leases_for_robot`, `evaluate_request`, `next_request_id`, `requests()`, `leases()` |
+| `Coordinator`      | `Coordinator(index=None)`, `register/unregister_robot`, `robot_state`, `assign_route_plan`, `update_robot_progress`, `update_robot_pose`, `schedule_robot_route`, `claim_request_for_robot`, `evaluate_claim`, `upsert_claim_request_for_robot`, `remove_claim_requests_for_robot`, `update_robot_claim_state`, `handle_missed_schedule_slot`, `release_behind_progress`, `refresh/revoke_robot_leases`, `set_alive`, `touch_robot`, `robot_active_at`, `inactive_robots_at`, `sweep_inactive`, `expire_claims`, `snapshot()` |
 
 Free functions: `plan_route`, `arbitrate_right_of_way`, `parse_zone_policy`,
 `parse_edge_traffic_semantics`, `validate_zone/edge_traffic_properties`,
 `parse_traffic_{bool,u64,f64,string}`, `vda_order_from_route`,
 `vda_state_from_robot`, `version`.
+
+The surface is enough to build a workspace, plan over it and run the whole
+claim loop without dropping to Rust — `examples/python_binding/` has a
+[binding test](examples/python_binding/test_bindings.py) that proves it and a
+[packhouse-yard scenario](examples/python_binding/packhouse_yard.py) that is a
+line-for-line twin of the Rust `packhouse_yard` example. Both produce the same
+numbers, tick for tick.
+
+```sh
+make check-python-binding                 # build the extension, run the test
+cd examples/python_binding && make yard    # the scenario, in rerun
+```
 
 ---
 

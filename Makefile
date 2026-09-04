@@ -27,7 +27,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t test-peerbus test-all test-usecase-rest test-usecase check check-peerbus check-all check-python-adapter fmt bench clean ci viz yard fuzz fuzz-all fixed-map bind bind-c bind-py help h
+.PHONY: build b compile c run r test t test-peerbus test-all test-usecase-rest test-usecase check check-peerbus check-all check-python-adapter check-python-binding fmt bench clean ci viz yard fuzz fuzz-all fixed-map bind bind-c bind-py help h
 
 build:
 	@$(CARGO) build --lib
@@ -83,6 +83,9 @@ check-peerbus:
 check-all:
 	@$(CARGO) check --all-targets --features "peerbus rest xmlt"
 
+check-python-binding:
+	@$(MAKE) -C examples/python_binding check
+
 check-python-adapter:
 	@$(MAKE) -C examples/python_adapter check
 
@@ -103,6 +106,7 @@ ci:
 	@echo "== fmt"                       && $(CARGO) fmt --package $(PROJECT_NAME) -- --check
 	@echo "== tests"                     && $(CARGO) test --all-targets --features "peerbus rest xmlt"
 	@echo "== python adapter"            && $(MAKE) --no-print-directory check-python-adapter
+	@echo "== python bindings (live)"    && $(MAKE) --no-print-directory check-python-binding
 	@echo "== live REST/XML battery"     && $(MAKE) --no-print-directory test-usecase-rest
 	@echo
 	@echo "ci: all green"
@@ -175,6 +179,7 @@ help:
 	@echo "  check-peerbus Check the canonical peerbus core/client"
 	@echo "  check-all    Check all transport adapters"
 	@echo "  check-python-adapter Parse + header-layout self-check for the Python adapter"
+	@echo "  check-python-binding Build the PyO3 extension and run the binding test"
 	@echo "  fmt          Format the workspace"
 	@echo "  clean        Remove Cargo build artifacts"
 	@echo "  release      Release a new version"

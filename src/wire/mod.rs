@@ -883,36 +883,13 @@ fn resolve_position(
     index: Option<&Arc<WorkspaceIndex>>,
     reported: ReportedPosition,
 ) -> crate::robot::RobotPosition {
-    use crate::robot::{PositionFrame, RobotPosition};
+    use crate::robot::RobotPosition;
+    let index = index.map(|index| index.as_ref());
     match reported {
         ReportedPosition::Global { lat, lon, alt } => {
-            let local = index
-                .and_then(|index| index.pose_global_to_local(concord::Geo::new(lat, lon, alt)));
-            RobotPosition {
-                reported: PositionFrame::Global,
-                lat,
-                lon,
-                alt,
-                x: local.map_or(0.0, |p| p.x),
-                y: local.map_or(0.0, |p| p.y),
-                z: local.map_or(0.0, |p| p.z),
-                converted: local.is_some(),
-            }
+            RobotPosition::from_global(lat, lon, alt, index)
         }
-        ReportedPosition::Local { x, y, z } => {
-            let global =
-                index.and_then(|index| index.pose_local_to_global(datapod::Point::new(x, y, z)));
-            RobotPosition {
-                reported: PositionFrame::Local,
-                lat: global.map_or(0.0, |g| g.latitude),
-                lon: global.map_or(0.0, |g| g.longitude),
-                alt: global.map_or(0.0, |g| g.altitude),
-                x,
-                y,
-                z,
-                converted: global.is_some(),
-            }
-        }
+        ReportedPosition::Local { x, y, z } => RobotPosition::from_local(x, y, z, index),
     }
 }
 

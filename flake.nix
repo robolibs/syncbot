@@ -98,7 +98,10 @@
             pkgs.trunk
             pkgs.maturin
             pkgs.typst
-            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli pip ]))
+            # rerun-sdk is here rather than pip-installed: the wheel is linked
+            # against a libstdc++/libz that is not on the path on NixOS, and
+            # nixpkgs tracks the same 0.31.x the Rust crate is pinned to.
+            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli pip rerun-sdk ]))
 
             nixGLAlias
             nixVulkanAlias

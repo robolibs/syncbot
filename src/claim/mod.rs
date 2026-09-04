@@ -76,7 +76,11 @@ pub struct ClaimTarget {
     pub resource_id: Uuid,
 }
 
+// Missing fields fall back to `Default`, matching `Lease` below. A caller
+// building a request by hand — from Python, or as tier-2 JSON — should not
+// have to spell out `window` and `mission_id` to ask for one node.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ClaimRequest {
     pub id: ClaimId,
     pub robot_id: RobotId,

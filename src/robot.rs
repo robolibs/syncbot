@@ -61,6 +61,56 @@ pub struct RobotPosition {
     pub converted: bool,
 }
 
+impl RobotPosition {
+    /// From metres east/north/up of the datum, deriving lat/lon.
+    ///
+    /// With no index there is nothing to anchor against, so the derived frame
+    /// is zeroed behind `converted: false` — which says "unknown", where a
+    /// bare zero would claim the robot is sitting on the origin.
+    pub fn from_local(
+        x: f64,
+        y: f64,
+        z: f64,
+        index: Option<&crate::index::WorkspaceIndex>,
+    ) -> Self {
+        let global =
+            index.and_then(|index| index.pose_local_to_global(datapod::Point::new(x, y, z)));
+        Self {
+            reported: PositionFrame::Local,
+            lat: global.map_or(0.0, |g| g.latitude),
+            lon: global.map_or(0.0, |g| g.longitude),
+            alt: global.map_or(0.0, |g| g.altitude),
+            x,
+            y,
+            z,
+            converted: global.is_some(),
+        }
+    }
+
+    /// From WGS84, deriving metres off the datum. See [`from_local`].
+    ///
+    /// [`from_local`]: RobotPosition::from_local
+    pub fn from_global(
+        lat: f64,
+        lon: f64,
+        alt: f64,
+        index: Option<&crate::index::WorkspaceIndex>,
+    ) -> Self {
+        let local =
+            index.and_then(|index| index.pose_global_to_local(datapod::Geo::new(lat, lon, alt)));
+        Self {
+            reported: PositionFrame::Global,
+            lat,
+            lon,
+            alt,
+            x: local.map_or(0.0, |p| p.x),
+            y: local.map_or(0.0, |p| p.y),
+            z: local.map_or(0.0, |p| p.z),
+            converted: local.is_some(),
+        }
+    }
+}
+
 /// Which way a robot is pointing.
 ///
 /// Robots send ROS REP-103 yaw, so that is stored verbatim; the compass bearing

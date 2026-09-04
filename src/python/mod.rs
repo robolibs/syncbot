@@ -10,6 +10,7 @@
 //! ergonomic Python-side `dict` / `list` access without per-field PyO3
 //! boilerplate.
 
+use std::collections::BTreeMap as OMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -244,9 +245,229 @@ impl PyWorkspace {
         })
     }
 
+    /// Write the workspace out as a `zoneout` directory.
+    fn save(&self, path: &str) -> PyResult<()> {
+        self.inner.save(Path::new(path)).map_err(err_runtime)
+    }
+
     /// Returns the root zone UUID.
     fn root_zone_id(&self) -> String {
         self.inner.root_zone().id().to_string()
+    }
+
+    /// The workspace datum as `{"lat", "lon", "alt"}`, or `None`.
+    fn datum<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        match self.inner.datum() {
+            Some(geo) => obj_from(py, &geo_dict(*geo)),
+            None => Ok(py.None().into_bound(py)),
+        }
+    }
+
+    fn node_count(&self) -> usize {
+        self.inner.graph().vertices().len()
+    }
+
+    fn edge_count(&self) -> usize {
+        self.inner.graph().edges().len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WorkspaceBuilder
+// ---------------------------------------------------------------------------
+
+/// Build a workspace from Python without an on-disk fixture.
+///
+/// Zones, nodes and edges take plain dicts and tuples; `traffic.*` properties
+/// mean exactly what they mean everywhere else. Nodes are named so edges can
+/// refer to them without the caller tracking UUIDs.
+#[pyclass(name = "WorkspaceBuilder", unsendable)]
+pub struct PyWorkspaceBuilder {
+    root: Option<zoneout::Zone>,
+    datum: datapod::Geo,
+    zones: Vec<zoneout::Zone>,
+    nodes: Vec<(String, datapod::Point, OMap<String, String>)>,
+    edges: Vec<(String, String, f64, OMap<String, String>)>,
+}
+
+fn polygon_from(points: Vec<(f64, f64)>) -> datapod::Polygon {
+    datapod::Polygon {
+        vertices: points
+            .into_iter()
+            .map(|(x, y)| datapod::Point::new(x, y, 0.0))
+            .collect(),
+    }
+}
+
+fn properties_from(properties: Option<&Bound<'_, PyAny>>) -> PyResult<OMap<String, String>> {
+    let Some(dict) = properties else {
+        return Ok(OMap::new());
+    };
+    if dict.is_none() {
+        return Ok(OMap::new());
+    }
+    let dict = dict
+        .downcast::<PyDict>()
+        .map_err(|_| err_value("properties must be a dict of str -> str"))?;
+    let mut out = OMap::new();
+    for (key, value) in dict.iter() {
+        out.insert(key.extract::<String>()?, value.extract::<String>()?);
+    }
+    Ok(out)
+}
+
+#[pymethods]
+impl PyWorkspaceBuilder {
+    #[new]
+    #[pyo3(signature = (name, boundary, datum, kind="workspace", properties=None))]
+    fn new(
+        name: &str,
+        boundary: Vec<(f64, f64)>,
+        datum: (f64, f64, f64),
+        kind: &str,
+        properties: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let geo = datapod::Geo::new(datum.0, datum.1, datum.2);
+        let mut builder = zoneout::ZoneBuilder::new()
+            .with_name(name)
+            .with_kind(kind)
+            .with_boundary(polygon_from(boundary))
+            .with_datum(geo)
+            .with_resolution(0.0);
+        for (key, value) in properties_from(properties)? {
+            builder = builder.with_property(key, value);
+        }
+        Ok(Self {
+            root: Some(builder.build().map_err(err_runtime)?),
+            datum: geo,
+            zones: Vec::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        })
+    }
+
+    /// Add a child zone. `numeric_id` is the short alias the flat wire uses.
+    #[pyo3(signature = (name, boundary, numeric_id=None, kind="zone", properties=None))]
+    fn add_zone(
+        &mut self,
+        name: &str,
+        boundary: Vec<(f64, f64)>,
+        numeric_id: Option<u64>,
+        kind: &str,
+        properties: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<String> {
+        let mut builder = zoneout::ZoneBuilder::new()
+            .with_name(name)
+            .with_kind(kind)
+            .with_boundary(polygon_from(boundary))
+            .with_datum(self.datum)
+            .with_resolution(0.0);
+        if let Some(n) = numeric_id {
+            builder = builder.with_property(crate::NUMERIC_ID_PROPERTY, n.to_string());
+        }
+        for (key, value) in properties_from(properties)? {
+            builder = builder.with_property(key, value);
+        }
+        let zone = builder.build().map_err(err_runtime)?;
+        let id = zone.id().to_string();
+        self.zones.push(zone);
+        Ok(id)
+    }
+
+    /// Add a graph node at `(x, y)`. The name is how edges refer to it.
+    #[pyo3(signature = (name, x, y, z=0.0, numeric_id=None, properties=None))]
+    fn add_node(
+        &mut self,
+        name: &str,
+        x: f64,
+        y: f64,
+        z: f64,
+        numeric_id: Option<u64>,
+        properties: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let mut props = properties_from(properties)?;
+        if let Some(n) = numeric_id {
+            props.insert(crate::NUMERIC_ID_PROPERTY.into(), n.to_string());
+        }
+        props.entry("label".into()).or_insert_with(|| name.into());
+        self.nodes
+            .push((name.to_string(), datapod::Point::new(x, y, z), props));
+        Ok(())
+    }
+
+    /// Connect two named nodes. Undirected unless `directed=True`.
+    #[pyo3(signature = (source, target, weight=1.0, numeric_id=None, directed=false, properties=None))]
+    fn add_edge(
+        &mut self,
+        source: &str,
+        target: &str,
+        weight: f64,
+        numeric_id: Option<u64>,
+        directed: bool,
+        properties: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let mut props = properties_from(properties)?;
+        if let Some(n) = numeric_id {
+            props.insert(crate::NUMERIC_ID_PROPERTY.into(), n.to_string());
+        }
+        if directed {
+            props.insert("__directed".into(), "true".into());
+        }
+        self.edges
+            .push((source.to_string(), target.to_string(), weight, props));
+        Ok(())
+    }
+
+    /// Assemble the workspace. The builder is spent afterwards.
+    fn build(&mut self) -> PyResult<PyWorkspace> {
+        let mut root = self
+            .root
+            .take()
+            .ok_or_else(|| err_runtime("workspace builder has already been built"))?;
+        for zone in std::mem::take(&mut self.zones) {
+            root.add_child(zone).map_err(err_runtime)?;
+        }
+
+        let mut ws = zoneout::Workspace::new(root);
+        ws.set_coord_mode(zoneout::CoordMode::Local);
+        ws.set_datum(self.datum);
+
+        let mut by_name = OMap::new();
+        for (name, position, props) in std::mem::take(&mut self.nodes) {
+            let mut data = zoneout::NodeData::new(position);
+            data.name = name.clone();
+            data.properties = props;
+            by_name.insert(name, ws.add_node_data(data));
+        }
+
+        for (source, target, weight, mut props) in std::mem::take(&mut self.edges) {
+            let directed = props.remove("__directed").is_some();
+            let (Some(&from), Some(&to)) = (by_name.get(&source), by_name.get(&target)) else {
+                return Err(err_value(format!(
+                    "edge {source:?} -> {target:?} names a node that was never added"
+                )));
+            };
+            let edge = zoneout::EdgeData {
+                id: uuid::Uuid::new_v4(),
+                zone_ids: Vec::new(),
+                properties: props,
+            };
+            let kind = if directed {
+                graphix::vertex::EdgeType::Directed
+            } else {
+                graphix::vertex::EdgeType::Undirected
+            };
+            ws.add_edge_data(from, to, weight, kind, edge);
+        }
+
+        // Adding an edge does not work out which zones it crosses. Without
+        // this an edge claim implies intent on nothing, and an exclusive zone
+        // whose only occupant is a corridor would never register as held.
+        ws.refresh_graph_zone_membership();
+
+        Ok(PyWorkspace {
+            inner: Arc::new(ws),
+        })
     }
 }
 
@@ -301,6 +522,258 @@ impl PyWorkspaceIndex {
             .collect();
         obj_from(py, &names)
     }
+
+    /// The zones the given edge passes through, as UUID strings.
+    fn zones_of_edge<'py>(&self, py: Python<'py>, edge_id: &str) -> PyResult<Bound<'py, PyAny>> {
+        let id = uuid::Uuid::parse_str(edge_id).map_err(err_value)?;
+        let ids: Vec<String> = self
+            .inner
+            .zones_of_edge(id)
+            .into_iter()
+            .map(|z| z.id().to_string())
+            .collect();
+        obj_from(py, &ids)
+    }
+
+    /// The workspace datum as `{"lat", "lon", "alt"}`, or `None`.
+    fn datum<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        match self.inner.datum() {
+            Some(geo) => obj_from(py, &geo_dict(geo)),
+            None => Ok(py.None().into_bound(py)),
+        }
+    }
+
+    /// Every zone, root first, with boundary and parsed policy — enough to
+    /// draw the workspace without reaching back into `zoneout`.
+    fn zones<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let Some(root) = self.inner.root_zone_id() else {
+            return obj_from(py, &Vec::<ZoneView>::new());
+        };
+        let mut ids = vec![root];
+        ids.extend(self.inner.descendant_zones(root).iter().map(|z| z.id()));
+        let views: Vec<ZoneView> = ids.iter().filter_map(|id| self.zone_view(*id)).collect();
+        obj_from(py, &views)
+    }
+
+    /// One zone by UUID, in the same shape `zones()` yields.
+    fn zone<'py>(&self, py: Python<'py>, zone_id: &str) -> PyResult<Bound<'py, PyAny>> {
+        let id = uuid::Uuid::parse_str(zone_id).map_err(err_value)?;
+        match self.zone_view(id) {
+            Some(view) => obj_from(py, &view),
+            None => Ok(py.None().into_bound(py)),
+        }
+    }
+
+    /// Every graph node with its position and properties.
+    fn nodes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let graph = self.inner.workspace().graph();
+        let views: Vec<NodeView> = graph
+            .vertices()
+            .into_iter()
+            .filter_map(|vid| graph.get_vertex(vid))
+            .map(|node| NodeView {
+                id: node.id.to_string(),
+                name: node.name.clone(),
+                numeric_id: numeric_of(&node.properties),
+                x: node.position.x,
+                y: node.position.y,
+                z: node.position.z,
+                properties: node.properties.clone(),
+            })
+            .collect();
+        obj_from(py, &views)
+    }
+
+    /// One node by UUID.
+    fn node<'py>(&self, py: Python<'py>, node_id: &str) -> PyResult<Bound<'py, PyAny>> {
+        let id = uuid::Uuid::parse_str(node_id).map_err(err_value)?;
+        let Some(node) = self.inner.node(id) else {
+            return Ok(py.None().into_bound(py));
+        };
+        obj_from(
+            py,
+            &NodeView {
+                id: node.id.to_string(),
+                name: node.name.clone(),
+                numeric_id: numeric_of(&node.properties),
+                x: node.position.x,
+                y: node.position.y,
+                z: node.position.z,
+                properties: node.properties.clone(),
+            },
+        )
+    }
+
+    /// Every graph edge with the nodes it joins.
+    fn edges<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let graph = self.inner.workspace().graph();
+        let mut views = Vec::new();
+        for edge in graph.edges() {
+            let Some(prop) = graph.edge_property(edge.id) else {
+                continue;
+            };
+            let ends = |vid| graph.get_vertex(vid).map(|v| v.id.to_string());
+            let (Some(source), Some(target)) = (
+                graph.source(edge.id).and_then(ends),
+                graph.target(edge.id).and_then(ends),
+            ) else {
+                continue;
+            };
+            views.push(EdgeView {
+                id: prop.id.to_string(),
+                numeric_id: numeric_of(&prop.properties),
+                source,
+                target,
+                properties: prop.properties.clone(),
+            });
+        }
+        obj_from(py, &views)
+    }
+
+    /// The parsed `traffic.*` policy of a zone.
+    fn zone_policy<'py>(&self, py: Python<'py>, zone_id: &str) -> PyResult<Bound<'py, PyAny>> {
+        let id = uuid::Uuid::parse_str(zone_id).map_err(err_value)?;
+        match self.inner.zone_policy(id) {
+            Some(policy) => obj_from(py, policy),
+            None => Ok(py.None().into_bound(py)),
+        }
+    }
+
+    /// The parsed `traffic.*` semantics of an edge.
+    fn edge_semantics<'py>(&self, py: Python<'py>, edge_id: &str) -> PyResult<Bound<'py, PyAny>> {
+        let id = uuid::Uuid::parse_str(edge_id).map_err(err_value)?;
+        match self.inner.edge_semantics(id) {
+            Some(semantics) => obj_from(py, semantics),
+            None => Ok(py.None().into_bound(py)),
+        }
+    }
+
+    /// Resolve the short numeric alias the flat wire uses to a UUID.
+    fn zone_by_numeric_id(&self, numeric_id: u64) -> Option<String> {
+        self.inner
+            .zone_uuid_by_numeric_id(numeric_id)
+            .map(|u| u.to_string())
+    }
+
+    fn node_by_numeric_id(&self, numeric_id: u64) -> Option<String> {
+        self.inner
+            .node_uuid_by_numeric_id(numeric_id)
+            .map(|u| u.to_string())
+    }
+
+    fn edge_by_numeric_id(&self, numeric_id: u64) -> Option<String> {
+        self.inner
+            .edge_uuid_by_numeric_id(numeric_id)
+            .map(|u| u.to_string())
+    }
+
+    /// Local ENU metres to WGS84, through the workspace datum.
+    fn local_to_global<'py>(
+        &self,
+        py: Python<'py>,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let geo = self
+            .inner
+            .local_to_global(datapod::Point::new(x, y, z))
+            .map_err(err_runtime)?;
+        obj_from(py, &geo_dict(geo))
+    }
+
+    /// WGS84 to local ENU metres, through the workspace datum.
+    fn global_to_local<'py>(
+        &self,
+        py: Python<'py>,
+        lat: f64,
+        lon: f64,
+        alt: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let point = self
+            .inner
+            .global_to_local(datapod::Geo::new(lat, lon, alt))
+            .map_err(err_runtime)?;
+        obj_from(py, &point_dict(point))
+    }
+
+    /// The edge joining two nodes, if there is one.
+    fn edge_between(&self, node_a: &str, node_b: &str) -> PyResult<Option<String>> {
+        let a = uuid::Uuid::parse_str(node_a).map_err(err_value)?;
+        let b = uuid::Uuid::parse_str(node_b).map_err(err_value)?;
+        Ok(self.inner.edge_between(a, b).map(|e| e.id.to_string()))
+    }
+}
+
+impl PyWorkspaceIndex {
+    fn zone_view(&self, id: uuid::Uuid) -> Option<ZoneView> {
+        let zone = self.inner.zone(id)?;
+        let boundary = if zone.poly().has_field_boundary() {
+            zone.poly()
+                .field_boundary()
+                .vertices
+                .iter()
+                .map(|v| (v.x, v.y))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Some(ZoneView {
+            id: id.to_string(),
+            name: zone.name().to_string(),
+            kind: zone.kind().to_string(),
+            numeric_id: self
+                .inner
+                .zone_property(id, crate::NUMERIC_ID_PROPERTY)
+                .and_then(|v| v.parse().ok()),
+            boundary,
+            policy: self.inner.zone_policy(id).cloned(),
+        })
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ZoneView {
+    id: String,
+    name: String,
+    kind: String,
+    numeric_id: Option<u64>,
+    boundary: Vec<(f64, f64)>,
+    policy: Option<crate::policy::ZonePolicy>,
+}
+
+#[derive(serde::Serialize)]
+struct NodeView {
+    id: String,
+    name: String,
+    numeric_id: Option<u64>,
+    x: f64,
+    y: f64,
+    z: f64,
+    properties: OMap<String, String>,
+}
+
+#[derive(serde::Serialize)]
+struct EdgeView {
+    id: String,
+    numeric_id: Option<u64>,
+    source: String,
+    target: String,
+    properties: OMap<String, String>,
+}
+
+fn numeric_of(properties: &OMap<String, String>) -> Option<u64> {
+    properties
+        .get(crate::NUMERIC_ID_PROPERTY)
+        .and_then(|v| v.trim().parse().ok())
+}
+
+fn geo_dict(geo: datapod::Geo) -> serde_json::Value {
+    serde_json::json!({ "lat": geo.latitude, "lon": geo.longitude, "alt": geo.altitude })
+}
+
+fn point_dict(point: datapod::Point) -> serde_json::Value {
+    serde_json::json!({ "x": point.x, "y": point.y, "z": point.z })
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +820,35 @@ impl PyClaimManager {
         let req: ClaimRequest = obj_to(request)?;
         self.inner.upsert_request(req);
         Ok(())
+    }
+
+    /// Record a claim, replacing whatever this robot held before.
+    fn upsert_request_for_robot(&mut self, request: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let req: ClaimRequest = obj_to(request)?;
+        Ok(self.inner.upsert_request_for_robot(req))
+    }
+
+    fn remove_requests_for_robot(&mut self, robot_id: u64) -> u64 {
+        self.inner.remove_requests_for_robot(RobotId::new(robot_id))
+    }
+
+    fn expire_requests(&mut self, current_tick: u64) -> u64 {
+        self.inner.expire_requests(current_tick)
+    }
+
+    #[pyo3(signature = (robot_id, released_at_tick=None))]
+    fn release_leases_for_robot(&mut self, robot_id: u64, released_at_tick: Option<u64>) -> u64 {
+        self.inner
+            .release_leases_for_robot(RobotId::new(robot_id), released_at_tick)
+    }
+
+    fn leases_for_robot<'py>(&self, py: Python<'py>, robot_id: u64) -> PyResult<Bound<'py, PyAny>> {
+        let leases: Vec<&Lease> = self.inner.leases_for_robot(RobotId::new(robot_id));
+        obj_from(py, &leases)
+    }
+
+    fn next_request_id(&self) -> u64 {
+        self.inner.next_request_id().raw()
     }
 
     fn remove_request(&mut self, claim_id: u64) -> bool {
@@ -563,6 +1065,152 @@ impl PyCoordinator {
         self.inner.release_behind_progress(RobotId::new(robot_id))
     }
 
+    /// The rolling-horizon claim this robot needs next: the nodes and edges
+    /// of the coming `horizon` steps, and nothing further. Zones are not
+    /// claimed — the manager derives intent on them from these targets.
+    #[pyo3(signature = (robot_id, claim_id, access_mode="exclusive"))]
+    fn claim_request_for_robot<'py>(
+        &self,
+        py: Python<'py>,
+        robot_id: u64,
+        claim_id: u64,
+        access_mode: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let request = self.inner.claim_request_for_robot(
+            RobotId::new(robot_id),
+            ClaimId::new(claim_id),
+            parse_access_mode(access_mode),
+        );
+        obj_from(py, &request)
+    }
+
+    /// Ask whether a claim would be granted, without recording it.
+    fn evaluate_claim<'py>(
+        &self,
+        py: Python<'py>,
+        request: &Bound<'_, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let req: ClaimRequest = obj_to(request)?;
+        obj_from(py, &self.inner.claim_manager().evaluate_request(&req))
+    }
+
+    /// Record a granted claim, replacing whatever this robot held before.
+    ///
+    /// Replacing rather than stacking is what makes a rolling horizon release
+    /// the ground behind it: moving forward and re-claiming is the release.
+    /// Returns `True` when it replaced an existing claim on the same targets,
+    /// `False` when it added a new one — both are success.
+    fn upsert_claim_request_for_robot(&mut self, request: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let req: ClaimRequest = obj_to(request)?;
+        Ok(self.inner.claim_manager_mut().upsert_request_for_robot(req))
+    }
+
+    /// Drop every claim this robot holds — it has arrived, or given up.
+    fn remove_claim_requests_for_robot(&mut self, robot_id: u64) -> u64 {
+        self.inner
+            .claim_manager_mut()
+            .remove_requests_for_robot(RobotId::new(robot_id))
+    }
+
+    fn claim_request_count(&self) -> usize {
+        self.inner.claim_manager().request_count()
+    }
+
+    fn claim_lease_count(&self) -> usize {
+        self.inner.claim_manager().lease_count()
+    }
+
+    /// Record which claims and leases a robot is holding.
+    #[pyo3(signature = (robot_id, pending_claim_ids, active_lease_ids, last_claim_tick=None))]
+    fn update_robot_claim_state(
+        &mut self,
+        robot_id: u64,
+        pending_claim_ids: Vec<u64>,
+        active_lease_ids: Vec<u64>,
+        last_claim_tick: Option<u64>,
+    ) -> bool {
+        self.inner.update_robot_claim_state(
+            RobotId::new(robot_id),
+            pending_claim_ids.into_iter().map(ClaimId::new).collect(),
+            active_lease_ids.into_iter().map(LeaseId::new).collect(),
+            last_claim_tick,
+        )
+    }
+
+    /// Report where a robot is. Position and heading are independent — `None`
+    /// means "not reported", never "moved to nowhere".
+    #[pyo3(signature = (robot_id, x=None, y=None, z=None, yaw=None, frame="local", now_ms=0))]
+    #[allow(clippy::too_many_arguments)]
+    fn update_robot_pose(
+        &mut self,
+        robot_id: u64,
+        x: Option<f64>,
+        y: Option<f64>,
+        z: Option<f64>,
+        yaw: Option<f64>,
+        frame: &str,
+        now_ms: u64,
+    ) -> bool {
+        let index = self.inner.index();
+        let position = match (x, y) {
+            (Some(x), Some(y)) if frame == "global" => Some(
+                crate::robot::RobotPosition::from_global(x, y, z.unwrap_or(0.0), index),
+            ),
+            (Some(x), Some(y)) => Some(crate::robot::RobotPosition::from_local(
+                x,
+                y,
+                z.unwrap_or(0.0),
+                index,
+            )),
+            _ => None,
+        };
+        let heading = yaw.map(crate::robot::RobotHeading::from_yaw_rad);
+        self.inner
+            .update_robot_pose(RobotId::new(robot_id), position, heading, now_ms)
+    }
+
+    /// Expire claims whose lease window has passed.
+    fn expire_claims(&mut self, now_ms: u64) -> u64 {
+        self.inner.expire_claims(now_ms)
+    }
+
+    /// Heartbeat bookkeeping: how often a robot promises to report, and when
+    /// it last did.
+    fn set_alive(&mut self, robot_id: u64, interval_secs: u64, now_ms: u64) {
+        self.inner
+            .set_alive(RobotId::new(robot_id), interval_secs, now_ms);
+    }
+
+    fn touch_robot(&mut self, robot_id: u64, now_ms: u64) {
+        self.inner.touch_robot(RobotId::new(robot_id), now_ms);
+    }
+
+    fn robot_active_at(&self, robot_id: u64, now_ms: u64) -> bool {
+        self.inner.robot_active_at(RobotId::new(robot_id), now_ms)
+    }
+
+    fn inactive_robots_at(&self, now_ms: u64) -> Vec<u64> {
+        self.inner
+            .inactive_robots_at(now_ms)
+            .into_iter()
+            .map(|r| r.raw())
+            .collect()
+    }
+
+    /// Drop robots that have stopped heart-beating, releasing what they held.
+    fn sweep_inactive(&mut self, now_ms: u64) -> Vec<u64> {
+        self.inner
+            .sweep_inactive(now_ms)
+            .into_iter()
+            .map(|r| r.raw())
+            .collect()
+    }
+
+    /// Full coordinator state, for persisting across a restart.
+    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        obj_from(py, &self.inner.snapshot())
+    }
+
     fn claim_manager_requests<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         obj_from(py, &self.inner.claim_manager().requests())
     }
@@ -704,6 +1352,7 @@ pub fn register_python_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Classes
     m.add_class::<PyWorkspace>()?;
+    m.add_class::<PyWorkspaceBuilder>()?;
     m.add_class::<PyWorkspaceIndex>()?;
     m.add_class::<PyClaimManager>()?;
     m.add_class::<PyCoordinator>()?;

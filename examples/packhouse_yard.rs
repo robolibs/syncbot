@@ -268,6 +268,11 @@ fn build_yard() -> Result<Yard, Box<dyn Error>> {
         graph_lines.push(vec![place_of(&ws, nodes[from]), place_of(&ws, nodes[to])]);
     }
 
+    // Adding an edge does not work out which zones it crosses. Without this
+    // the bridge deck belongs to no zone, and claiming it would imply intent
+    // on nothing — the exclusive weighbridge would never register as held.
+    ws.refresh_graph_zone_membership();
+
     Ok(Yard {
         index: Arc::new(WorkspaceIndex::new(Arc::new(ws))),
         datum,
