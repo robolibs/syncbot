@@ -55,8 +55,13 @@ pub fn insecure_test_cost() -> keylock::kdf::pwhash::Config {
 /// not sit on the hot path of every heartbeat and claim. Callers verify once
 /// and remember the answer; see `Coordinator::validate_key`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct KeyVerifier(String);
+pub enum KeyVerifier {
+    /// A shared secret, stored as `keylock`'s PHC string.
+    Secret(String),
+    /// An Ed25519 public key from a `did:key`. Public by nature, so it is
+    /// stored as-is — there is nothing here worth hashing.
+    DidKey(Vec<u8>),
+}
 
 impl KeyVerifier {
     /// Hash `key` for storage at the default cost.
@@ -69,15 +74,39 @@ impl KeyVerifier {
         key: &Key,
         cost: keylock::kdf::pwhash::Config,
     ) -> Result<Self, KeyError> {
-        keylock::kdf::pwhash::hash_with(&key.material(), cost)
-            .map(Self)
-            .map_err(|_| KeyError::Malformed)
+        match key {
+            Key::DidKey(public_key) => Ok(Self::DidKey(public_key.clone())),
+            // A token is proof that a key was presented, not a key. Binding one
+            // as an identity would make the identity expire with the token.
+            Key::Token(_) => Err(KeyError::Malformed),
+            secret => keylock::kdf::pwhash::hash_with(&secret.material(), cost)
+                .map(Self::Secret)
+                .map_err(|_| KeyError::Malformed),
+        }
     }
 
-    /// Whether `presented` matches. Cost parameters come from the stored
-    /// string, so raising the default does not invalidate existing keys.
+    /// The Ed25519 public key this verifier accepts signatures from, if it is
+    /// a `did:key` identity.
+    pub fn public_key(&self) -> Option<&[u8]> {
+        match self {
+            Self::DidKey(public_key) => Some(public_key),
+            Self::Secret(_) => None,
+        }
+    }
+
+    /// Whether `presented` matches.
+    ///
+    /// A `did:key` identity never matches here, whatever is presented: a
+    /// public key proves nothing, and the bearer token that *does* prove it is
+    /// checked against the coordinator's token store, not against this.
     pub fn verify(&self, presented: &Key) -> bool {
-        keylock::kdf::pwhash::verify(&self.0, &presented.material())
+        match self {
+            Self::Secret(stored) => {
+                matches!(presented, Key::Numeric(_) | Key::Pass(_))
+                    && keylock::kdf::pwhash::verify(stored, &presented.material())
+            }
+            Self::DidKey(_) => false,
+        }
     }
 }
 
@@ -88,6 +117,15 @@ pub enum Key {
     Numeric(u64),
     /// `pass:<secret>` — a password. Anything after the prefix, verbatim.
     Pass(String),
+    /// `did:key:<multibase>` — the Ed25519 public key it encodes.
+    ///
+    /// Presenting this proves nothing on its own: a public key is public. It
+    /// names an identity, which is then proven by signing a challenge — see
+    /// `Coordinator::issue_challenge`.
+    DidKey(Vec<u8>),
+    /// `tok:<token>` — a bearer token issued after a successful proof. This is
+    /// what a `did:key` robot actually sends on each later call.
+    Token(String),
 }
 
 /// Why a raw key string could not become a [`Key`].
@@ -115,13 +153,25 @@ impl Key {
             }
             return Ok(Key::Pass(secret.to_string()));
         }
+        if let Some(token) = raw.strip_prefix("tok:") {
+            if token.is_empty() {
+                return Err(KeyError::Malformed);
+            }
+            return Ok(Key::Token(token.to_string()));
+        }
         if raw.starts_with("did:") {
             let did = authbox::did::did::parse(raw).map_err(|_| KeyError::Malformed)?;
             return match did.method.as_str() {
-                // The identity is real and authbox can resolve it; what is
-                // missing is a way to *prove* it over this wire. See the
-                // module docs.
-                "key" => Err(KeyError::Unsupported("did:key".to_string())),
+                "key" => {
+                    let info =
+                        authbox::did::key::parse_did_key(raw).map_err(|_| KeyError::Malformed)?;
+                    match info.type_ {
+                        authbox::did::key::DidKeyType::Ed25519 => Ok(Key::DidKey(info.public_key)),
+                        // X25519 is a key-agreement key; it cannot sign, so it
+                        // cannot answer a challenge.
+                        _ => Err(KeyError::Unsupported("did:key (not Ed25519)".to_string())),
+                    }
+                }
                 other => Err(KeyError::Unsupported(format!("did:{other}"))),
             };
         }
@@ -144,6 +194,14 @@ impl Key {
                 out.push(b'p');
                 out.extend_from_slice(p.as_bytes());
             }
+            Key::DidKey(pk) => {
+                out.push(b'k');
+                out.extend_from_slice(pk);
+            }
+            Key::Token(t) => {
+                out.push(b't');
+                out.extend_from_slice(t.as_bytes());
+            }
         }
         out
     }
@@ -157,6 +215,8 @@ impl Key {
         match (self, other) {
             (Key::Numeric(a), Key::Numeric(b)) => ct_eq_bytes(&a.to_le_bytes(), &b.to_le_bytes()),
             (Key::Pass(a), Key::Pass(b)) => ct_eq_bytes(a.as_bytes(), b.as_bytes()),
+            (Key::DidKey(a), Key::DidKey(b)) => ct_eq_bytes(a, b),
+            (Key::Token(a), Key::Token(b)) => ct_eq_bytes(a.as_bytes(), b.as_bytes()),
             _ => false,
         }
     }
@@ -181,6 +241,8 @@ impl std::fmt::Display for Key {
         match self {
             Key::Numeric(n) => write!(f, "{n}"),
             Key::Pass(p) => write!(f, "pass:{p}"),
+            Key::DidKey(pk) => write!(f, "did:key:<{} bytes>", pk.len()),
+            Key::Token(_) => write!(f, "tok:<redacted>"),
         }
     }
 }
@@ -217,12 +279,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_did_key_and_unknown_methods() {
-        // Real DID syntax, parsed by authbox — recognised, not yet provable.
-        assert_eq!(
-            Key::parse("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
-            Err(KeyError::Unsupported("did:key".into()))
-        );
+    fn parses_did_key_and_rejects_unknown_methods() {
+        // Real DID syntax, parsed by authbox down to the Ed25519 public key.
+        let parsed = Key::parse("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+        match parsed {
+            Ok(Key::DidKey(public_key)) => assert_eq!(public_key.len(), 32),
+            other => panic!("expected an Ed25519 identity, got {other:?}"),
+        }
         assert_eq!(
             Key::parse("did:whatever:x"),
             Err(KeyError::Unsupported("did:whatever".into()))

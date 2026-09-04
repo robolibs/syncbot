@@ -489,29 +489,23 @@ fn the_verification_cache_never_admits_a_wrong_key() {
     );
 }
 
-/// `did:key` is rejected, and the reason is a missing protocol rather than a
-/// missing algorithm — keylock has Ed25519, but the flat wire carries one
-/// static scalar with no challenge to sign, so any signature would replay.
+/// `did:key` is supported now (see `tests/did_key_auth.rs`); other DID
+/// methods are parsed and refused as an unsupported scheme.
 #[test]
-fn did_key_is_still_refused() {
+fn an_unsupported_did_method_is_refused() {
     use syncbot::core::key::{Key, KeyError};
 
     assert_eq!(
-        Key::parse("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
-        Err(KeyError::Unsupported("did:key".into()))
+        Key::parse("did:web:example.com"),
+        Err(KeyError::Unsupported("did:web".into()))
     );
 
     let state = state_with_zones(1);
-    let refused = flat_register(
-        &state,
-        "7",
-        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-        None,
-    );
+    let refused = flat_register(&state, "7", "did:web:example.com", None);
     assert_eq!(
         (refused.decision, refused.reason),
         (0, 4),
-        "an unsupported key scheme reports reason 4"
+        "an unsupported DID method reports reason 4"
     );
 }
 

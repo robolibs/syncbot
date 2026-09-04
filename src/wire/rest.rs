@@ -15,7 +15,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::claim::ClaimTargetKind;
 use crate::wire::{
-    ApiError, FlatClaim, FlatClaimRoute, FlatHeartbeat, FlatPlanRoute, FlatRegister, FlatRelease,
+    ApiError, FlatChallenge, FlatClaim, FlatClaimRoute, FlatHeartbeat, FlatPlanRoute, FlatProve,
+    FlatRegister, FlatRelease,
 };
 
 pub const REST_PREFIX: &str = "/ares/v1";
@@ -44,6 +45,8 @@ pub fn router(client: crate::wire::peerbus::Client) -> Router {
                 MAX_WORKSPACE_BODY_BYTES,
             )),
         )
+        .route("/ares/v1/auth/challenge", post(auth_challenge))
+        .route("/ares/v1/auth/prove", post(auth_prove))
         .route("/ares/v1/routes/plan", post(plan_route))
         .route("/ares/v1/zones", get(list_zones))
         .route("/ares/v1/zones/{id}", get(zone))
@@ -97,6 +100,41 @@ async fn set_workspace(
     respond(
         preferred_format(&headers),
         client.set_workspace(&body, &key),
+    )
+}
+
+/// Ask for a nonce to sign. Unauthenticated on purpose — the answer is
+/// useless without the private key, and a robot needs this before it can
+/// authenticate at all.
+async fn auth_challenge(
+    headers: HeaderMap,
+    State(client): State<crate::wire::peerbus::Client>,
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let req = match parse_body::<FlatChallenge>(format, &body) {
+        Ok(req) => req,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    respond(preferred_format(&headers), client.challenge(&req.robot))
+}
+
+async fn auth_prove(
+    headers: HeaderMap,
+    State(client): State<crate::wire::peerbus::Client>,
+    body: Bytes,
+) -> Response {
+    let format = request_format(&headers);
+    let req = match parse_body::<FlatProve>(format, &body) {
+        Ok(req) => req,
+        Err(err) => return respond::<()>(format, Err(err)),
+    };
+    let Some(signature) = crate::wire::decode_hex_public(&req.signature) else {
+        return respond::<()>(format, Err(ApiError::new("signature must be hex encoded")));
+    };
+    respond(
+        preferred_format(&headers),
+        client.prove(&req.robot, &req.did, &signature),
     )
 }
 

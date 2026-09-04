@@ -889,6 +889,16 @@ pub struct Coordinator {
     /// Per-process pepper for `verified`. Random at construction; a cache
     /// entry therefore means nothing to anyone who reads it later.
     fingerprint_pepper: Vec<u8>,
+    /// Outstanding challenges: the nonce a robot has been asked to sign.
+    ///
+    /// Single use and short lived — the point is that the thing signed is
+    /// fresh, so a captured signature cannot be replayed.
+    challenges: BTreeMap<RobotId, (Vec<u8>, std::time::Instant)>,
+    /// Bearer tokens issued to robots that answered a challenge.
+    ///
+    /// A `did:key` robot cannot sign every request — the flat wire carries one
+    /// scalar — so it proves possession once and carries the token afterwards.
+    tokens: BTreeMap<String, IssuedToken>,
     /// Consecutive failed verifications per robot, and when the streak began.
     ///
     /// Hashing keys makes a *failed* check expensive too — ~11 ms of Argon2
@@ -928,6 +938,24 @@ pub enum RegistrationRefusal {
     /// The coordinator is holding as many robots as it will.
     Full,
 }
+
+/// A bearer token and what it proved.
+#[derive(Debug, Clone)]
+pub struct IssuedToken {
+    /// The robot that proved the identity.
+    pub robot_id: RobotId,
+    /// The Ed25519 public key that was proven, so a registration made with
+    /// this token binds the right identity.
+    pub public_key: Vec<u8>,
+    /// When the token stops being accepted.
+    pub expires_at: std::time::Instant,
+}
+
+/// How long a robot has to sign a challenge before it lapses.
+const CHALLENGE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long an issued bearer token stays valid. Re-prove to renew.
+const TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Failed verifications for one robot before new derivations are refused.
 const MAX_KEY_FAILURES: u32 = 5;
@@ -984,6 +1012,8 @@ impl Default for Coordinator {
             robot_keys: BTreeMap::new(),
             verified: BTreeMap::new(),
             fingerprint_pepper: new_pepper(),
+            challenges: BTreeMap::new(),
+            tokens: BTreeMap::new(),
             failures: BTreeMap::new(),
             robot_id_by_uuid: BTreeMap::new(),
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
@@ -1008,6 +1038,8 @@ impl Coordinator {
             robot_keys: BTreeMap::new(),
             verified: BTreeMap::new(),
             fingerprint_pepper: new_pepper(),
+            challenges: BTreeMap::new(),
+            tokens: BTreeMap::new(),
             failures: BTreeMap::new(),
             robot_id_by_uuid: BTreeMap::new(),
             next_synthetic_robot_id: SYNTHETIC_ROBOT_ID_BASE,
@@ -1130,6 +1162,8 @@ impl Coordinator {
         self.robot_keys.clear();
         self.verified.clear();
         self.failures.clear();
+        self.challenges.clear();
+        self.tokens.clear();
         self.robot_id_by_uuid.clear();
         self.pending_uuid_bindings.clear();
         self.robot_alive.clear();
@@ -1243,21 +1277,125 @@ impl Coordinator {
             robot_id,
             ..RobotState::default()
         };
-        let Ok(verifier) = KeyVerifier::derive_with_cost(&key, cost) else {
-            self.pending_uuid_bindings.remove(&robot_id);
-            return false;
+        // Registering with a bearer token binds the identity that token
+        // proved, not the token — otherwise the robot's identity would expire
+        // along with it.
+        let verifier = match &key {
+            Key::Token(token) => match self.token_identity(token) {
+                Some(public_key) => KeyVerifier::DidKey(public_key),
+                None => {
+                    self.pending_uuid_bindings.remove(&robot_id);
+                    return false;
+                }
+            },
+            other => match KeyVerifier::derive_with_cost(other, cost) {
+                Ok(verifier) => verifier,
+                Err(_) => {
+                    self.pending_uuid_bindings.remove(&robot_id);
+                    return false;
+                }
+            },
         };
         self.robot_states.push(state);
         self.robot_keys.insert(robot_id, verifier);
         // The registering robot has just proven this key; no need to make its
-        // first heartbeat pay for another derivation.
-        let fingerprint = self.fingerprint(&key);
-        self.verified.insert(robot_id, fingerprint);
+        // first heartbeat pay for another derivation. (A token needs no cache
+        // entry — it is checked against the token store directly.)
+        if !matches!(key, Key::Token(_)) {
+            let fingerprint = self.fingerprint(&key);
+            self.verified.insert(robot_id, fingerprint);
+        }
         // Registration succeeded: commit the tentative UUID->id binding, if any.
         if let Some(canon) = self.pending_uuid_bindings.remove(&robot_id) {
             self.robot_id_by_uuid.insert(canon, robot_id);
         }
         true
+    }
+
+    /// Issue a fresh nonce for `robot_id` to sign.
+    ///
+    /// Available to unregistered ids too: a `did:key` robot proves possession
+    /// *before* it registers, so nobody can bind an identity they cannot use.
+    /// Issuing a new challenge discards any previous one for that robot.
+    pub fn issue_challenge(&mut self, robot_id: RobotId) -> Vec<u8> {
+        let mut nonce = vec![0u8; 32];
+        if keylock::crypto::rng::randombytes_buf(&mut nonce).is_err() {
+            // Never hand out a predictable challenge; a caller that cannot get
+            // randomness gets an empty nonce, which `prove_identity` rejects.
+            return Vec::new();
+        }
+        self.challenges
+            .insert(robot_id, (nonce.clone(), std::time::Instant::now()));
+        nonce
+    }
+
+    /// Check a signature over the outstanding challenge and issue a bearer
+    /// token on success.
+    ///
+    /// The challenge is consumed either way — a failed attempt does not leave
+    /// a nonce lying around to be attacked repeatedly. A robot that is already
+    /// registered must present the identity it registered with; otherwise a
+    /// second robot could prove *its own* key against someone else's id.
+    pub fn prove_identity(
+        &mut self,
+        robot_id: RobotId,
+        public_key: &[u8],
+        signature: &[u8],
+    ) -> Option<String> {
+        let (nonce, issued_at) = self.challenges.remove(&robot_id)?;
+        if nonce.is_empty() || issued_at.elapsed() > CHALLENGE_TTL {
+            return None;
+        }
+        if let Some(stored) = self.robot_keys.get(&robot_id) {
+            match stored.public_key() {
+                // Registered under this identity — the key must match.
+                Some(expected) => {
+                    if !keylock::crypto::constant_time::verify::secure_compare(expected, public_key)
+                    {
+                        return None;
+                    }
+                }
+                // Registered with a password. Signing proves nothing about it.
+                None => return None,
+            }
+        }
+        if !keylock::crypto::ed25519::verify_detached(signature, &nonce, public_key) {
+            return None;
+        }
+
+        self.expire_tokens();
+        let mut raw = vec![0u8; 32];
+        keylock::crypto::rng::randombytes_buf(&mut raw).ok()?;
+        let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+        self.tokens.insert(
+            token.clone(),
+            IssuedToken {
+                robot_id,
+                public_key: public_key.to_vec(),
+                expires_at: std::time::Instant::now() + TOKEN_TTL,
+            },
+        );
+        Some(token)
+    }
+
+    /// What a live bearer token proved, if it is still valid and belongs to
+    /// `robot_id`.
+    pub fn token_holder(&self, token: &str, robot_id: RobotId) -> Option<&IssuedToken> {
+        let issued = self.tokens.get(token)?;
+        (issued.robot_id == robot_id && issued.expires_at > std::time::Instant::now())
+            .then_some(issued)
+    }
+
+    /// The identity a token proved, for a registration made with it.
+    pub fn token_identity(&self, token: &str) -> Option<Vec<u8>> {
+        let issued = self.tokens.get(token)?;
+        (issued.expires_at > std::time::Instant::now()).then(|| issued.public_key.clone())
+    }
+
+    /// Drop tokens that have lapsed, so the store does not grow forever.
+    fn expire_tokens(&mut self) {
+        let now = std::time::Instant::now();
+        self.tokens.retain(|_, issued| issued.expires_at > now);
     }
 
     /// Whether `key` authenticates as `robot_id`'s registered key. Returns
@@ -1271,6 +1409,14 @@ impl Coordinator {
         let Some(stored) = self.robot_keys.get(&robot_id) else {
             return false;
         };
+
+        // A bearer token is checked against the token store, not the stored
+        // verifier — it is proof of a past signature, not a secret. Cheap, so
+        // it needs no cache.
+        if let Key::Token(token) = key {
+            return self.token_holder(token, robot_id).is_some();
+        }
+
         let fingerprint = self.fingerprint(key);
 
         // Cache first, deliberately: a robot whose key is already known stays
@@ -1336,6 +1482,8 @@ impl Coordinator {
             self.robot_keys.remove(&robot_id);
             self.verified.remove(&robot_id);
             self.failures.remove(&robot_id);
+            self.challenges.remove(&robot_id);
+            self.tokens.retain(|_, issued| issued.robot_id != robot_id);
             self.robot_id_by_uuid.retain(|_, v| *v != robot_id);
             self.robot_alive.remove(&robot_id);
             return true;
@@ -1663,6 +1811,8 @@ impl Coordinator {
             robot_keys: snapshot.robot_keys,
             verified: BTreeMap::new(),
             fingerprint_pepper: new_pepper(),
+            challenges: BTreeMap::new(),
+            tokens: BTreeMap::new(),
             failures: BTreeMap::new(),
             robot_id_by_uuid: snapshot.robot_id_by_uuid,
             next_synthetic_robot_id: snapshot.next_synthetic_robot_id,

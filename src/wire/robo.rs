@@ -64,6 +64,27 @@ pub async fn serve(
         .await?,
     );
     tasks.push(
+        spawn_queryable(
+            session,
+            "auth/challenge",
+            client.clone(),
+            |client, payload| {
+                let req: crate::wire::FlatChallenge = decode_required(payload)?;
+                client.challenge(&req.robot)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_queryable(session, "auth/prove", client.clone(), |client, payload| {
+            let req: crate::wire::FlatProve = decode_required(payload)?;
+            let signature = crate::wire::decode_hex_public(&req.signature)
+                .ok_or_else(|| ApiError::new("signature must be hex encoded"))?;
+            client.prove(&req.robot, &req.did, &signature)
+        })
+        .await?,
+    );
+    tasks.push(
         spawn_queryable(session, "routes/plan", client.clone(), |client, payload| {
             let req: crate::wire::FlatPlanRoute = decode_required(payload)?;
             client.plan_route(&req.start_node_id, &req.goal_node_id, req.use_penalties)

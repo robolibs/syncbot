@@ -804,6 +804,12 @@ pub fn flat_register(
     if !state.allow_default_key && key_raw.trim() == DEFAULT_KEY {
         return FlatReply::deny(reason::register::NOT_PERMITTED);
     }
+    // A bare `did:key` names an identity without proving it — a public key is
+    // public, so anyone could bind someone else's and deny them their id. Prove
+    // it first (challenge -> signature -> token) and register with the token.
+    if matches!(key, Key::DidKey(_)) {
+        return FlatReply::deny(reason::register::NOT_PERMITTED);
+    }
     let robot_id = match coord.resolve_or_mint_robot_id(robot_raw) {
         Some(id) => id,
         None => return FlatReply::deny(reason::register::BAD_ID),
@@ -1381,6 +1387,111 @@ pub struct FlatClaim {
     /// Optional lease time in seconds: 0 (or absent) = unlimited, X = X seconds.
     #[serde(default, alias = "LeaseTime", alias = "leasetime")]
     pub lease_time: Option<u64>,
+}
+
+/// What a robot must sign to prove a `did:key` identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChallengeView {
+    /// The bytes to sign, hex encoded.
+    pub nonce: String,
+    /// Seconds before the challenge lapses.
+    pub expires_in: u64,
+}
+
+/// The bearer token a successful proof yields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenView {
+    /// Present this as `tok:<token>` in the `key` field of later calls.
+    pub token: String,
+    /// Seconds before it stops being accepted.
+    pub expires_in: u64,
+}
+
+/// Ask for a nonce to sign.
+///
+/// Open to unregistered robot ids on purpose: a `did:key` robot proves
+/// possession *before* it registers, so an identity can never be bound by
+/// someone who cannot use it.
+pub fn flat_challenge(state: &ServeState, robot_raw: &str) -> ApiResult<ChallengeView> {
+    let mut coord = write_coord(state)?;
+    let robot_id = coord
+        .resolve_or_mint_robot_id(robot_raw)
+        .ok_or_else(|| ApiError::new(format!("unknown robot id {robot_raw:?}")))?;
+    let nonce = coord.issue_challenge(robot_id);
+    if nonce.is_empty() {
+        return Err(ApiError::new("could not generate a challenge"));
+    }
+    Ok(ChallengeView {
+        nonce: nonce.iter().map(|b| format!("{b:02x}")).collect(),
+        expires_in: 30,
+    })
+}
+
+/// Answer a challenge with a signature and receive a bearer token.
+///
+/// `did` is the robot's `did:key:…`; `signature` is hex-encoded Ed25519 over
+/// the challenge nonce.
+pub fn flat_prove(
+    state: &ServeState,
+    robot_raw: &str,
+    did: &str,
+    signature_hex: &str,
+) -> ApiResult<TokenView> {
+    let public_key = match Key::parse(did) {
+        Ok(Key::DidKey(public_key)) => public_key,
+        _ => return Err(ApiError::new("expected a did:key identity")),
+    };
+    let signature =
+        decode_hex(signature_hex).ok_or_else(|| ApiError::new("signature must be hex encoded"))?;
+
+    let mut coord = write_coord(state)?;
+    let robot_id = coord
+        .resolve_or_mint_robot_id(robot_raw)
+        .ok_or_else(|| ApiError::new(format!("unknown robot id {robot_raw:?}")))?;
+    // One message for every failure: a wrong signature, a lapsed challenge and
+    // an identity that does not match the registration are all the same
+    // answer, so a prober learns nothing from which one it hit.
+    let token = coord
+        .prove_identity(robot_id, &public_key, &signature)
+        .ok_or_else(|| ApiError::new("challenge was not answered correctly"))?;
+    Ok(TokenView {
+        token,
+        expires_in: 3600,
+    })
+}
+
+/// Decode a hex string, for adapters carrying a signature as text.
+pub fn decode_hex_public(hex: &str) -> Option<Vec<u8>> {
+    decode_hex(hex)
+}
+
+fn decode_hex(hex: &str) -> Option<Vec<u8>> {
+    let hex = hex.trim();
+    if !hex.len().is_multiple_of(2) || hex.is_empty() {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
+}
+
+/// Flat challenge request: which robot is asking.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlatChallenge {
+    #[serde(deserialize_with = "de_scalar_string")]
+    pub robot: String,
+}
+
+/// Flat proof: the identity and the signature over the challenge.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlatProve {
+    #[serde(deserialize_with = "de_scalar_string")]
+    pub robot: String,
+    #[serde(deserialize_with = "de_scalar_string")]
+    pub did: String,
+    #[serde(deserialize_with = "de_scalar_string")]
+    pub signature: String,
 }
 
 /// Flat route claim: the nodes a robot stops at and the edges it crosses.

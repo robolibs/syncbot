@@ -70,6 +70,8 @@ pub fn router(client: crate::wire::peerbus::Client) -> Router {
     Router::new()
         .route("/ares/v1/health", get(health))
         .route("/ares/v1/fleet/snapshot", get(fleet_snapshot))
+        .route("/ares/v1/auth/challenge", post(auth_challenge))
+        .route("/ares/v1/auth/prove", post(auth_prove))
         .route("/ares/v1/routes/plan", post(plan_route))
         .route("/ares/v1/zones", get(list_zones))
         .route("/ares/v1/zones/{id}", get(zone))
@@ -96,6 +98,23 @@ async fn fleet_snapshot(
     State(client): State<crate::wire::peerbus::Client>,
 ) -> XmlResult<crate::wire::FleetSnapshot> {
     result(client.fleet_snapshot())
+}
+
+async fn auth_challenge(
+    State(client): State<crate::wire::peerbus::Client>,
+    Xml(req): Xml<crate::wire::FlatChallenge>,
+) -> XmlResult<crate::wire::ChallengeView> {
+    result(client.challenge(&req.robot))
+}
+
+async fn auth_prove(
+    State(client): State<crate::wire::peerbus::Client>,
+    Xml(req): Xml<crate::wire::FlatProve>,
+) -> XmlResult<crate::wire::TokenView> {
+    let Some(signature) = crate::wire::decode_hex_public(&req.signature) else {
+        return result(Err(ApiError::new("signature must be hex encoded")));
+    };
+    result(client.prove(&req.robot, &req.did, &signature))
 }
 
 async fn plan_route(

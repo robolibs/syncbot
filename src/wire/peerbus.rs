@@ -50,6 +50,8 @@ pub const ZONE_GET_TOPIC: &str = "ares/v1/zones/get";
 pub const FLEET_SNAPSHOT_TOPIC: &str = "ares/v1/fleet/snapshot";
 pub const WORKSPACE_SET_TOPIC: &str = "ares/v1/workspace/set";
 pub const HEALTH_TOPIC: &str = "ares/v1/health";
+pub const AUTH_CHALLENGE_TOPIC: &str = "ares/v1/auth/challenge";
+pub const AUTH_PROVE_TOPIC: &str = "ares/v1/auth/prove";
 
 /// Canonical robot registration request. String fields are UTF-8 payload
 /// sections; an empty `key` means the shared default key and `has_alive == 0`
@@ -184,6 +186,25 @@ pub struct RoutePlanRequest {
     pub goal: Vec<u8>,
 }
 
+/// Ask for a nonce to sign, proving a `did:key` identity.
+#[datapod::datapod(name = "ares.v1.auth.challenge")]
+pub struct AuthChallenge {
+    #[dp(bytes, section = "robot")]
+    pub robot: Vec<u8>,
+}
+
+/// Answer a challenge. `did` is the robot's `did:key:…`; `signature` is the
+/// raw Ed25519 signature over the nonce.
+#[datapod::datapod(name = "ares.v1.auth.prove")]
+pub struct AuthProve {
+    #[dp(bytes, section = "robot")]
+    pub robot: Vec<u8>,
+    #[dp(bytes, section = "did")]
+    pub did: Vec<u8>,
+    #[dp(bytes, section = "signature")]
+    pub signature: Vec<u8>,
+}
+
 /// Canonical envelope for the existing structured read models.
 ///
 /// The datapod header carries success/failure and the payload carries the
@@ -251,6 +272,8 @@ enum Operation {
     ClaimRoute,
     Release(ClaimTargetKind),
     RoutePlan,
+    AuthChallenge,
+    AuthProve,
     ZonesList,
     ZoneGet,
     FleetSnapshot,
@@ -379,6 +402,11 @@ impl CoreService {
                 Operation::Release(ClaimTargetKind::Edge),
                 node.req_server(RELEASE_EDGE_TOPIC)?,
             ),
+            (
+                Operation::AuthChallenge,
+                node.req_server(AUTH_CHALLENGE_TOPIC)?,
+            ),
+            (Operation::AuthProve, node.req_server(AUTH_PROVE_TOPIC)?),
             (Operation::RoutePlan, node.req_server(ROUTES_PLAN_TOPIC)?),
             (Operation::ZonesList, node.req_server(ZONES_LIST_TOPIC)?),
             (Operation::ZoneGet, node.req_server(ZONE_GET_TOPIC)?),
@@ -562,6 +590,24 @@ fn handle_request(
             })
             .unwrap_or_else(|error| bad_request(operation, error))
             .into_message(),
+        Operation::AuthChallenge => decode::<AuthChallenge>(&message)
+            .map_err(|err| ApiError::new(format!("invalid auth/challenge request: {err}")))
+            .and_then(|req| {
+                let robot =
+                    utf8(&req.robot).map_err(|err| ApiError::new(format!("robot id: {err}")))?;
+                crate::wire::flat_challenge(state, robot)
+            })
+            .into_read_message(),
+        Operation::AuthProve => decode::<AuthProve>(&message)
+            .map_err(|err| ApiError::new(format!("invalid auth/prove request: {err}")))
+            .and_then(|req| {
+                let robot =
+                    utf8(&req.robot).map_err(|err| ApiError::new(format!("robot id: {err}")))?;
+                let did = utf8(&req.did).map_err(|err| ApiError::new(format!("did: {err}")))?;
+                let signature: String = req.signature.iter().map(|b| format!("{b:02x}")).collect();
+                crate::wire::flat_prove(state, robot, did, &signature)
+            })
+            .into_read_message(),
         Operation::RoutePlan => decode::<RoutePlanRequest>(&message)
             .map_err(|err| ApiError::new(format!("invalid routes/plan request: {err}")))
             .and_then(|req| {
@@ -823,7 +869,9 @@ fn bad_request(operation: Operation, _: datapod::WireError) -> FlatReply {
         Operation::Release(_) => crate::wire::reason::release::UNKNOWN_OR_BAD,
         // These reply through ReadReply, never FlatReply, so they only appear
         // here to keep the match exhaustive.
-        Operation::RoutePlan
+        Operation::AuthChallenge
+        | Operation::AuthProve
+        | Operation::RoutePlan
         | Operation::ZonesList
         | Operation::ZoneGet
         | Operation::FleetSnapshot
@@ -867,6 +915,8 @@ impl Client {
             RELEASE_ZONE_TOPIC,
             RELEASE_NODE_TOPIC,
             RELEASE_EDGE_TOPIC,
+            AUTH_CHALLENGE_TOPIC,
+            AUTH_PROVE_TOPIC,
             ROUTES_PLAN_TOPIC,
             ZONES_LIST_TOPIC,
             ZONE_GET_TOPIC,
@@ -1008,6 +1058,33 @@ impl Client {
                 id,
                 robot: robot.as_bytes().to_vec(),
                 key: key.as_bytes().to_vec(),
+            },
+        )
+    }
+
+    /// Ask for a nonce to sign, proving a `did:key` identity.
+    pub fn challenge(&self, robot: &str) -> Result<crate::wire::ChallengeView, ApiError> {
+        self.call_read(
+            AUTH_CHALLENGE_TOPIC,
+            &AuthChallenge {
+                robot: robot.as_bytes().to_vec(),
+            },
+        )
+    }
+
+    /// Answer a challenge and receive a bearer token.
+    pub fn prove(
+        &self,
+        robot: &str,
+        did: &str,
+        signature: &[u8],
+    ) -> Result<crate::wire::TokenView, ApiError> {
+        self.call_read(
+            AUTH_PROVE_TOPIC,
+            &AuthProve {
+                robot: robot.as_bytes().to_vec(),
+                did: did.as_bytes().to_vec(),
+                signature: signature.to_vec(),
             },
         )
     }

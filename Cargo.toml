@@ -38,7 +38,7 @@ concord = { git = "https://codeberg.org/robolibs/concord.git", tag = "0.1.2" }
 datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
 graphix = { git = "https://codeberg.org/robolibs/graphix.git", tag = "0.1.2" }
 authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.0" }
-keylock = { git = "https://codeberg.org/robolibs/keylock.git", tag = "0.1.0" }
+keylock = { git = "https://codeberg.org/robolibs/keylock.git", tag = "0.1.1" }
 peerbus = { git = "https://codeberg.org/robolibs/peerbus", tag = "0.4.0", optional = true, default-features = false }
 axum = { version = "0.8.9", optional = true }
 pyo3 = { version = "0.23", optional = true, features = [
@@ -77,7 +77,8 @@ required-features = ["rest"]
 name = "serve_workspace"
 required-features = ["rest"]
 
-# TEMPORARY: `keylock::kdf::pwhash` is not in the 0.1.0 tag yet. Remove this
-# patch and bump the tag above once keylock is released with it.
+# TEMPORARY: keylock 0.1.1 is tagged locally but not yet pushed to codeberg,
+# so cargo cannot fetch it. Delete this whole section once it is pushed — the
+# tag above is already correct.
 [patch."https://codeberg.org/robolibs/keylock.git"]
 keylock = { path = "../keylock" }

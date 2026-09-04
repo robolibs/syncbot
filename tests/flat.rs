@@ -67,16 +67,21 @@ fn register_is_idempotent_deny_on_reuse() {
     // bad id (not int/uuid) -> reason 3
     let r = flat_register(&s, "notanid", "1234", None);
     assert_eq!((r.decision, r.reason), (0, 3));
-    // A real but unsupported DID method -> reason 4.
+    // A DID method that is not did:key -> reason 4 (unsupported scheme).
+    let r = flat_register(&s, "8", "did:web:example.com", None);
+    assert_eq!((r.decision, r.reason), (0, 4));
+    // A bare did:key names an identity without proving it -> reason 5.
+    // Squatting one would deny the real holder its id, so it must be proven
+    // first and registered with the resulting token.
     let r = flat_register(
         &s,
-        "8",
+        "9",
         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
         None,
     );
-    assert_eq!((r.decision, r.reason), (0, 4));
+    assert_eq!((r.decision, r.reason), (0, 5));
     // Something that is not a key at all -> reason 1 (mismatched key).
-    let r = flat_register(&s, "9", "did:key=not-a-did", None);
+    let r = flat_register(&s, "10", "did:key=not-a-did", None);
     assert_eq!((r.decision, r.reason), (0, 1));
 }
 

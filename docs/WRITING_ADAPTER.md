@@ -21,6 +21,8 @@ function. Adding an adapter therefore does not rebuild the core.
 | `ares/v1/leases/release/zone` | `ares.v1.release` | `ares.v1.reply` |
 | `ares/v1/leases/release/node` | `ares.v1.release` | `ares.v1.reply` |
 | `ares/v1/leases/release/edge` | `ares.v1.release` | `ares.v1.reply` |
+| `ares/v1/auth/challenge` | `ares.v1.auth.challenge` | `ares.v1.read.reply` |
+| `ares/v1/auth/prove` | `ares.v1.auth.prove` | `ares.v1.read.reply` |
 | `ares/v1/routes/plan` | `ares.v1.route.plan` | `ares.v1.read.reply` |
 | `ares/v1/zones/list` | `ares.v1.read.empty` | `ares.v1.read.reply` |
 | `ares/v1/zones/get` | `ares.v1.resource.get` | `ares.v1.read.reply` |
@@ -54,6 +56,8 @@ match it exactly, because datapod identity is size+alignment hashed.
 | `ares.v1.read.empty` | `_reserved: u8` | — |
 | `ares.v1.resource.get` | `id: bytes` containing a UTF-8 UUID or numeric alias | — |
 | `ares.v1.route.plan` | `use_penalties: u8`, `_pad: [u8;7]`, `start: bytes`, `goal: bytes` (each a UTF-8 UUID or numeric alias) | 24 |
+| `ares.v1.auth.challenge` | `robot: bytes` | — |
+| `ares.v1.auth.prove` | `robot: bytes`, `did: bytes`, `signature: bytes` (raw Ed25519) | — |
 | `ares.v1.read.reply` | `success: u8`, `body: bytes` containing the versioned ARES JSON read model or UTF-8 error text | — |
 | `ares.v1.workspace.chunk` | `transfer: u64`, `index: u32`, `total: u32`, `body: bytes`, `key: bytes` | 32 |
 
@@ -233,10 +237,35 @@ Two consequences an adapter author should know:
   is checked from the cache first, so someone guessing at its id cannot lock
   it out.
 
-`did:key` (Ed25519) is parsed and **rejected** with reason `4`. That is a
-missing protocol, not a missing algorithm: proving possession of a private key
-needs a fresh challenge to sign, and this wire carries one static scalar per
-request, which would replay. It needs a challenge/response op first.
+## Proving a `did:key` identity
+
+A robot holding an Ed25519 key cannot sign every request — the `key` field is
+one scalar, and a signature over nothing fresh would replay. So it proves
+possession once and carries a bearer token afterwards:
+
+1. `ares/v1/auth/challenge` with its robot id → a 32-byte nonce (hex).
+2. Sign the nonce with the private key.
+3. `ares/v1/auth/prove` with the robot id, its `did:key:…` and the signature →
+   a bearer token.
+4. Send `tok:<token>` in `key` on every later call. Re-prove to renew.
+
+Both auth ops are unauthenticated, deliberately: the answer is worthless
+without the private key, and a robot needs them before it can authenticate at
+all.
+
+Rules worth knowing, each of which is enforced:
+
+- A challenge is **single use** and lapses in 30 s; asking again replaces the
+  outstanding one, so a captured signature is spent.
+- **Registering with a bare `did:key` is refused** (reason `5`). A public key
+  is public, so naming one proves nothing — allowing it would let anyone squat
+  an id its real holder could then never register. Register with the *token*
+  instead, which binds the identity that token proved.
+- A token is bound to one robot id, and a robot registered under one identity
+  cannot be re-proven with a different key.
+- Passwords and `did:key` do not cross over: signing cannot take over an id
+  held by a password, and no password opens a `did:key` robot.
+- Tokens last an hour.
 
 ## Registration
 

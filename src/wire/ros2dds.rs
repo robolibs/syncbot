@@ -70,6 +70,32 @@ pub async fn serve_ares_json_services(
     tasks.push(
         spawn_json_service(
             session,
+            "ares/v1/auth/challenge",
+            client.clone(),
+            |client, raw| {
+                let req: crate::wire::FlatChallenge = from_json(&raw)?;
+                to_json(client.challenge(&req.robot)?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
+            "ares/v1/auth/prove",
+            client.clone(),
+            |client, raw| {
+                let req: crate::wire::FlatProve = from_json(&raw)?;
+                let signature = crate::wire::decode_hex_public(&req.signature)
+                    .ok_or_else(|| ApiError::new("signature must be hex encoded"))?;
+                to_json(client.prove(&req.robot, &req.did, &signature)?)
+            },
+        )
+        .await?,
+    );
+    tasks.push(
+        spawn_json_service(
+            session,
             "ares/v1/routes/plan",
             client.clone(),
             |client, raw| {
