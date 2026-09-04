@@ -548,7 +548,7 @@ dependencies = [
 [[package]]
 name = "authbox"
 version = "0.1.0"
-source = "git+https://codeberg.org/robolibs/authbox.git?tag=0.1.0#ffbb800de5f1785c5aef90fca1d3ebd12f6f6541"
+source = "git+https://codeberg.org/robolibs/authbox.git?tag=0.1.1#247b32343d2404798c464fc48270964341a30dc1"
 dependencies = [
  "base64ct",
  "bs58",
@@ -3642,6 +3642,7 @@ dependencies = [
 [[package]]
 name = "keylock"
 version = "0.1.0"
+source = "git+https://codeberg.org/robolibs/keylock.git?tag=0.1.1#559a27eddfb3d173399d45b1f2b989356d567fff"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4823,7 +4824,7 @@ checksum = "4ec91767ecc0a0bbe558ce8c9da33c068066c57ecc8bb8477ef8c1ad3ef77c27"
 [[package]]
 name = "peerbus"
 version = "0.4.0"
-source = "git+https://codeberg.org/robolibs/peerbus?tag=0.4.0#c5d3b246d433c30ee041a684ae2a18474a00ba08"
+source = "git+https://codeberg.org/robolibs/peerbus?tag=0.4.1#8af9de50465d7d230f2a4ddd39fd370943ec2b94"
 dependencies = [
  "authbox",
  "blake3",
