@@ -27,7 +27,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t test-peerbus test-all test-usecase-rest test-usecase check check-peerbus check-all check-python-adapter fmt bench clean ci viz fuzz fuzz-all fixed-map bind bind-c bind-py help h
+.PHONY: build b compile c run r test t test-peerbus test-all test-usecase-rest test-usecase check check-peerbus check-all check-python-adapter fmt bench clean ci viz yard fuzz fuzz-all fixed-map bind bind-c bind-py help h
 
 build:
 	@$(CARGO) build --lib
@@ -98,6 +98,7 @@ ci:
 	@echo "== check (all adapters)"      && $(CARGO) check --all-targets --features "peerbus rest xmlt"
 	@echo "== check (python bindings)"   && $(CARGO) check --features python
 	@echo "== check (rerun visualizer)"  && $(CARGO) check --example fleet_viz --features "rerun-viz peerbus"
+	@echo "== check (yard scenario)"     && $(CARGO) check --example packhouse_yard --features rerun-viz
 	@echo "== clippy"                    && $(CARGO) clippy --all-targets --features "peerbus rest xmlt" -- -D warnings
 	@echo "== fmt"                       && $(CARGO) fmt --package $(PROJECT_NAME) -- --check
 	@echo "== tests"                     && $(CARGO) test --all-targets --features "peerbus rest xmlt"
@@ -105,6 +106,9 @@ ci:
 	@echo "== live REST/XML battery"     && $(MAKE) --no-print-directory test-usecase-rest
 	@echo
 	@echo "ci: all green"
+
+yard:
+	@$(CARGO) run --example packhouse_yard --features rerun-viz
 
 viz:
 	@$(CARGO) run --example fleet_viz --features "rerun-viz peerbus" -- $(RUN_ARGS)
@@ -162,6 +166,7 @@ help:
 	@echo "  test-usecase Run the live transport battery from misc/USECASE.typ"
 	@echo "  ci           Everything that gates a merge (run before pushing)"
 	@echo "  viz          Live rerun view of the running fleet"
+	@echo "  yard         Packhouse-yard scenario in rerun (self-contained)"
 	@echo "  fuzz         Fuzz one target (FUZZ_TARGET=, FUZZ_SECONDS=)"
 	@echo "  fuzz-all     Fuzz every target in turn"
 	@echo "  fixed-map    Regenerate the examples/fixed workspace"

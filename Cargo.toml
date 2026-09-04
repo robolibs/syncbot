@@ -74,3 +74,7 @@ required-features = ["rest"]
 [[example]]
 name = "serve_workspace"
 required-features = ["rest"]
+
+[[example]]
+name = "packhouse_yard"
+required-features = ["rerun-viz"]
