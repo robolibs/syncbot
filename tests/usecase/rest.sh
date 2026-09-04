@@ -6,12 +6,11 @@ cd "$ROOT"
 source tests/usecase/common.sh
 
 HTTP_PORT=${USECASE_HTTP_PORT:-18080}
-ZENOH_PORT=${USECASE_ZENOH_PORT:-17447}
 LOG=${USECASE_LOG:-target/usecase-rest-server.log}
 SERVER_PID=
 trap 'stop_process "$SERVER_PID"' EXIT
 
-start_server "$HTTP_PORT" "$ZENOH_PORT" "$LOG"
+start_server "$HTTP_PORT" "$LOG"
 B="http://127.0.0.1:${HTTP_PORT}/ares/v1"
 
 out=$(curl -sS "$B/health")

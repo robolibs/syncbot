@@ -2,7 +2,7 @@
 
 An adapter has exactly two sides:
 
-1. its own external wire (HTTP/JSON, XML, Zenoh, DDS, a serial line, ...);
+1. its own external wire (HTTP/JSON, XML, a serial line, ...);
 2. a peerbus `DatapodMsg` req/res client connected to the ARES core.
 
 It does not link `syncbot`, receive a `Coordinator`, or call a `flat_*`

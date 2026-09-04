@@ -7,7 +7,7 @@
 //! well as by UUID.
 //!
 //! ```sh
-//! cargo run --example serve_workspace --features "rest robo" -- [workspace_dir] [bind_addr]
+//! cargo run --example serve_workspace --features rest -- [workspace_dir] [bind_addr]
 //! ```
 //!
 //! With `--no-map` it starts with nothing to serve and waits for a workspace to
@@ -22,25 +22,11 @@
 //! A pushed workspace can be replaced at any time; robots keep the claims they
 //! hold, since claims are keyed by resource uuid.
 //!
-//! With the `robo` feature enabled this same process also exposes ARES
-//! Zenoh/ROS2DDS service endpoints for `zenoh-bridge-ros2dds`:
-//!
-//! - ROS2 services: `/ares/v1/...`
-//! - ROS2 type: `ares_interfaces/srv/Json`
-//! - Zenoh keys: `ares/v1/...`
-//!
 //! Optional state persistence: set `SYNCBOT_STATE` to a file path and the
 //! server restores from it on boot, flushes every 2s, and flushes again on
 //! shutdown. Unset, the server is fully in-memory and no file is touched.
-//! The file holds every robot's auth key in plaintext, so it is created `0600`
-//! and should be treated like a private key.
-//!
-//! Optional Zenoh environment:
-//!
-//! ```sh
-//! # by default the server listens on tcp/0.0.0.0:7447
-//! SYNCBOT_ZENOH_LISTEN=tcp/0.0.0.0:7448
-//! ```
+//! Keys are stored as Argon2id hashes, never in the clear, but the file is
+//! still created `0600` and deserves care.
 //!
 //! A workspace directory is what `zoneout::Workspace::save(dir)` writes:
 //!
@@ -53,16 +39,11 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-#[cfg(feature = "robo")]
-use syncbot::wire::ros2dds::{Ros2DdsAresJsonHandle, serve_ares_json_services};
 use syncbot::wire::{ServeState, rest};
 use syncbot::{Coordinator, NUMERIC_ID_PROPERTY, ValidationSeverity, WorkspaceIndex};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use zoneout::Workspace;
-
-#[cfg(feature = "robo")]
-const DEFAULT_ZENOH_LISTEN: &str = "tcp/0.0.0.0:7447";
 
 /// Wait for Ctrl-C **or** SIGTERM.
 ///
@@ -254,8 +235,6 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    #[cfg(feature = "robo")]
-    let _ros2dds = start_ros2dds(peerbus.clone()).await;
     // Auto-release the claims of robots that stop heartbeating (per their
     // <alive> interval). Checks once a second.
     let _sweeper =
@@ -316,105 +295,6 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
-}
-
-#[cfg(feature = "robo")]
-async fn start_ros2dds(
-    peerbus: syncbot::wire::peerbus::Client,
-) -> Option<(zenoh::Session, Ros2DdsAresJsonHandle)> {
-    let config = match zenoh_config_from_env() {
-        Ok(config) => config,
-        Err(err) => {
-            warn!(
-                error = %err,
-                "ROS2DDS ARES JSON services disabled: invalid Zenoh config"
-            );
-            return None;
-        }
-    };
-
-    let session = match zenoh::open(config).await {
-        Ok(session) => session,
-        Err(err) => {
-            warn!(
-                error = %err,
-                "ROS2DDS ARES JSON services disabled: failed to open Zenoh session"
-            );
-            return None;
-        }
-    };
-
-    let ares_json_handle = match serve_ares_json_services(&session, peerbus).await {
-        Ok(handle) => handle,
-        Err(err) => {
-            warn!(
-                error = %err,
-                "ROS2DDS ARES JSON services disabled: failed to declare queryables"
-            );
-            return None;
-        }
-    };
-
-    info!(
-        services = ares_json_handle.task_count(),
-        ros_type = "ares_interfaces/srv/Json",
-        "ROS2DDS ARES JSON services ready"
-    );
-    println!(
-        "ROS2DDS ARES JSON services ready: {} services using ares_interfaces/srv/Json",
-        ares_json_handle.task_count()
-    );
-    let listen =
-        std::env::var("SYNCBOT_ZENOH_LISTEN").unwrap_or_else(|_| DEFAULT_ZENOH_LISTEN.to_string());
-    println!("Zenoh listening for bridge/peer connections on {listen}");
-    println!(
-        "ROS2 test: ros2 service call /ares/v1/health ares_interfaces/srv/Json \"{{request: '{{}}'}}\""
-    );
-
-    Some((session, ares_json_handle))
-}
-
-#[cfg(feature = "robo")]
-fn zenoh_config_from_env() -> Result<zenoh::Config, String> {
-    let mut config = zenoh::Config::default();
-
-    if let Ok(raw) = std::env::var("SYNCBOT_ZENOH_CONNECT") {
-        let endpoints = split_env_list(&raw);
-        if !endpoints.is_empty() {
-            config
-                .insert_json5("connect/endpoints", &json_array(&endpoints))
-                .map_err(|err| format!("SYNCBOT_ZENOH_CONNECT: {err}"))?;
-        }
-    }
-
-    let listen_raw =
-        std::env::var("SYNCBOT_ZENOH_LISTEN").unwrap_or_else(|_| DEFAULT_ZENOH_LISTEN.to_string());
-    let listen_endpoints = split_env_list(&listen_raw);
-    if !listen_endpoints.is_empty() {
-        config
-            .insert_json5("listen/endpoints", &json_array(&listen_endpoints))
-            .map_err(|err| format!("SYNCBOT_ZENOH_LISTEN: {err}"))?;
-    }
-
-    Ok(config)
-}
-
-#[cfg(feature = "robo")]
-fn split_env_list(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-#[cfg(feature = "robo")]
-fn json_array(values: &[String]) -> String {
-    let quoted = values
-        .iter()
-        .map(|value| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
-        .collect::<Vec<_>>();
-    format!("[{}]", quoted.join(","))
 }
 
 fn init_logging() {

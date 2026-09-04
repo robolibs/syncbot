@@ -1,20 +1,18 @@
 //! Cross-transport differential (PLAN 2.3.3).
 //!
-//! The architecture's central claim is that no wire format is privileged: JSON,
-//! XML, Zenoh and ROS2/DDS are all adapters onto one canonical datapod service.
-//! Nothing enforced that. Each transport had its own acceptance script, but
-//! none asserted the transports *agree* — which is how three of four adapters
-//! came to report `datum: null` on `/health` while JSON reported the real one.
+//! The architecture's central claim is that no wire format is privileged: JSON
+//! and XML are adapters onto one canonical datapod service. Nothing enforced
+//! that. Each transport had its own acceptance script, but none asserted the
+//! transports *agree* — which is how an adapter came to report `datum: null`
+//! on `/health` while JSON reported the real one.
 //!
 //! This runs one identical sequence through each transport against its own
 //! fresh core, then compares the answers step for step. Adding an adapter
 //! means adding it to `DRIVERS`.
 //!
-//! Zenoh and ROS2/DDS are exercised live by `tests/usecase/{ros2,mixed}.sh`
-//! instead: they need a Zenoh session and a running `zenoh-bridge-ros2dds`,
-//! which do not belong in a unit test. They reach the core through the same
-//! `peerbus::Client` methods the native driver below calls directly, so the
-//! encoding boundary — where the divergences live — is what is covered here.
+//! Every adapter reaches the core through the same `peerbus::Client` methods
+//! the native driver below calls directly, so the encoding boundary — where
+//! the divergences live — is what is covered here.
 
 #![cfg(all(feature = "peerbus", feature = "rest", feature = "xmlt"))]
 

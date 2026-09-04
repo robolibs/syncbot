@@ -32,7 +32,7 @@
   #v(0.4em)
   #text(size: 11pt, fill: muted)[How a robot connects to ARES: register, heartbeat, claim, release]
   #v(1em)
-  #tag[REST/JSON] #h(0.5em) #tag[REST/XML] #h(0.5em) #tag[ROS2DDS]
+  #tag[REST/JSON] #h(0.5em) #tag[REST/XML]
 ]
 
 #v(1em)
@@ -42,9 +42,9 @@
   and gets back a tiny *decision + reason*. That is the whole protocol — this
   page is all most integrations need.
 
-  REST/JSON, REST/XML and ROS2DDS are shown here — the same four calls in three
-  encodings. Native Zenoh, route planning, scheduling, snapshots and the
-  fine-level "tier-2" calls live in *`PROTOCOL-advanced.typ`*.
+  REST/JSON and REST/XML are shown here — the same four calls in two encodings.
+  Route planning, scheduling, snapshots and the fine-level "tier-2" calls live
+  in *`PROTOCOL-advanced.typ`*.
 ]
 
 = Connect
@@ -55,7 +55,6 @@
   table.header([Transport], [Address]),
   [REST / JSON], [`http://<host>:8080/ares/v1/...` — the default; send `application/json` (or nothing at all).],
   [REST / XML], [`http://<host>:8080/ares/v1/...` — send/accept `application/xml`.],
-  [ROS2DDS], [ROS2 service `/ares/v1/...`, type `ares_interfaces/srv/Json` (a JSON string in, a JSON string out), via `zenoh-bridge-ros2dds`.],
 )
 
 Check the server is up (no key needed):
@@ -68,76 +67,9 @@ curl http://<host>:8080/ares/v1/health
 That is already JSON — the read endpoints answer JSON unless you ask for XML
 with `Accept: application/xml`.
 
-= ROS2: build the service type once
-
-*REST users — JSON or XML — can skip this section.* The ROS2 side reaches every call through
-one generic service type, `ares_interfaces/srv/Json` (a JSON string in, a JSON
-string out), relayed by `zenoh-bridge-ros2dds`. Build that interface package
-once so `ros2 service call` knows the type. Lay out three files:
-
-```text
-ares_interfaces/
-  package.xml
-  CMakeLists.txt
-  srv/Json.srv
-```
-
-`srv/Json.srv` — the service (request above the `---`, response below):
-
-```text
-string request
----
-bool   success
-string response
-```
-
-`package.xml`:
-
-```xml
-<?xml version="1.0"?>
-<package format="3">
-  <name>ares_interfaces</name>
-  <version>0.1.0</version>
-  <description>ARES generic JSON service.</description>
-  <maintainer email="dev@example.com">dev</maintainer>
-  <license>MIT</license>
-  <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>rosidl_default_generators</buildtool_depend>
-  <depend>rosidl_default_runtime</depend>
-  <member_of_group>rosidl_interface_packages</member_of_group>
-  <export><build_type>ament_cmake</build_type></export>
-</package>
-```
-
-`CMakeLists.txt`:
-
-```cmake
-cmake_minimum_required(VERSION 3.8)
-project(ares_interfaces)
-find_package(ament_cmake REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-rosidl_generate_interfaces(${PROJECT_NAME} "srv/Json.srv")
-ament_package()
-```
-
-Build it, source it, and point the bridge at the ARES host (note `tcp/`, *not*
-`tcp://`):
-
-```sh
-colcon build --packages-select ares_interfaces
-source install/setup.bash
-zenoh-bridge-ros2dds -e tcp/<host>:7447
-```
-
-#block(fill: rgb("#fffbeb"), stroke: warn.lighten(20%), radius: 5pt, inset: 8pt)[
-  *Use CycloneDDS.* Run the ROS2 side with
-  `export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` — the bridge speaks CycloneDDS,
-  and a mismatched middleware lets the request through but drops the reply.
-]
-
 = The key
 
-Each call may carry a `key`. Two forms:
+Each call may carry a `key`. Four forms:
 
 #table(
   columns: (34mm, 1fr),
@@ -145,7 +77,8 @@ Each call may carry a `key`. Two forms:
   table.header([Key], [Meaning]),
   [an integer, e.g. `1234`], [a simple numeric password],
   [`pass:<secret>`], [a password; anything after the prefix],
-  [`did:key:<multibase>`], [an Ed25519 identity — reserved, see below],
+  [`did:key:<multibase>`], [an Ed25519 identity — proved by signature, see below],
+  [`tok:<token>`], [a bearer token issued after proving a `did:key`],
 )
 
 The key is set at *register* and bound to the robot. Every later call resends it;
@@ -153,8 +86,17 @@ a wrong key is rejected with reason `1` (*mismatched key*). The server stores a
 salted Argon2id hash, never the key itself, so a stolen state file is not a list
 of passwords.
 
-`did:key` is reserved and rejected (reason `4`): proving a private key needs a
-challenge to sign, which this wire does not yet carry.
+*`did:key` never travels as a password.* Registering one binds the identity but
+grants nothing on its own; the robot then proves it holds the private half:
+
+```sh
+POST /ares/v1/auth/challenge   {"robot":"7"}
+  # -> a 32-byte nonce (hex), valid 30s
+POST /ares/v1/auth/prove       {"robot":"7","did":"did:key:...","signature":"<hex>"}
+  # -> a bearer token, valid 1h
+```
+
+Later calls send that token as `tok:<token>` in the `key` field.
 
 *The key is optional.* If you omit it the server uses a shared default password
 — convenient but insecure (anyone can act as a robot that skipped the key). If a
@@ -175,10 +117,9 @@ matter.)
 
 = The four calls
 
-Each call shows the JSON body, the XML body, and the equivalent ROS2 service
-call — all three are the same request in different clothes. The robot id may be
-an *integer or a UUID string*; in JSON it is written *quoted* either way (see
-the note at the end).
+Each call shows the JSON body and the XML body — the same request in different
+clothes. The robot id may be an *integer or a UUID string*; in JSON it is
+written *quoted* either way (see the note at the end).
 
 == Register
 
@@ -197,12 +138,6 @@ POST /ares/v1/robots
 POST /ares/v1/robots
   <reg><robot>7</robot><key>1234</key><alive>2</alive></reg>
   <reply><decision>1</decision><reason>0</reason></reply>
-```
-
-```sh
-ros2 service call /ares/v1/robots/register ares_interfaces/srv/Json \
-  "{request: '{\"robot\":\"7\",\"key\":\"1234\",\"alive\":2}'}"
-# response.success=true  response.response='{"decision":1,"reason":0}'
 ```
 
 #table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
@@ -227,12 +162,6 @@ POST /ares/v1/robots/7/heartbeat
 POST /ares/v1/robots/7/heartbeat
   <hb><key>1234</key><zone>42</zone></hb>     <!-- or <zone>-1</zone> if unknown -->
   <reply><decision>1</decision><reason>0</reason></reply>
-```
-
-```sh
-ros2 service call /ares/v1/robots/heartbeat ares_interfaces/srv/Json \
-  "{request: '{\"robot\":\"7\",\"key\":\"1234\",\"zone\":42}'}"   # or "zone":-1 if unknown
-# response.success=true  response.response='{"decision":1,"reason":0}'
 ```
 
 #table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
@@ -289,17 +218,6 @@ POST /ares/v1/claims/zone
   <reply><decision>0</decision><reason>2</reason><blocked>43</blocked></reply>
 ```
 
-```sh
-ros2 service call /ares/v1/claims/zone ares_interfaces/srv/Json \
-  "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":[42]}'}"
-# response.success=true  response.response='{"decision":1,"reason":0}'
-
-# several zones, atomic, exclusive, 30-second lease — id is an ARRAY even for one
-ros2 service call /ares/v1/claims/zone ares_interfaces/srv/Json \
-  "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":[42,43],\"access_mode\":1,\"lease_time\":30}'}"
-# response.success=true  response.response='{"decision":0,"reason":2,"blocked":43}'
-```
-
 #table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
   table.header([reason], [meaning]),
   [0], [granted], [1], [mismatched key], [2], [conflict — someone holds it],
@@ -324,12 +242,6 @@ POST /ares/v1/leases/release/zone
 POST /ares/v1/leases/release/zone
   <rel><key>1234</key><robot>7</robot><id>42</id></rel>
   <reply><decision>1</decision><reason>0</reason></reply>
-```
-
-```sh
-ros2 service call /ares/v1/leases/release/zone ares_interfaces/srv/Json \
-  "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":42}'}"
-# response.success=true  response.response='{"decision":1,"reason":0}'
 ```
 
 #table(columns: (14mm, 1fr), inset: 4pt, stroke: rgb("#e2e8f0"),
@@ -361,22 +273,11 @@ xml /robots/7/heartbeat '<hb><key>1234</key><zone>42</zone></hb>'
 xml /leases/release/zone '<rel><key>1234</key><robot>7</robot><id>42</id></rel>'
 ```
 
-And over ROS2:
-
-```sh
-J=ares_interfaces/srv/Json
-
-ros2 service call /ares/v1/robots/register     $J "{request: '{\"robot\":\"7\",\"key\":\"1234\"}'}"
-ros2 service call /ares/v1/claims/zone         $J "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":[42]}'}"
-ros2 service call /ares/v1/robots/heartbeat    $J "{request: '{\"robot\":\"7\",\"key\":\"1234\",\"zone\":42}'}"
-ros2 service call /ares/v1/leases/release/zone $J "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":42}'}"
-```
-
 #block(fill: rgb("#fffbeb"), stroke: warn.lighten(20%), radius: 5pt, inset: 8pt)[
-  *Pick one and stay with it — or don't.* The three encodings are the same
-  protocol: the same ids, the same keys, the same `decision`/`reason`. A fleet
-  can mix them freely, one format per client, and a zone claimed over JSON
-  blocks a robot asking over XML or ROS2 exactly as if they shared a transport.
+  *Pick one and stay with it — or don't.* Both encodings are the same protocol:
+  the same ids, the same keys, the same `decision`/`reason`. A fleet can mix
+  them freely, one format per client, and a zone claimed over JSON blocks a
+  robot asking over XML exactly as if they shared an encoding.
 
   Two shape differences to remember. First, the claim `id` is an *array* in
   JSON (`{"id":[42]}` even for one) and a *repeated element* in XML

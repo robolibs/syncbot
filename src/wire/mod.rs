@@ -1,8 +1,8 @@
 //! Wire transport adapters for `syncbot`.
 //!
 //! Each submodule is a thin adapter that translates an external wire protocol
-//! (REST/JSON, REST/XML, Zenoh, ROS2/DDS) into a canonical datapod call over
-//! peerbus, and encodes the reply back to its wire. The flat operations below
+//! (REST/JSON, REST/XML) into a canonical datapod call over peerbus, and
+//! encodes the reply back to its wire. The flat operations below
 //! are what the peerbus core executes; no adapter holds a coordinator handle.
 //! See `docs/WRITING_ADAPTER.md` for the frozen contract.
 
@@ -27,12 +27,6 @@ pub mod rest;
 
 #[cfg(feature = "peerbus")]
 pub mod peerbus;
-
-#[cfg(feature = "robo")]
-pub mod robo;
-
-#[cfg(feature = "robo")]
-pub mod ros2dds;
 
 #[cfg(feature = "xmlt")]
 pub mod xmlt;
@@ -690,7 +684,7 @@ fn numeric_alias_for(index: &WorkspaceIndex, target: &ClaimTarget) -> Option<u64
 // Flat (tier-1) wire — PLC / coarse robots.
 //
 // Transport-neutral. Key on every call, replies are decision + reason (enum).
-// REST/XML/Zenoh adapters call these; the resource TYPE comes from the address
+// REST/XML adapters call these; the resource TYPE comes from the address
 // (path / key-expr), never the body.
 // ===========================================================================
 
@@ -1233,7 +1227,7 @@ pub fn flat_release(
     }
 }
 
-// --- Shared flat request envelopes (used by REST/XML and Zenoh/ROS) --------
+// --- Shared flat request envelopes (used by the REST/JSON and XML adapters) -
 
 /// Accept a scalar that may arrive as a JSON string or number (XML is always
 /// text); yield it as a `String` for the transport-neutral flat functions.

@@ -28,12 +28,7 @@ pub mod vda;
 #[cfg(feature = "python")]
 pub mod python;
 
-#[cfg(any(
-    feature = "peerbus",
-    feature = "rest",
-    feature = "robo",
-    feature = "xmlt"
-))]
+#[cfg(any(feature = "peerbus", feature = "rest", feature = "xmlt"))]
 pub mod wire;
 
 pub use crate::core::error::{Error, Result};

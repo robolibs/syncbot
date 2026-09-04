@@ -33,9 +33,9 @@
 #align(center)[
   #text(size: 24pt, weight: "bold", fill: accent)[ARES Protocol — Full Reference]
   #v(0.4em)
-  #text(size: 11pt, fill: muted)[Every endpoint, every transport: REST/JSON, REST/XML, Zenoh, ROS2DDS]
+  #text(size: 11pt, fill: muted)[Every endpoint, every transport: REST/JSON, REST/XML, peerbus]
   #v(1em)
-  #tag[REST/JSON] #h(0.5em) #tag[XML] #h(0.5em) #tag[Zenoh] #h(0.5em) #tag[ROS2DDS]
+  #tag[REST/JSON] #h(0.5em) #tag[XML] #h(0.5em) #tag[peerbus]
 ]
 
 #v(1em)
@@ -61,11 +61,9 @@
   table.header([Transport], [How to reach it]),
   [REST/JSON], [`http://<host>:8080/ares/v1/...`, `Content-Type: application/json`.],
   [REST/XML], [Same URLs; send/accept `application/xml`. The REST server answers XML when the request sets the XML content-type/accept header, and there is also a standalone XML router.],
-  [Zenoh], [Native queryables under the key prefix `ares/v1/...`. The server listens for Zenoh peers on `tcp/0.0.0.0:7447`.],
-  [ROS2DDS], [ROS2 services `/ares/v1/...` of type `ares_interfaces/srv/Json`, bridged by `zenoh-bridge-ros2dds`.],
+  [peerbus], [The canonical req/res bus every adapter speaks. Typed datapod messages on the topics `ares/v1/...`; see `docs/WRITING_ADAPTER.md`.],
 )
 
-#caution[*Zenoh endpoint syntax:* use `tcp/<host>:7447`, never `tcp://<host>:7447`.]
 
 = Shared rules
 
@@ -89,8 +87,9 @@ A `key` authenticates the acting robot. Forms:
   columns: (40mm, 1fr),
   table.header([Key form], [Meaning]),
   [integer, e.g. `1234`], [Simple numeric password.],
-  [`did:pass=<secret>`], [Password in DID form.],
-  [`did:key=<...>`], [Reserved for asymmetric keys — not implemented yet (rejected).],
+  [`pass:<secret>`], [Password; everything after the prefix.],
+  [`did:key:<multibase>`], [Ed25519 identity. Binds at registration but authorises nothing until proved (§2.3).],
+  [`tok:<token>`], [Bearer token issued by `/auth/prove`; valid one hour.],
 )
 
 - The key is set at registration and bound to the robot id; later calls resend
@@ -104,6 +103,21 @@ A `key` authenticates the acting robot. Forms:
 - *Admin mutation endpoints* (unregister, remove claim, release/add lease) are
   *open by default*; a key is required only when the operator opts in with
   `SYNCBOT_ADMIN_AUTH` (§8.2).
+
+== Proving a `did:key`
+
+A public key is not a secret, so sending one proves nothing. A `did:key` robot
+signs a server nonce instead and trades the signature for a bearer token.
+
+#tbl(
+  columns: (34mm, 1fr),
+  table.header([Call], [Body / reply]),
+  [`POST /auth/challenge`], [`{"robot":"7"}` → `{"nonce":"<hex>","expires_in":30}`. Open, and accepts an unregistered id: an identity must be provable *before* it is bound, so nobody can squat one.],
+  [`POST /auth/prove`], [`{"robot":"7","did":"did:key:…","signature":"<hex>"}` → `{"token":"…","expires_in":3600}`. The signature is over the raw nonce bytes.],
+)
+
+Later calls send the token in the ordinary `key` field as `tok:<token>`.
+Registering a bare `did:key` with no proof is refused (reason `5`).
 
 == Replies and errors
 
@@ -120,7 +134,7 @@ Endpoint-specific reasons start at `2` (see §6).
 = Tier-1 flat protocol
 
 The four robot calls. Type is in the address; body is flat scalars; reply is
-`decision`+`reason`. Available on every transport — XML shown; JSON/Zenoh/ROS2
+`decision`+`reason`. Available on every transport — XML shown; JSON and peerbus
 carry the same fields (see §5).
 
 == Register — `POST /ares/v1/robots`
@@ -174,9 +188,8 @@ with reason `3` (*capacity exceeded*), while an *exclusive* claim
 
 = Tier-2 endpoints
 
-Richer endpoints for graph-aware clients. REST paths shown; the Zenoh key and
-ROS2 service for each are in §5.1. `R` = read-only (open), `W` = state-changing
-(needs `key`).
+Richer endpoints for graph-aware clients. REST paths shown; the peerbus topic
+for each is in §5.1. `R` = read-only (open), `W` = state-changing (needs `key`).
 
 == Map and fleet (all read-only)
 
@@ -261,12 +274,12 @@ same and stores the request when `decision == Grant`.
 == Per-operation address map
 
 The same operation has one address per transport. REST uses HTTP verb + path;
-Zenoh uses a queryable key; ROS2 uses a service name (all `ares_interfaces/srv/Json`).
-Where REST puts an id in the URL, Zenoh/ROS2 put it in the JSON body.
+peerbus uses a topic. Where REST puts an id in the URL, peerbus puts it in the
+message body.
 
 #tbl(
   columns: (34mm, 40mm, 40mm),
-  table.header([Operation], [REST path], [Zenoh key / ROS2 service]),
+  table.header([Operation], [REST path], [peerbus topic]),
   [health], [`GET /health`], [`ares/v1/health`],
   [snapshot], [`GET /fleet/snapshot`], [`ares/v1/fleet/snapshot`],
   [list/get zone], [`GET /zones[/{id}]`], [`ares/v1/zones/list` · `…/get`],
@@ -290,9 +303,9 @@ Where REST puts an id in the URL, Zenoh/ROS2 put it in the JSON body.
   [flat release], [`POST /leases/release/{kind}`], [`ares/v1/leases/release/{kind}`],
 )
 
-For Zenoh/ROS2, calls that REST addresses by URL id take a small JSON object
-instead — `{"id":"100"}`, `{"robot_id":1}`, or `{"claim_id":10}`. The robot id
-on flat Zenoh/ROS2 calls is a body field (`"robot"`), since there is no URL.
+On peerbus, calls that REST addresses by URL id carry the id as a body field
+instead — `id`, `robot_id`, or `claim_id`. The robot id on a flat peerbus call
+is likewise a body field, since there is no URL.
 
 == REST/JSON and XML
 
@@ -301,158 +314,6 @@ the request sets `Content-Type: application/xml` (and `Accept: application/xml`
 for GETs). XML is encoded by `quick-xml`; on input the outer element name is
 ignored. JSON note: the flat claim `id` is an array (`"id":[42]`, or `[42,43]`);
 XML repeats `<id>`.
-
-== Zenoh
-
-Native queryables under `ares/v1/...`, JSON payloads. A query with no input
-sends an empty payload. Replies are JSON; errors are Zenoh error replies
-carrying `{"message":"..."}`.
-
-```text
-query  ares/v1/claims/zone   payload: {"key":"1234","robot":"7","id":[42]}
-reply  {"decision":1,"reason":0}
-```
-
-== ROS2DDS
-
-The server stays pure Zenoh; ROS2 clients reach it through
-`zenoh-bridge-ros2dds`, which maps a ROS2 service request to a Zenoh query. One
-generic service type carries everything:
-
-```text
-# ares_interfaces/srv/Json.srv
-string request      # JSON request object as a string; "{}" for no input
----
-bool   success      # false when ARES returns an error
-string response     # JSON response on success; error text on failure
-```
-
-Build that type once so `ros2 service call` can find it. Wrap the `.srv` in a
-small `ament_cmake` interface package:
-
-```text
-ares_interfaces/
-  package.xml
-  CMakeLists.txt
-  srv/Json.srv        # the .srv above
-```
-
-`package.xml`:
-
-```xml
-<?xml version="1.0"?>
-<package format="3">
-  <name>ares_interfaces</name>
-  <version>0.1.0</version>
-  <description>ARES generic JSON service.</description>
-  <maintainer email="dev@example.com">dev</maintainer>
-  <license>MIT</license>
-  <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>rosidl_default_generators</buildtool_depend>
-  <depend>rosidl_default_runtime</depend>
-  <member_of_group>rosidl_interface_packages</member_of_group>
-  <export><build_type>ament_cmake</build_type></export>
-</package>
-```
-
-`CMakeLists.txt`:
-
-```cmake
-cmake_minimum_required(VERSION 3.8)
-project(ares_interfaces)
-find_package(ament_cmake REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-rosidl_generate_interfaces(${PROJECT_NAME} "srv/Json.srv")
-ament_package()
-```
-
-```sh
-colcon build --packages-select ares_interfaces
-source install/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp   # match the bridge's CycloneDDS
-```
-
-With the type built and sourced, call any service:
-
-```sh
-ros2 service call /ares/v1/robots/register ares_interfaces/srv/Json \
-  "{request: '{\"robot\":\"7\",\"key\":\"1234\"}'}"
-# success=true  response='{"decision":1,"reason":0}'
-
-ros2 service call /ares/v1/claims/zone ares_interfaces/srv/Json \
-  "{request: '{\"key\":\"1234\",\"robot\":\"7\",\"id\":[42]}'}"
-# success=true  response='{"decision":1,"reason":0}'
-```
-
-Tier-2 endpoints ride the same generic service — the `request` string carries the
-fuller JSON body, and `response` carries the endpoint's data type as a JSON
-string. Service names come from the §5.1 map; ids that REST puts in the URL go in
-the body:
-
-```sh
-# read, no input — fleet snapshot (request "{}")
-ros2 service call /ares/v1/fleet/snapshot ares_interfaces/srv/Json \
-  "{request: '{}'}"
-# success=true  response='{"robots":[...],"requests":[...],"leases":[...]}'
-
-# read by id — one zone (id-addressed calls take {"id":"..."})
-ros2 service call /ares/v1/zones/get ares_interfaces/srv/Json \
-  "{request: '{\"id\":\"3\"}'}"
-# success=true  response='{"id":"...","numeric_id":3,"name":"...","kind":"...", ...}'
-
-# route planning
-ros2 service call /ares/v1/routes/plan ares_interfaces/srv/Json \
-  "{request: '{\"start_node_id\":\"1001\",\"goal_node_id\":\"1003\"}'}"
-# success=true  response='{"found":true,"distance":12.0,"plan":{...},"failure":null}'
-
-# nested claim submit — ClaimRequestWire body, key required
-ros2 service call /ares/v1/claims/request ares_interfaces/srv/Json \
-  "{request: '{\"id\":10,\"robot_id\":1,\"key\":\"1234\",\"access_mode\":\"Exclusive\",\"priority\":10,\"requested_at_tick\":10,\"window\":{\"start_tick\":10,\"end_tick\":100},\"targets\":[{\"kind\":\"Zone\",\"resource_id\":\"100\"}]}'}"
-# success=true  response='{"decision":"Grant","reason":"...","blocking_target":null,"diagnostics":[]}'
-
-# unregister (admin) — body field is robot_id; add "key" only when SYNCBOT_ADMIN_AUTH is set
-ros2 service call /ares/v1/robots/unregister ares_interfaces/srv/Json \
-  "{request: '{\"robot_id\":7}'}"
-# success=true  response='true'   (bool: whether a robot was removed)
-```
-
-Connect the bridge to the ARES host (note `tcp/`, not `tcp://`):
-
-```sh
-zenoh-bridge-ros2dds -e tcp/<host>:7447
-```
-
-#caution[
-  `ros2 service list` may not show the ARES services in the pure-Zenoh setup —
-  that is expected. Call the `/ares/v1/...` service directly; the bridge creates
-  the route when it sees the client.
-]
-
-=== Troubleshooting
-
-#tbl(
-  columns: (58mm, 1fr),
-  table.header([Symptom], [Fix]),
-  [`Unicast not supported for tcp: protocol`], [Endpoint used `tcp://...`; use `tcp/...`.],
-  [service not listed by `ros2 service list`], [Expected; call the service directly.],
-  [`waiting for service to become available...`], [Keep the bridge running, then call directly.],
-  [`received invalid request ... less than 20 bytes`], [Use CycloneDDS: `export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`.],
-  [no response], [Check firewall/NAT; confirm the bridge can reach `tcp/<host>:7447`.],
-)
-
-=== Response CDR encoding
-
-ARES replies with a CDR-encoded `ares_interfaces/srv/Json_Response`:
-
-```text
-00 01 00 00              CDR little-endian header
-01                       bool success
-00 00 00                 padding to 4 bytes
-<u32 len incl. NUL>      string length
-<UTF-8 JSON bytes>
-00                       trailing NUL
-<padding to 4 bytes>
-```
 
 = Reason codes
 

@@ -14,15 +14,9 @@ BASH := $(shell for b in /usr/bin/bash /bin/bash "$$(command -v bash)"; do \
 	if [ -x "$$b" ] && "$$b" -c '[ -n "$${BASH_VERSION:-}" ]' 2>/dev/null; then echo "$$b"; break; fi; \
 	done)
 EXAMPLE ?= serve_workspace
-RUN_FEATURES ?= rest robo xmlt
+RUN_FEATURES ?= rest xmlt
 RUN_ARGS ?= examples/fixed
 RUN_FEATURE_ARGS := $(if $(strip $(RUN_FEATURES)),--features "$(RUN_FEATURES)",)
-ROS_SETUP ?= /opt/ros/jazzy/setup.bash
-ROS2_BUILD_ROOT ?= $(TOP_DIR)/target/usecase-ros2
-ROS2_INTERFACE_SETUP ?= $(ROS2_BUILD_ROOT)/install/share/ares_interfaces/local_setup.bash
-ROS2_BIN ?= /opt/ros/jazzy/bin/ros2
-ROS2_PYTHON ?=
-ROS2_BRIDGE ?= zenoh-bridge-ros2dds
 FUZZ_TARGETS ?= workspace_push canonical_datapod
 FUZZ_TARGET ?= workspace_push
 FUZZ_SECONDS ?= 60
@@ -33,7 +27,7 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t test-peerbus test-all ros2-interface test-usecase-rest test-usecase-ros2 test-usecase-mixed test-usecase check check-peerbus check-all check-python-adapter fmt bench clean ci viz fuzz fuzz-all fixed-map bind bind-c bind-py help h
+.PHONY: build b compile c run r test t test-peerbus test-all test-usecase-rest test-usecase check check-peerbus check-all check-python-adapter fmt bench clean ci viz fuzz fuzz-all fixed-map bind bind-c bind-py help h
 
 build:
 	@$(CARGO) build --lib
@@ -72,36 +66,13 @@ test-peerbus:
 	@$(CARGO) test --all-targets --features peerbus
 
 test-all:
-	@$(CARGO) test --all-targets --features "peerbus rest robo xmlt"
+	@$(CARGO) test --all-targets --features "peerbus rest xmlt"
 
 test-usecase-rest:
-	@$(CARGO) build --example serve_workspace --features "rest robo xmlt"
+	@$(CARGO) build --example serve_workspace --features "rest xmlt"
 	@$(BASH) tests/usecase/rest.sh
 
-ros2-interface:
-	@bash -c 'set -eo pipefail; cmake_bin="$$(command -v cmake)"; python_bin="$$(command -v python3)"; \
-		source "$(ROS_SETUP)"; set -u; \
-		"$$cmake_bin" -S misc/ros2/ares_interfaces -B "$(ROS2_BUILD_ROOT)/build" \
-			-DCMAKE_BUILD_TYPE=Release \
-			-DCMAKE_INSTALL_PREFIX="$(ROS2_BUILD_ROOT)/install" \
-			-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-			-DPython3_EXECUTABLE="$$python_bin"; \
-		"$$cmake_bin" --build "$(ROS2_BUILD_ROOT)/build" --parallel; \
-		"$$cmake_bin" --install "$(ROS2_BUILD_ROOT)/build"'
-
-test-usecase-ros2: ros2-interface
-	@$(CARGO) build --example serve_workspace --features "rest robo xmlt"
-	@ROS_SETUP="$(ROS_SETUP)" ROS2_INTERFACE_SETUP="$(ROS2_INTERFACE_SETUP)" \
-		ROS2_BIN="$(ROS2_BIN)" ROS2_PYTHON="$(ROS2_PYTHON)" ROS2_BRIDGE="$(ROS2_BRIDGE)" \
-		$(BASH) tests/usecase/ros2.sh
-
-test-usecase-mixed: ros2-interface
-	@$(CARGO) build --example serve_workspace --features "rest robo xmlt"
-	@ROS_SETUP="$(ROS_SETUP)" ROS2_INTERFACE_SETUP="$(ROS2_INTERFACE_SETUP)" \
-		ROS2_BIN="$(ROS2_BIN)" ROS2_PYTHON="$(ROS2_PYTHON)" ROS2_BRIDGE="$(ROS2_BRIDGE)" \
-		$(BASH) tests/usecase/mixed.sh
-
-test-usecase: test-usecase-rest test-usecase-ros2 test-usecase-mixed
+test-usecase: test-usecase-rest
 
 check:
 	@$(CARGO) check --all-targets
@@ -110,7 +81,7 @@ check-peerbus:
 	@$(CARGO) check --all-targets --features peerbus
 
 check-all:
-	@$(CARGO) check --all-targets --features "peerbus rest robo xmlt"
+	@$(CARGO) check --all-targets --features "peerbus rest xmlt"
 
 check-python-adapter:
 	@$(MAKE) -C examples/python_adapter check
@@ -124,12 +95,12 @@ clean:
 # Everything that would gate a merge, in one command. Codeberg Actions is not
 # enabled for this repository, so this is the gate — run it before pushing.
 ci:
-	@echo "== check (all adapters)"      && $(CARGO) check --all-targets --features "peerbus rest robo xmlt"
+	@echo "== check (all adapters)"      && $(CARGO) check --all-targets --features "peerbus rest xmlt"
 	@echo "== check (python bindings)"   && $(CARGO) check --features python
 	@echo "== check (rerun visualizer)"  && $(CARGO) check --example fleet_viz --features "rerun-viz peerbus"
-	@echo "== clippy"                    && $(CARGO) clippy --all-targets --features "peerbus rest robo xmlt" -- -D warnings
+	@echo "== clippy"                    && $(CARGO) clippy --all-targets --features "peerbus rest xmlt" -- -D warnings
 	@echo "== fmt"                       && $(CARGO) fmt --package $(PROJECT_NAME) -- --check
-	@echo "== tests"                     && $(CARGO) test --all-targets --features "peerbus rest robo xmlt"
+	@echo "== tests"                     && $(CARGO) test --all-targets --features "peerbus rest xmlt"
 	@echo "== python adapter"            && $(MAKE) --no-print-directory check-python-adapter
 	@echo "== live REST/XML battery"     && $(MAKE) --no-print-directory test-usecase-rest
 	@echo
@@ -183,15 +154,12 @@ help:
 	@echo "Available targets:"
 	@echo "  build        Build the library"
 	@echo "  compile      Clean and rebuild"
-	@echo "  run          Run the workspace server (REST + Zenoh when available)"
+	@echo "  run          Run the workspace server"
 	@echo "  test         Run all tests"
 	@echo "  test-peerbus Test the canonical peerbus core/client"
 	@echo "  test-all     Test all transport adapters"
 	@echo "  test-usecase-rest Run the live curl REST/XML battery from misc/USECASE.typ"
-	@echo "  test-usecase-ros2 Run the live ros2 service/bridge battery"
-	@echo "  test-usecase-mixed Run the cross-transport REST/XML + ROS2 battery"
-	@echo "  ros2-interface Build ares_interfaces/srv/Json for the live ROS2 battery"
-	@echo "  test-usecase Run every live transport battery from misc/USECASE.typ"
+	@echo "  test-usecase Run the live transport battery from misc/USECASE.typ"
 	@echo "  ci           Everything that gates a merge (run before pushing)"
 	@echo "  viz          Live rerun view of the running fleet"
 	@echo "  fuzz         Fuzz one target (FUZZ_TARGET=, FUZZ_SECONDS=)"

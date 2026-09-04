@@ -1,7 +1,7 @@
 //! Serve-layer wire tests — route planning and the UUID-or-INT resolution
 //! that happens at the adapter boundary (`ResourceRef`, `PlanRouteRequest`).
 
-#![cfg(any(feature = "rest", feature = "robo"))]
+#![cfg(feature = "rest")]
 
 use std::collections::BTreeMap as OMap;
 use std::sync::Arc;

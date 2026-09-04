@@ -167,7 +167,7 @@ pub struct ReadEmpty {
 }
 
 /// Resource lookup request. The UTF-8 token is either a UUID or a numeric
-/// workspace alias, matching the public REST and ROS2 address forms.
+/// workspace alias, matching the public REST address forms.
 #[datapod::datapod(name = "ares.v1.resource.get")]
 pub struct ResourceGet {
     #[dp(bytes, section = "id")]
