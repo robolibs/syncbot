@@ -839,6 +839,34 @@ pub fn flat_register(
     }
 }
 
+/// A robot leaves the fleet: its id is freed and every claim and lease it
+/// held is released. Only a caller holding the robot's own key may do it, so
+/// a robot cannot be thrown out by another.
+pub fn flat_deregister(state: &ServeState, robot_raw: &str, key_raw: &str) -> FlatReply {
+    let mut coord = match write_coord(state) {
+        Ok(coord) => coord,
+        Err(_) => return FlatReply::deny(reason::MISMATCHED_KEY),
+    };
+    let robot_id = match coord.resolve_robot_id(robot_raw) {
+        Some(id) if coord.has_robot(id) => id,
+        _ => return FlatReply::deny(reason::heartbeat::NOT_REGISTERED),
+    };
+    if !key_ok(&mut coord, robot_id, key_raw) {
+        return FlatReply::deny(reason::MISMATCHED_KEY);
+    }
+    coord.unregister_robot(robot_id);
+    state.record(FleetEvent {
+        at_ms: now_ms(),
+        kind: FleetEventKind::Released,
+        robot_id: Some(robot_id),
+        zone_ids: Vec::new(),
+        zone_names: Vec::new(),
+        reason: reason::OK,
+        blocked: None,
+    });
+    FlatReply::ok()
+}
+
 /// Human names for claim targets, so an event still reads sensibly to a client
 /// that does not hold this workspace.
 fn resource_names(index: &WorkspaceIndex, targets: &[ClaimTarget]) -> Vec<String> {
@@ -893,10 +921,10 @@ fn resolve_position(
     }
 }
 
-/// `position` and `yaw_rad` are optional and independent: a robot that sends
-/// neither still coordinates, it just cannot be drawn. `yaw_rad` is REP-103
-/// yaw — radians counter-clockwise from east — and the compass bearing is
-/// derived from it.
+/// `position` and `attitude` are optional and independent: a robot that sends
+/// neither still coordinates, it just cannot be drawn. The attitude is REP-103
+/// roll/pitch/yaw in radians — yaw counter-clockwise from east — and the
+/// compass bearing is derived from the yaw.
 pub fn flat_heartbeat(
     state: &ServeState,
     robot_raw: &str,
@@ -905,8 +933,9 @@ pub fn flat_heartbeat(
     node: Option<u64>,
     edge: Option<u64>,
     position: Option<ReportedPosition>,
-    yaw_rad: Option<f64>,
+    attitude: impl Into<ReportedAttitude>,
 ) -> FlatReply {
+    let attitude = attitude.into();
     let mut coord = match write_coord(state) {
         Ok(coord) => coord,
         Err(_) => return FlatReply::deny(reason::MISMATCHED_KEY),
@@ -928,7 +957,7 @@ pub fn flat_heartbeat(
     {
         return FlatReply::deny(reason::heartbeat::BAD_POSITION);
     }
-    if yaw_rad.is_some_and(|yaw| !yaw.is_finite()) {
+    if !attitude.is_finite() {
         return FlatReply::deny(reason::heartbeat::BAD_POSITION);
     }
     // A negative zone is the "unknown location" sentinel; a non-negative one is
@@ -947,7 +976,7 @@ pub fn flat_heartbeat(
     };
     coord.update_robot_progress(robot_id, node_uuid, edge_uuid, tick);
     let resolved = position.map(|p| resolve_position(index.as_ref(), p));
-    let heading = yaw_rad.map(crate::robot::RobotHeading::from_yaw_rad);
+    let heading = attitude.heading();
     coord.update_robot_pose(robot_id, resolved, heading, now_ms());
     coord.touch_robot(robot_id, now_ms());
     FlatReply::ok()
@@ -1255,6 +1284,13 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Flat deregistration: the robot is in the path, so the body is just its key.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlatDeregister {
+    #[serde(default = "default_key", deserialize_with = "de_scalar_string")]
+    pub key: String,
+}
+
 /// Flat registration request: robot id + optional key (defaults to [`DEFAULT_KEY`]).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FlatRegister {
@@ -1304,9 +1340,56 @@ pub struct FlatHeartbeat {
     /// rather than converting at the edge.
     #[serde(default)]
     pub yaw: Option<f64>,
+    /// The rest of the attitude, REP-103 radians, for a robot that has it.
+    /// Kept only alongside a yaw: roll and pitch say nothing about where on
+    /// the map a robot points.
+    #[serde(default)]
+    pub roll: Option<f64>,
+    #[serde(default)]
+    pub pitch: Option<f64>,
+}
+
+/// A robot's attitude as reported, each axis independently optional.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ReportedAttitude {
+    pub roll: Option<f64>,
+    pub pitch: Option<f64>,
+    pub yaw: Option<f64>,
+}
+
+/// A bare yaw is the common case — every caller that has only a heading.
+impl From<Option<f64>> for ReportedAttitude {
+    fn from(yaw: Option<f64>) -> Self {
+        Self {
+            yaw,
+            ..Self::default()
+        }
+    }
+}
+
+impl ReportedAttitude {
+    pub fn is_finite(&self) -> bool {
+        [self.roll, self.pitch, self.yaw]
+            .iter()
+            .all(|axis| axis.is_none_or(f64::is_finite))
+    }
+
+    /// The heading this attitude gives — none without a yaw.
+    pub fn heading(&self) -> Option<crate::robot::RobotHeading> {
+        self.yaw
+            .map(|yaw| crate::robot::RobotHeading::from_rpy(self.roll, self.pitch, yaw))
+    }
 }
 
 impl FlatHeartbeat {
+    pub fn attitude(&self) -> ReportedAttitude {
+        ReportedAttitude {
+            roll: self.roll,
+            pitch: self.pitch,
+            yaw: self.yaw,
+        }
+    }
+
     /// Which frame this heartbeat reports a position in, if any.
     ///
     /// `Err` when it names both frames, or half of one: a body with `lat` and

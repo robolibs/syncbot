@@ -77,6 +77,7 @@ pub fn router(client: crate::wire::peerbus::Client) -> Router {
         .route("/ares/v1/zones/{id}", get(zone))
         .route("/ares/v1/robots", post(register))
         .route("/ares/v1/robots/register", post(register))
+        .route("/ares/v1/robots/{robot}/deregister", post(deregister))
         .route("/ares/v1/robots/{robot}/heartbeat", post(heartbeat))
         .route("/ares/v1/claims/zone", post(claim_zone))
         .route("/ares/v1/claims/node", post(claim_node))
@@ -144,6 +145,14 @@ async fn register(
     result(client.register(&req.robot, &req.key, req.alive))
 }
 
+async fn deregister(
+    State(client): State<crate::wire::peerbus::Client>,
+    Path(robot): Path<String>,
+    Xml(req): Xml<crate::wire::FlatDeregister>,
+) -> XmlResult<crate::wire::FlatReply> {
+    result(client.deregister(&robot, &req.key))
+}
+
 async fn heartbeat(
     State(client): State<crate::wire::peerbus::Client>,
     Path(robot): Path<String>,
@@ -157,7 +166,7 @@ async fn heartbeat(
         Err(message) => return result(Err(ApiError::new(message))),
     };
     result(client.heartbeat(
-        &robot, &req.key, req.zone, req.node, req.edge, position, req.yaw,
+        &robot, &req.key, req.zone, req.node, req.edge, position, req.attitude(),
     ))
 }
 

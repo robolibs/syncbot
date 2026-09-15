@@ -1,13 +1,13 @@
 //! Serve the syncbot REST API over a workspace.
 //!
-//! Unlike `rest_server.rs` (which builds a fixed in-memory workspace), this
+//! This
 //! takes a zoneout workspace **directory** as input and serves whatever zones
 //! it contains. If no directory is given, it loads `examples/fixed`. Zones
 //! carrying an `external.numeric_id` property are reachable by that integer as
 //! well as by UUID.
 //!
 //! ```sh
-//! cargo run --example serve_workspace --features rest -- [workspace_dir] [bind_addr]
+//! cargo run --features rest --bin syncbot -- [workspace_dir] [bind_addr]
 //! ```
 //!
 //! With `--no-map` it starts with nothing to serve and waits for a workspace to

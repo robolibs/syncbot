@@ -101,7 +101,9 @@
             # rerun-sdk is here rather than pip-installed: the wheel is linked
             # against a libstdc++/libz that is not on the path on NixOS, and
             # nixpkgs tracks the same 0.31.x the Rust crate is pinned to.
-            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli pip rerun-sdk ]))
+            # zenoh and cbor2 are what Gearbox speaks; the barn_gearbox
+            # example drives its machines over them.
+            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli pip rerun-sdk zenoh cbor2 ]))
 
             nixGLAlias
             nixVulkanAlias

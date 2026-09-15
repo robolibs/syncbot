@@ -122,6 +122,12 @@ pub struct RobotHeading {
     pub yaw_rad: f64,
     /// Degrees clockwise from true north, in `[0, 360)`. Derived.
     pub bearing_deg: f64,
+    /// REP-103 roll about the robot's forward axis, radians, when it sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll_rad: Option<f64>,
+    /// REP-103 pitch about the robot's left axis, radians, when it sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch_rad: Option<f64>,
 }
 
 impl RobotHeading {
@@ -130,9 +136,18 @@ impl RobotHeading {
     /// REP-103 measures counter-clockwise from east; a bearing measures
     /// clockwise from north. So it is `90 - yaw`, wrapped — not a sign flip.
     pub fn from_yaw_rad(yaw_rad: f64) -> Self {
+        Self::from_rpy(None, None, yaw_rad)
+    }
+
+    /// The full attitude. Yaw is what a heading *is*; roll and pitch are
+    /// carried alongside when the robot reports them — a machine on a slope
+    /// or a ramp is still pointing somewhere on the map.
+    pub fn from_rpy(roll_rad: Option<f64>, pitch_rad: Option<f64>, yaw_rad: f64) -> Self {
         Self {
             yaw_rad,
             bearing_deg: (90.0 - yaw_rad.to_degrees()).rem_euclid(360.0),
+            roll_rad,
+            pitch_rad,
         }
     }
 }

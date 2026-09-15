@@ -13,7 +13,8 @@ function. Adding an adapter therefore does not rebuild the core.
 | Topic | Inner request datapod | Inner reply datapod |
 |---|---|---|
 | `ares/v1/robots/register` | `ares.v1.register` | `ares.v1.reply` |
-| `ares/v1/robots/heartbeat` | `ares.v1.heartbeat` | `ares.v1.reply` |
+| `ares/v1/robots/deregister` | `ares.v1.deregister` | `ares.v1.reply` |
+| `ares/v1/robots/heartbeat` | `ares.v2.heartbeat` | `ares.v1.reply` |
 | `ares/v1/claims/zone` | `ares.v1.claim` | `ares.v1.reply` |
 | `ares/v1/claims/node` | `ares.v1.claim` | `ares.v1.reply` |
 | `ares/v1/claims/edge` | `ares.v1.claim` | `ares.v1.reply` |
@@ -48,7 +49,8 @@ match it exactly, because datapod identity is size+alignment hashed.
 | Canonical name | Fields | Header bytes |
 |---|---|---|
 | `ares.v1.register` | `alive: u64`, `has_alive: u8`, `_pad: [u8;7]`, `robot: bytes`, `key: bytes` | 32 |
-| `ares.v1.heartbeat` | `zone: i64`, `node: u64`, `edge: u64`, `pos_a: f64`, `pos_b: f64`, `pos_c: f64`, `yaw: f64`, `has_zone: u8`, `has_node: u8`, `has_edge: u8`, `pos_frame: u8`, `has_yaw: u8`, `_pad: [u8;3]`, `robot: bytes`, `key: bytes` | 80 |
+| `ares.v1.deregister` | `_pad: [u8;8]`, `robot: bytes`, `key: bytes` — frees the id and releases everything it held; the robot's own key only | 24 |
+| `ares.v2.heartbeat` | `zone: i64`, `node: u64`, `edge: u64`, `pos_a: f64`, `pos_b: f64`, `pos_c: f64`, `roll: f64`, `pitch: f64`, `yaw: f64`, `has_zone: u8`, `has_node: u8`, `has_edge: u8`, `pos_frame: u8`, `has_roll: u8`, `has_pitch: u8`, `has_yaw: u8`, `_pad: [u8;1]`, `robot: bytes`, `key: bytes` | 96 |
 | `ares.v1.claim` | `lease_time: u64`, `access_mode: u8`, `has_access_mode: u8`, `has_lease_time: u8`, `_pad: [u8;5]`, `robot: bytes`, `key: bytes`, `id: u64[]` | 40 |
 | `ares.v1.claim.route` | `lease_time: u64`, `access_mode: u8`, `has_access_mode: u8`, `has_lease_time: u8`, `_pad: [u8;5]`, `robot: bytes`, `key: bytes`, `node: u64[]`, `edge: u64[]` | 48 |
 | `ares.v1.release` | `id: u64`, `robot: bytes`, `key: bytes` | 24 |
@@ -73,7 +75,13 @@ flags distinguish an omitted optional value from numeric zero.
 | `2` | local, metres from the datum | `x` east | `y` north | `z` up |
 
 `yaw` is REP-103: radians counter-clockwise from east, valid only when
-`has_yaw` is set. A robot sends one frame or neither, never both.
+`has_yaw` is set. `roll` and `pitch` complete the attitude in the same
+sense, each valid only under its own flag, and mean nothing without a yaw.
+A robot sends one frame or neither, never both.
+
+`ares.v2.heartbeat` replaced `ares.v1.heartbeat` when roll and pitch were
+added; the layout grew from 80 to 96 bytes, and an adapter still sending the
+v1 name is refused rather than misread.
 
 ## Claiming a route
 

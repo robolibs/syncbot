@@ -36,6 +36,7 @@ const WORKSPACE_CHUNK_BYTES: usize = 512 * 1024;
 const MAX_WORKSPACE_BYTES: usize = 256 * 1024 * 1024;
 
 pub const REGISTER_TOPIC: &str = "ares/v1/robots/register";
+pub const DEREGISTER_TOPIC: &str = "ares/v1/robots/deregister";
 pub const HEARTBEAT_TOPIC: &str = "ares/v1/robots/heartbeat";
 pub const CLAIM_ZONE_TOPIC: &str = "ares/v1/claims/zone";
 pub const CLAIM_NODE_TOPIC: &str = "ares/v1/claims/node";
@@ -67,6 +68,18 @@ pub struct Register {
     pub key: Vec<u8>,
 }
 
+/// Canonical deregistration: the robot gives up its id, and every claim and
+/// lease it holds goes with it. Only the robot's own key may do this. The
+/// header has nothing to say, so it is one padding word.
+#[datapod::datapod(name = "ares.v1.deregister")]
+pub struct Deregister {
+    pub _pad: [u8; 8],
+    #[dp(bytes, section = "robot")]
+    pub robot: Vec<u8>,
+    #[dp(bytes, section = "key")]
+    pub key: Vec<u8>,
+}
+
 /// Canonical heartbeat request. Presence flags distinguish an absent value
 /// from zero. A negative zone remains the flat protocol's unknown sentinel.
 ///
@@ -75,8 +88,9 @@ pub struct Register {
 /// current is worth little. `pos_frame` says which frame `pos_a/b/c` are in —
 /// `0` none, `1` lat/lon/alt, `2` x/y/z east/north/up of the datum — so the
 /// same three fields carry either without paying for both. `yaw` is REP-103:
-/// radians counter-clockwise from east.
-#[datapod::datapod(name = "ares.v1.heartbeat")]
+/// radians counter-clockwise from east; `roll` and `pitch` complete the
+/// attitude for a robot that reports one, in the same REP-103 sense.
+#[datapod::datapod(name = "ares.v2.heartbeat")]
 pub struct Heartbeat {
     pub zone: i64,
     pub node: u64,
@@ -84,13 +98,17 @@ pub struct Heartbeat {
     pub pos_a: f64,
     pub pos_b: f64,
     pub pos_c: f64,
+    pub roll: f64,
+    pub pitch: f64,
     pub yaw: f64,
     pub has_zone: u8,
     pub has_node: u8,
     pub has_edge: u8,
     pub pos_frame: u8,
+    pub has_roll: u8,
+    pub has_pitch: u8,
     pub has_yaw: u8,
-    pub _pad: [u8; 3],
+    pub _pad: [u8; 1],
     #[dp(bytes, section = "robot")]
     pub robot: Vec<u8>,
     #[dp(bytes, section = "key")]
@@ -267,6 +285,7 @@ impl From<Reply> for FlatReply {
 #[derive(Debug, Clone, Copy)]
 enum Operation {
     Register,
+    Deregister,
     Heartbeat,
     Claim(ClaimTargetKind),
     ClaimRoute,
@@ -376,6 +395,7 @@ impl CoreService {
             .bind()?;
         let mut servers = vec![
             (Operation::Register, node.req_server(REGISTER_TOPIC)?),
+            (Operation::Deregister, node.req_server(DEREGISTER_TOPIC)?),
             (Operation::Heartbeat, node.req_server(HEARTBEAT_TOPIC)?),
             (
                 Operation::Claim(ClaimTargetKind::Zone),
@@ -522,6 +542,12 @@ fn handle_request(
             })
             .unwrap_or_else(|error| bad_request(operation, error))
             .into_message(),
+        Operation::Deregister => decode::<Deregister>(&message)
+            .map(|req| {
+                crate::wire::flat_deregister(state, utf8(&req.robot).unwrap_or(""), key(&req.key))
+            })
+            .unwrap_or_else(|error| bad_request(operation, error))
+            .into_message(),
         Operation::Heartbeat => decode::<Heartbeat>(&message)
             .map(|req| {
                 let position = match req.pos_frame {
@@ -545,7 +571,11 @@ fn handle_request(
                     (req.has_node != 0).then_some(req.node),
                     (req.has_edge != 0).then_some(req.edge),
                     position,
-                    (req.has_yaw != 0).then_some(req.yaw),
+                    crate::wire::ReportedAttitude {
+                        roll: (req.has_roll != 0).then_some(req.roll),
+                        pitch: (req.has_pitch != 0).then_some(req.pitch),
+                        yaw: (req.has_yaw != 0).then_some(req.yaw),
+                    },
                 )
             })
             .unwrap_or_else(|error| bad_request(operation, error))
@@ -732,6 +762,15 @@ pub fn decode_any(bytes: &[u8]) -> Option<&'static str> {
     }
 
     try_decode!(
+        "ares.v1.deregister",
+        Deregister,
+        Deregister {
+            _pad: [0; 8],
+            robot: Vec::new(),
+            key: Vec::new(),
+        }
+    );
+    try_decode!(
         "ares.v1.register",
         Register,
         Register {
@@ -743,7 +782,7 @@ pub fn decode_any(bytes: &[u8]) -> Option<&'static str> {
         }
     );
     try_decode!(
-        "ares.v1.heartbeat",
+        "ares.v2.heartbeat",
         Heartbeat,
         Heartbeat {
             zone: 0,
@@ -752,13 +791,17 @@ pub fn decode_any(bytes: &[u8]) -> Option<&'static str> {
             pos_a: 0.0,
             pos_b: 0.0,
             pos_c: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
             yaw: 0.0,
             has_zone: 0,
             has_node: 0,
             has_edge: 0,
             pos_frame: 0,
+            has_roll: 0,
+            has_pitch: 0,
             has_yaw: 0,
-            _pad: [0; 3],
+            _pad: [0; 1],
             robot: Vec::new(),
             key: Vec::new(),
         }
@@ -864,7 +907,9 @@ fn parse_resource_ref(raw: &str) -> Result<ResourceRef, ApiError> {
 fn bad_request(operation: Operation, _: datapod::WireError) -> FlatReply {
     let reason = match operation {
         Operation::Register => crate::wire::reason::register::BAD_ID,
-        Operation::Heartbeat => crate::wire::reason::heartbeat::NOT_REGISTERED,
+        Operation::Deregister | Operation::Heartbeat => {
+            crate::wire::reason::heartbeat::NOT_REGISTERED
+        }
         Operation::Claim(_) | Operation::ClaimRoute => crate::wire::reason::claim::BAD_REQUEST,
         Operation::Release(_) => crate::wire::reason::release::UNKNOWN_OR_BAD,
         // These reply through ReadReply, never FlatReply, so they only appear
@@ -907,6 +952,7 @@ impl Client {
         let mut requests = std::collections::BTreeMap::new();
         for topic in [
             REGISTER_TOPIC,
+            DEREGISTER_TOPIC,
             HEARTBEAT_TOPIC,
             CLAIM_ZONE_TOPIC,
             CLAIM_NODE_TOPIC,
@@ -937,6 +983,17 @@ impl Client {
         })
     }
 
+    pub fn deregister(&self, robot: &str, key: &str) -> Result<FlatReply, ApiError> {
+        self.call(
+            DEREGISTER_TOPIC,
+            &Deregister {
+                _pad: [0; 8],
+                robot: robot.as_bytes().to_vec(),
+                key: key.as_bytes().to_vec(),
+            },
+        )
+    }
+
     pub fn register(
         &self,
         robot: &str,
@@ -964,8 +1021,9 @@ impl Client {
         node: Option<u64>,
         edge: Option<u64>,
         position: Option<crate::wire::ReportedPosition>,
-        yaw_rad: Option<f64>,
+        attitude: impl Into<crate::wire::ReportedAttitude>,
     ) -> Result<FlatReply, ApiError> {
+        let attitude = attitude.into();
         let (pos_frame, pos_a, pos_b, pos_c) = match position {
             Some(crate::wire::ReportedPosition::Global { lat, lon, alt }) => {
                 (POS_FRAME_GLOBAL, lat, lon, alt)
@@ -982,13 +1040,17 @@ impl Client {
                 pos_a,
                 pos_b,
                 pos_c,
-                yaw: yaw_rad.unwrap_or_default(),
+                roll: attitude.roll.unwrap_or_default(),
+                pitch: attitude.pitch.unwrap_or_default(),
+                yaw: attitude.yaw.unwrap_or_default(),
                 has_zone: u8::from(zone.is_some()),
                 has_node: u8::from(node.is_some()),
                 has_edge: u8::from(edge.is_some()),
                 pos_frame,
-                has_yaw: u8::from(yaw_rad.is_some()),
-                _pad: [0; 3],
+                has_roll: u8::from(attitude.roll.is_some()),
+                has_pitch: u8::from(attitude.pitch.is_some()),
+                has_yaw: u8::from(attitude.yaw.is_some()),
+                _pad: [0; 1],
                 robot: robot.as_bytes().to_vec(),
                 key: key.as_bytes().to_vec(),
             },
@@ -1393,7 +1455,7 @@ mod tests {
                 32,
             ),
             (
-                "ares.v1.heartbeat",
+                "ares.v2.heartbeat",
                 DatapodMsg::from_datapod(&Heartbeat {
                     zone: 0,
                     node: 0,
@@ -1401,19 +1463,23 @@ mod tests {
                     pos_a: 0.0,
                     pos_b: 0.0,
                     pos_c: 0.0,
+                    roll: 0.0,
+                    pitch: 0.0,
                     yaw: 0.0,
                     has_zone: 0,
                     has_node: 0,
                     has_edge: 0,
                     pos_frame: 0,
+                    has_roll: 0,
+                    has_pitch: 0,
                     has_yaw: 0,
-                    _pad: [0; 3],
+                    _pad: [0; 1],
                     robot: Vec::new(),
                     key: Vec::new(),
                 })
                 .wire()
                 .len(),
-                80,
+                96,
             ),
             (
                 "ares.v1.claim",
@@ -1520,9 +1586,9 @@ mod tests {
                 "8877665544332211010000000000000000000000070000000700000002000000726f626f742d376b31",
             ),
             (
-                "ares.v1.heartbeat",
-                11929958203526894691,
-                "fdffffffffffffff080706050403020118171615141312110000000000204a400000000000001640000000000000f43f000000000000e8bf010100010100000000000000070000000700000002000000726f626f742d376b31",
+                "ares.v2.heartbeat",
+                4052155222172215506,
+                "fdffffffffffffff080706050403020118171615141312110000000000204a400000000000001640000000000000f43f7b14ae47e17a943f9a9999999999b9bf000000000000e8bf010100010101010000000000070000000700000002000000726f626f742d376b31",
             ),
             (
                 "ares.v1.claim",
@@ -1613,7 +1679,7 @@ mod tests {
                 }),
             ),
             (
-                "ares.v1.heartbeat",
+                "ares.v2.heartbeat",
                 DatapodMsg::from_datapod(&Heartbeat {
                     zone: -3,
                     node: 0x0102_0304_0506_0708,
@@ -1621,13 +1687,17 @@ mod tests {
                     pos_a: 52.25,
                     pos_b: 5.5,
                     pos_c: 1.25,
+                    roll: 0.02,
+                    pitch: -0.1,
                     yaw: -0.75,
                     has_zone: 1,
                     has_node: 1,
                     has_edge: 0,
                     pos_frame: POS_FRAME_GLOBAL,
+                    has_roll: 1,
+                    has_pitch: 1,
                     has_yaw: 1,
-                    _pad: [0; 3],
+                    _pad: [0; 1],
                     robot: b"robot-7".to_vec(),
                     key: b"k1".to_vec(),
                 }),

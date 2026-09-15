@@ -63,18 +63,8 @@ rerun = { version = "0.31.2", default-features = false, features = [
 # Same version the sibling crates use (machbus, peerbus).
 proptest = "1"
 
-[[example]]
-name = "fleet_viz"
-required-features = ["rerun-viz", "peerbus"]
-
-[[example]]
-name = "rest_server"
+# The server: REST (+ XML) over a workspace, `syncbot [workspace_dir] [bind]`.
+[[bin]]
+name = "syncbot"
+path = "src/bin/syncbot.rs"
 required-features = ["rest"]
-
-[[example]]
-name = "serve_workspace"
-required-features = ["rest"]
-
-[[example]]
-name = "packhouse_yard"
-required-features = ["rerun-viz"]

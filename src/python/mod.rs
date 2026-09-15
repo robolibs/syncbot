@@ -250,6 +250,30 @@ impl PyWorkspace {
         self.inner.save(Path::new(path)).map_err(err_runtime)
     }
 
+    /// The whole workspace as one zoneout JSON document.
+    ///
+    /// The same form `Workspace.from_json` reads back and the wire's
+    /// `workspace/set` accepts, so a workspace built here can be handed to a
+    /// running core or checked into a repository as a fixture.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string_pretty(&self.inner.to_wire()).map_err(err_value)
+    }
+
+    /// Read a workspace back from a zoneout JSON document.
+    ///
+    /// `from_wire` is where a merely well-formed document meets the rules a
+    /// workspace has to satisfy — one root, no orphans, real geometry — so a
+    /// bad document fails here rather than halfway through a route.
+    #[staticmethod]
+    fn from_json(document: &str) -> PyResult<Self> {
+        let wire: zoneout::WorkspaceJson =
+            serde_json::from_str(document).map_err(err_value)?;
+        let workspace = zoneout::Workspace::from_wire(wire).map_err(err_runtime)?;
+        Ok(Self {
+            inner: Arc::new(workspace),
+        })
+    }
+
     /// Returns the root zone UUID.
     fn root_zone_id(&self) -> String {
         self.inner.root_zone().id().to_string()
@@ -1138,8 +1162,9 @@ impl PyCoordinator {
     }
 
     /// Report where a robot is. Position and heading are independent — `None`
-    /// means "not reported", never "moved to nowhere".
-    #[pyo3(signature = (robot_id, x=None, y=None, z=None, yaw=None, frame="local", now_ms=0))]
+    /// means "not reported", never "moved to nowhere". Roll and pitch ride
+    /// with the yaw and mean nothing without it.
+    #[pyo3(signature = (robot_id, x=None, y=None, z=None, yaw=None, frame="local", now_ms=0, roll=None, pitch=None))]
     #[allow(clippy::too_many_arguments)]
     fn update_robot_pose(
         &mut self,
@@ -1150,6 +1175,8 @@ impl PyCoordinator {
         yaw: Option<f64>,
         frame: &str,
         now_ms: u64,
+        roll: Option<f64>,
+        pitch: Option<f64>,
     ) -> bool {
         let index = self.inner.index();
         let position = match (x, y) {
@@ -1164,7 +1191,7 @@ impl PyCoordinator {
             )),
             _ => None,
         };
-        let heading = yaw.map(crate::robot::RobotHeading::from_yaw_rad);
+        let heading = yaw.map(|yaw| crate::robot::RobotHeading::from_rpy(roll, pitch, yaw));
         self.inner
             .update_robot_pose(RobotId::new(robot_id), position, heading, now_ms)
     }
