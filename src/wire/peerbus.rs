@@ -375,6 +375,16 @@ impl WorkspaceAssembler {
     }
 }
 
+/// The key of the node named `name`. peerbus no longer derives keys from
+/// names, so this keeps its derivation and the endpoint ids it gave.
+fn named_key(name: &str) -> peerbus::SecretKey {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"peerbus/v1/identity");
+    hasher.update(b"\0");
+    hasher.update(name.as_bytes());
+    peerbus::SecretKey::from_bytes(hasher.finalize().as_bytes())
+}
+
 /// Running canonical core service.
 pub struct CoreService {
     _node: Node,
@@ -389,7 +399,7 @@ impl CoreService {
 
     pub fn with_identity(state: ServeState, identity: &str) -> peerbus::Result<Self> {
         let node = Node::builder()
-            .identity(identity)
+            .secret_key(named_key(identity))
             .local_config(local_config())
             .no_relay()
             .bind()?;
@@ -945,10 +955,11 @@ struct ClientInner {
 impl Client {
     pub fn connect(core_peer: impl Into<String>) -> peerbus::Result<Self> {
         let node = Node::builder()
+            .ephemeral()
             .local_config(local_config())
             .no_relay()
             .bind()?;
-        let core_peer = core_peer.into();
+        let core = named_key(&core_peer.into()).public();
         let mut requests = std::collections::BTreeMap::new();
         for topic in [
             REGISTER_TOPIC,
@@ -972,7 +983,7 @@ impl Client {
         ] {
             requests.insert(
                 topic,
-                Mutex::new(node.req_client::<DatapodMsg, DatapodMsg>(core_peer.as_str(), topic)?),
+                Mutex::new(node.req_client::<DatapodMsg, DatapodMsg>(core, topic)?),
             );
         }
         Ok(Self {
