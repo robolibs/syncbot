@@ -7263,7 +7263,7 @@ dependencies = [
 
 [[package]]
 name = "syncbot"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "authbox",
  "axum",
