@@ -24,7 +24,7 @@ crate-type = ["rlib", "cdylib"]
 default = []
 python = ["dep:pyo3"]
 python-extension = ["python"]
-peerbus = ["dep:peerbus", "dep:tracing"]
+peerbus = ["dep:peerbus", "dep:tracing", "dep:blake3"]
 rest = ["peerbus", "dep:axum", "dep:tokio", "dep:tower", "dep:tower-http", "dep:tracing-subscriber"]
 xmlt = ["peerbus", "dep:axum", "dep:quick-xml"]
 # Keep the rerun example out of default `cargo build --examples` /
@@ -32,13 +32,13 @@ xmlt = ["peerbus", "dep:axum", "dep:quick-xml"]
 rerun-viz = ["dep:rerun"]
 
 [dependencies]
-zoneout = { git = "https://codeberg.org/robolibs/zoneout.git", tag = "0.1.2" }
-concord = { git = "https://codeberg.org/robolibs/concord.git", tag = "0.1.2" }
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
-graphix = { git = "https://codeberg.org/robolibs/graphix.git", tag = "0.1.2" }
-authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.1" }
-keylock = { git = "https://codeberg.org/robolibs/keylock.git", tag = "0.1.1" }
-peerbus = { git = "https://codeberg.org/robolibs/peerbus", tag = "0.4.1", optional = true, default-features = false }
+zoneout = { git = "https://github.com/robolibs/zoneout", tag = "v0.1.3" }
+concord = { git = "https://github.com/robolibs/concord", tag = "v0.1.6" }
+datapod = { git = "https://github.com/robolibs/datapod", tag = "0.6.2" }
+graphix = { git = "https://github.com/robolibs/graphix", tag = "v0.1.6" }
+authbox = { git = "https://github.com/robolibs/authbox", tag = "v0.1.2" }
+keylock = { git = "https://github.com/robolibs/keylock", tag = "0.1.1" }
+peerbus = { git = "https://github.com/robolibs/peerbus", tag = "v0.4.2", optional = true, default-features = false }
 axum = { version = "0.8.9", optional = true }
 pyo3 = { version = "0.23", optional = true, features = [
     "abi3-py39",
@@ -51,6 +51,7 @@ tokio = { version = "1.52", features = ["rt", "macros", "net", "time", "signal"]
 tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.6", features = ["trace"], optional = true }
 tracing = { version = "0.1", optional = true }
+blake3 = { version = "1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["ansi", "env-filter", "fmt"], optional = true }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 quick-xml = { version = "0.36", features = ["serialize"], optional = true }

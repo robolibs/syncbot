@@ -508,8 +508,8 @@ dependencies = [
 
 [[package]]
 name = "authbox"
-version = "0.1.1"
-source = "git+https://codeberg.org/robolibs/authbox.git?tag=0.1.1#b22094a1f9742072542f523608ca226969a702f1"
+version = "0.1.2"
+source = "git+https://github.com/robolibs/authbox?tag=v0.1.2#c463b3c4326536d29d05585bc9234170f42b9894"
 dependencies = [
  "base64ct",
  "bs58",
@@ -1033,8 +1033,8 @@ dependencies = [
 
 [[package]]
 name = "concord"
-version = "0.1.2"
-source = "git+https://codeberg.org/robolibs/concord.git?tag=0.1.2#a79f2bde3a6a166668332fc458f3ebb357e94dc9"
+version = "0.1.6"
+source = "git+https://github.com/robolibs/concord?tag=v0.1.6#2c190d49ec7eb2ddeffdd3b1ab19d968f2178017"
 dependencies = [
  "datapod",
  "graphix",
@@ -1491,8 +1491,8 @@ dependencies = [
 
 [[package]]
 name = "datapod"
-version = "0.4.1"
-source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.4.1#bcf4eb86033ee945d5b5f6a48f6d55a92026c837"
+version = "0.6.2"
+source = "git+https://github.com/robolibs/datapod?tag=0.6.2#f4aded9d7cac9e2762fff7a99eeb96026a2d0841"
 dependencies = [
  "bytemuck",
  "datapod-macros",
@@ -1501,7 +1501,7 @@ dependencies = [
 [[package]]
 name = "datapod-macros"
 version = "0.0.1"
-source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.4.1#bcf4eb86033ee945d5b5f6a48f6d55a92026c837"
+source = "git+https://github.com/robolibs/datapod?tag=0.6.2#f4aded9d7cac9e2762fff7a99eeb96026a2d0841"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2367,8 +2367,8 @@ dependencies = [
 
 [[package]]
 name = "graphix"
-version = "0.1.2"
-source = "git+https://codeberg.org/robolibs/graphix.git?tag=0.1.2#e9fb475e268af76d4fb2ae54833ea7ea7add9463"
+version = "0.1.6"
+source = "git+https://github.com/robolibs/graphix?tag=v0.1.6#5a50eae7628235b88d3818f20e3c06394c6f8ce3"
 dependencies = [
  "datapod",
  "glam",
@@ -3411,7 +3411,7 @@ dependencies = [
 [[package]]
 name = "keylock"
 version = "0.1.1"
-source = "git+https://codeberg.org/robolibs/keylock.git?tag=0.1.1#998cfac26b8e307280f7f30f62dfe9c0e465b5d2"
+source = "git+https://github.com/robolibs/keylock?tag=0.1.1#998cfac26b8e307280f7f30f62dfe9c0e465b5d2"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4514,8 +4514,8 @@ checksum = "4ec91767ecc0a0bbe558ce8c9da33c068066c57ecc8bb8477ef8c1ad3ef77c27"
 
 [[package]]
 name = "peerbus"
-version = "0.4.1"
-source = "git+https://codeberg.org/robolibs/peerbus?tag=0.4.1#f24dc8739d190f9ae5cc2380ed7751301d7f78ea"
+version = "0.4.2"
+source = "git+https://github.com/robolibs/peerbus?tag=v0.4.2#eb44b44a26ad1f323dca78d25d6095a44927c3bd"
 dependencies = [
  "authbox",
  "blake3",
@@ -5291,8 +5291,8 @@ dependencies = [
 
 [[package]]
 name = "rastera"
-version = "0.1.2"
-source = "git+https://codeberg.org/robolibs/rastera.git?tag=0.1.2#674268728e4aec54ad6a2523200f17bfab08e4a9"
+version = "0.1.3"
+source = "git+https://github.com/robolibs/rastera?tag=v0.1.3#5113396aafb2f7f1a942790c2137bfacc1bc3b8b"
 dependencies = [
  "bytemuck",
  "concord",
@@ -7267,6 +7267,7 @@ version = "0.1.3"
 dependencies = [
  "authbox",
  "axum",
+ "blake3",
  "concord",
  "datapod",
  "graphix",
@@ -8008,8 +8009,8 @@ dependencies = [
 
 [[package]]
 name = "vectory"
-version = "0.1.2"
-source = "git+https://codeberg.org/robolibs/vectory.git?tag=0.1.2#433402e942064d06008af92ce4fe90fc0702e096"
+version = "0.1.3"
+source = "git+https://github.com/robolibs/vectory?tag=v0.1.3#70731eb6d5700f7d5bc345c4fd08f88e71f7ef61"
 dependencies = [
  "concord",
  "datapod",
@@ -8997,8 +8998,8 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zoneout"
-version = "0.1.2"
-source = "git+https://codeberg.org/robolibs/zoneout.git?tag=0.1.2#6528de397922698e7d912548cea57c6a36e282be"
+version = "0.1.3"
+source = "git+https://github.com/robolibs/zoneout?tag=v0.1.3#b143463a8ebed165c73483c3de3c10840b598018"
 dependencies = [
  "chrono",
  "concord",
