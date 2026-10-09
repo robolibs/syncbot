@@ -1,7 +1,7 @@
 //! syncbot — multi-robot navigation, claims, and scheduling on top of
 //! `zoneout`.
 //!
-//! See `PLAN.md` at the crate root for the design overview. The public
+//! The wire contract is documented in `docs/WRITING_ADAPTER.md`. The public
 //! surface is kept flat at `syncbot::*` via re-exports below.
 
 // Crate-wide lint policy. The explicit form of these lints is clearer for a
@@ -28,7 +28,7 @@ pub mod vda;
 #[cfg(feature = "python")]
 pub mod python;
 
-#[cfg(any(feature = "rest", feature = "robo", feature = "xmlt"))]
+#[cfg(any(feature = "peerbus", feature = "rest", feature = "xmlt"))]
 pub mod wire;
 
 pub use crate::core::error::{Error, Result};
@@ -60,7 +60,9 @@ pub use crate::claim::{
     ClaimTargetKind, ClaimWindow, Lease, LeaseDisposition,
 };
 
-pub use crate::robot::{RobotProgressState, RobotState};
+pub use crate::robot::{
+    PositionFrame, RobotHeading, RobotPosition, RobotProgressState, RobotState,
+};
 
 pub use crate::coordinator::{
     ArbitrationContext, ArbitrationDecision, ClaimTargetSemantics, Coordinator, ScheduleConflict,

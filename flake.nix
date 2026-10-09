@@ -64,6 +64,14 @@
           ln -s ${nixVulkanTarget} $out/bin/nixVulkan
         '';
 
+        # cargo-fuzz drives rustc with `-Z sanitizer=address`, which only
+        # nightly accepts. Keeping nightly out of the default shell means the
+        # everyday toolchain stays pinned to stable — the fuzzers get their own
+        # shell instead (`nix develop .#fuzz`, or `make fuzz`).
+        rustNightly = pkgs.rust-bin.nightly.latest.default.override {
+          extensions = [ "rust-src" "llvm-tools-preview" ];
+        };
+
         guiLibs = with pkgs; [
           alsa-lib
           udev
@@ -90,7 +98,12 @@
             pkgs.trunk
             pkgs.maturin
             pkgs.typst
-            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli pip ]))
+            # rerun-sdk is here rather than pip-installed: the wheel is linked
+            # against a libstdc++/libz that is not on the path on NixOS, and
+            # nixpkgs tracks the same 0.31.x the Rust crate is pinned to.
+            # zenoh and cbor2 are what Gearbox speaks; the barn_gearbox
+            # example drives its machines over them.
+            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli pip rerun-sdk zenoh cbor2 ]))
 
             nixGLAlias
             nixVulkanAlias
@@ -105,6 +118,20 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath guiLibs;
           WGPU_VALIDATION = "0";
           WGPU_DEBUG = "0";
+        };
+
+        # Fuzzing shell: nightly plus cargo-fuzz and nothing else it does not
+        # need. `cd fuzz && cargo fuzz run <target>`, or `make fuzz` from the
+        # repository root.
+        devShells.fuzz = pkgs.mkShell {
+          packages = [
+            rustNightly
+            pkgs.cargo-fuzz
+            pkgs.clang
+            pkgs.mold
+            pkgs.pkg-config
+          ];
+          RUST_SRC_PATH = "${rustNightly}/lib/rustlib/src/rust/library";
         };
       }
     );

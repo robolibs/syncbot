@@ -711,7 +711,9 @@ pub fn validate_zone_traffic_properties(
     if let Some(no_stop) = properties.get("traffic.no_stop") {
         if parse::parse_bool(no_stop).unwrap_or(false) {
             if let Some(stop_allowed) = properties.get("traffic.stop_allowed") {
-                if parse::parse_bool(stop_allowed).unwrap_or(false) {
+                // An unparseable value already reports its own error above;
+                // don't manufacture a second, misleading conflict warning.
+                if parse::parse_bool(stop_allowed) == Some(true) {
                     issues.push(TrafficParseIssue {
                         severity: TrafficIssueSeverity::Warning,
                         key: "traffic.stop_allowed".into(),
@@ -835,7 +837,9 @@ pub fn validate_edge_traffic_properties(
     if let Some(no_stop) = properties.get("traffic.no_stop") {
         if parse::parse_bool(no_stop).unwrap_or(false) {
             if let Some(stop_allowed) = properties.get("traffic.stop_allowed") {
-                if parse::parse_bool(stop_allowed).unwrap_or(true) {
+                // An unparseable value already reports its own error above;
+                // don't manufacture a second, misleading conflict warning.
+                if parse::parse_bool(stop_allowed) == Some(true) {
                     issues.push(TrafficParseIssue {
                         severity: TrafficIssueSeverity::Warning,
                         key: "traffic.stop_allowed".into(),

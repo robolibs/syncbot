@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.1.4] - 2026-10-09
+
+### <!-- 0 -->⛰️  Features
+
+- Complete the binding surface
+- Add packhouse yard rerun scenario
+- Prove did:key identities via challenge token
+- Hash keys via keylock, parse dids via authbox
+- Atomic route claims and push auth
+- Unify zone and route granularity
+- Add support for dynamic workspace loading
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Name keys for the 0.4.2 node api
+- Pass position and yaw in all adapters
+
+### <!-- 2 -->🚜 Refactor
+
+- Remove zenoh and ros2 transports
+
+### <!-- 3 -->📚 Documentation
+
+- Add json examples and refresh contract
+
+### <!-- 6 -->🧪 Testing
+
+- Add property, parity and stress suites
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Migrate to oslo config, clean up layout
+- Replace unrunnable workflow with make ci gate
+- Add build pipeline and fuzz tooling
+- Dependency fixes
+- Everything is a plugin
+
 ## [0.1.3] - 2026-07-12
 
 ### <!-- 0 -->⛰️  Features

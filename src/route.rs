@@ -16,7 +16,6 @@ use crate::core::error::{Error, Result};
 use crate::index::WorkspaceIndex;
 use crate::policy::{
     ZonePolicy, ZonePolicyKind, derive_effective_edge_semantics, parse_edge_traffic_semantics,
-    parse_zone_policy,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -124,13 +123,22 @@ pub fn allows_traversal_from_node(edge: &EdgeData, from_source: bool) -> bool {
     }
 }
 
+/// Zones that make an edge impassable outright.
+///
+/// `blocks_entry_without_grant` is deliberately NOT one of them. That flag is
+/// what `traffic.claim_required` sets, and a zone you must claim before
+/// entering is one the planner has to be able to route through — otherwise no
+/// robot could ever be given the plan it would claim its way along, and the
+/// claim system would arbitrate a path nobody can be sent down. Needing a
+/// grant is a cost (see `edge_traversal_penalty`); being blocked is a wall.
 pub fn blocked_zones_for_edge(index: &WorkspaceIndex, edge_id: Uuid) -> Vec<Uuid> {
     let mut out = Vec::new();
     for zone in index.zones_of_edge(edge_id) {
-        let policy = parse_zone_policy(zone.properties());
+        let Some(policy) = index.zone_policy(zone.id()) else {
+            continue;
+        };
         if policy.blocked.unwrap_or(false)
             || policy.kind == ZonePolicyKind::Restricted
-            || policy.blocks_entry_without_grant
             || policy.blocks_traversal_without_grant
         {
             out.push(zone.id());
@@ -139,12 +147,23 @@ pub fn blocked_zones_for_edge(index: &WorkspaceIndex, edge_id: Uuid) -> Vec<Uuid
     out
 }
 
+/// Whether an edge cannot be traversed at all.
+///
+/// `no_stop` is deliberately not consulted: "do not stop here" constrains
+/// where a robot may wait, not where it may drive, and treating it as a wall
+/// made no-stop corridors unroutable. It is priced at `+2.0` in
+/// `edge_traversal_penalty` instead.
 pub fn is_edge_hard_blocked(index: &WorkspaceIndex, edge_id: Uuid) -> bool {
     let Some(edge) = index.edge(edge_id) else {
         return true;
     };
-    let semantics = parse_edge_traffic_semantics(&edge.properties, false);
-    if semantics.blocked.unwrap_or(false) || semantics.no_stop.unwrap_or(false) {
+    let blocked = match index.edge_semantics(edge_id) {
+        Some(semantics) => semantics.blocked.unwrap_or(false),
+        None => parse_edge_traffic_semantics(&edge.properties, false)
+            .blocked
+            .unwrap_or(false),
+    };
+    if blocked {
         return true;
     }
     !blocked_zones_for_edge(index, edge_id).is_empty()
@@ -155,9 +174,9 @@ pub fn edge_traversal_penalty(index: &WorkspaceIndex, edge_id: Uuid) -> f64 {
         return f64::INFINITY;
     };
     let zone_policies: Vec<ZonePolicy> = index
-        .zones_of_edge(edge_id)
+        .edge_zone_policies(edge_id)
         .into_iter()
-        .map(|z| parse_zone_policy(z.properties()))
+        .cloned()
         .collect();
 
     let semantics = derive_effective_edge_semantics(&edge.properties, false, &zone_policies);
@@ -227,42 +246,23 @@ pub fn edge_traversal_penalty(index: &WorkspaceIndex, edge_id: Uuid) -> f64 {
 // graph traversal (Dijkstra inner engine)
 // ---------------------------------------------------------------------------
 
+/// Legal steps out of `node_id`, read from the index's adjacency map rather
+/// than rescanned out of the whole graph.
 fn neighbors_of(index: &WorkspaceIndex, node_id: Uuid) -> Vec<TraversalNeighbor> {
-    let workspace = index.workspace();
-    let g = workspace.graph();
-    let Some(vid) = workspace.find_node(node_id) else {
-        return Vec::new();
-    };
-
-    let mut out = Vec::new();
-    for edge in g.edges() {
-        let (Some(src), Some(tgt)) = (g.source(edge.id), g.target(edge.id)) else {
-            continue;
-        };
-        if src != vid && tgt != vid {
-            continue;
-        }
-        let from_source = src == vid;
-
-        let Some(prop) = g.edge_property(edge.id) else {
-            continue;
-        };
-        if !allows_traversal_from_node(prop, from_source) {
-            continue;
-        }
-
-        let other = if from_source { tgt } else { src };
-        let Some(other_node) = g.get_vertex(other) else {
-            continue;
-        };
-        let weight = g.get_weight(edge.id).unwrap_or(0.0);
-        out.push(TraversalNeighbor {
-            node_id: other_node.id,
-            edge_id: prop.id,
-            weight,
-        });
-    }
-    out
+    index
+        .neighbors(node_id)
+        .iter()
+        .filter(|adjacency| {
+            index
+                .edge(adjacency.edge_id)
+                .is_some_and(|edge| allows_traversal_from_node(edge, adjacency.from_source))
+        })
+        .map(|adjacency| TraversalNeighbor {
+            node_id: adjacency.node_id,
+            edge_id: adjacency.edge_id,
+            weight: adjacency.weight,
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -767,9 +767,9 @@ pub fn diagnose_route_failure(index: &WorkspaceIndex, start: Uuid, goal: Uuid) -
                 if !is_edge_hard_blocked(index, nb.edge_id) {
                     if let Some(edge) = index.edge(nb.edge_id) {
                         let zone_policies: Vec<ZonePolicy> = index
-                            .zones_of_edge(nb.edge_id)
+                            .edge_zone_policies(nb.edge_id)
                             .into_iter()
-                            .map(|z| parse_zone_policy(z.properties()))
+                            .cloned()
                             .collect();
                         let semantics = derive_effective_edge_semantics(
                             &edge.properties,
@@ -864,28 +864,16 @@ pub fn diagnose_route_failure(index: &WorkspaceIndex, start: Uuid, goal: Uuid) -
 
     let mut directionally_blocked_edge_ids: Vec<Uuid> = Vec::new();
     let mut seen_directional: HashSet<Uuid> = HashSet::new();
-    let workspace = index.workspace();
-    let g = workspace.graph();
     for &node_id in &reachable_node_ids {
-        let Some(vid) = workspace.find_node(node_id) else {
-            continue;
-        };
-        for edge in g.edges() {
-            let (Some(src), Some(tgt)) = (g.source(edge.id), g.target(edge.id)) else {
+        for adjacency in index.neighbors(node_id) {
+            let Some(edge) = index.edge(adjacency.edge_id) else {
                 continue;
             };
-            if src != vid && tgt != vid {
+            if allows_traversal_from_node(edge, adjacency.from_source) {
                 continue;
             }
-            let from_source = src == vid;
-            let Some(prop) = g.edge_property(edge.id) else {
-                continue;
-            };
-            if allows_traversal_from_node(prop, from_source) {
-                continue;
-            }
-            if seen_directional.insert(prop.id) {
-                directionally_blocked_edge_ids.push(prop.id);
+            if seen_directional.insert(adjacency.edge_id) {
+                directionally_blocked_edge_ids.push(adjacency.edge_id);
             }
         }
     }

@@ -9,14 +9,9 @@ use std::sync::Arc;
 
 use datapod::{Geo, Point, Polygon};
 use syncbot::wire::{
-    ClaimRequestWire, ClaimTargetWire, ReleaseLeaseRequest, ServeState, add_lease, flat_claim,
-    flat_heartbeat, flat_register, flat_release, remove_claim, release_lease, submit_claim,
-    unregister_robot,
+    ReportedPosition, ServeState, flat_claim, flat_heartbeat, flat_register, flat_release,
 };
-use syncbot::{
-    ClaimAccessMode, ClaimId, ClaimTargetKind, ClaimWindow, Coordinator, Lease, LeaseId, MissionId,
-    NUMERIC_ID_PROPERTY, ResourceRef, RobotId, WorkspaceIndex,
-};
+use syncbot::{ClaimTargetKind, Coordinator, NUMERIC_ID_PROPERTY, RobotId, WorkspaceIndex};
 use zoneout::{Workspace, ZoneBuilder};
 
 fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
@@ -57,6 +52,7 @@ fn build_state() -> ServeState {
 
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     ServeState::new(Coordinator::with_index(idx))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 #[test]
@@ -71,23 +67,36 @@ fn register_is_idempotent_deny_on_reuse() {
     // bad id (not int/uuid) -> reason 3
     let r = flat_register(&s, "notanid", "1234", None);
     assert_eq!((r.decision, r.reason), (0, 3));
-    // unsupported key scheme -> reason 4
-    let r = flat_register(&s, "8", "did:key=abc", None);
+    // A DID method that is not did:key -> reason 4 (unsupported scheme).
+    let r = flat_register(&s, "8", "did:web:example.com", None);
     assert_eq!((r.decision, r.reason), (0, 4));
+    // A bare did:key names an identity without proving it -> reason 5.
+    // Squatting one would deny the real holder its id, so it must be proven
+    // first and registered with the resulting token.
+    let r = flat_register(
+        &s,
+        "9",
+        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        None,
+    );
+    assert_eq!((r.decision, r.reason), (0, 5));
+    // Something that is not a key at all -> reason 1 (mismatched key).
+    let r = flat_register(&s, "10", "did:key=not-a-did", None);
+    assert_eq!((r.decision, r.reason), (0, 1));
 }
 
 #[test]
 fn heartbeat_requires_registration_and_key() {
     let s = build_state();
     // not registered -> reason 2
-    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None);
+    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None, None, None);
     assert_eq!((r.decision, r.reason), (0, 2));
     flat_register(&s, "7", "1234", None);
     // wrong key -> mismatched key (reason 1)
-    let r = flat_heartbeat(&s, "7", "9999", Some(42), None, None);
+    let r = flat_heartbeat(&s, "7", "9999", Some(42), None, None, None, None);
     assert_eq!((r.decision, r.reason), (0, 1));
     // correct key -> ack ok
-    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None);
+    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None, None, None);
     assert_eq!((r.decision, r.reason), (1, 0));
 }
 
@@ -152,6 +161,7 @@ fn build_nested_state() -> ServeState {
 
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
     ServeState::new(Coordinator::with_index(idx))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 #[test]
@@ -236,35 +246,6 @@ fn multi_zone_claim_is_atomic() {
 }
 
 #[test]
-fn tier2_submit_claim_requires_key() {
-    let s = build_state();
-    flat_register(&s, "7", "1234", None);
-
-    let make = |key: Option<&str>| ClaimRequestWire {
-        id: ClaimId::new(0),
-        robot_id: RobotId::new(7),
-        mission_id: MissionId::new(0),
-        access_mode: ClaimAccessMode::Exclusive,
-        priority: 0,
-        requested_at_tick: None,
-        window: ClaimWindow::default(),
-        targets: vec![ClaimTargetWire {
-            kind: ClaimTargetKind::Zone,
-            resource_id: ResourceRef::Numeric(42),
-        }],
-        key: key.map(|k| k.to_string()),
-    };
-
-    // missing key -> rejected
-    assert!(submit_claim(&s, make(None)).is_err());
-    // wrong key -> rejected
-    assert!(submit_claim(&s, make(Some("9999"))).is_err());
-    // correct key -> accepted (grant)
-    let eval = submit_claim(&s, make(Some("1234"))).expect("submit ok");
-    assert_eq!(eval.decision, syncbot::ClaimDecision::Grant);
-}
-
-#[test]
 fn uuid_robot_id_full_flow() {
     let s = build_state();
     let uuid = "11111111-1111-1111-1111-111111111111";
@@ -277,12 +258,12 @@ fn uuid_robot_id_full_flow() {
 
     // heartbeat by UUID, correct key -> ack
     assert_eq!(
-        flat_heartbeat(&s, uuid, "1234", Some(42), None, None).decision,
+        flat_heartbeat(&s, uuid, "1234", Some(42), None, None, None, None).decision,
         1
     );
     // wrong key -> mismatched key
     assert_eq!(
-        flat_heartbeat(&s, uuid, "9999", Some(42), None, None).reason,
+        flat_heartbeat(&s, uuid, "9999", Some(42), None, None, None, None).reason,
         1
     );
 
@@ -299,7 +280,7 @@ fn uuid_robot_id_full_flow() {
     // an unregistered UUID heartbeats -> not registered (reason 2)
     let other = "22222222-2222-2222-2222-222222222222";
     assert_eq!(
-        flat_heartbeat(&s, other, "1234", Some(42), None, None).reason,
+        flat_heartbeat(&s, other, "1234", Some(42), None, None, None, None).reason,
         2
     );
 
@@ -308,8 +289,23 @@ fn uuid_robot_id_full_flow() {
 }
 
 #[test]
+fn keyless_registration_is_refused_unless_enabled() {
+    // Every keyless robot shares one password, so anyone can act as any of
+    // them. That is a decision an operator makes, not a default.
+    let closed = build_state();
+    let refused = flat_register(&closed, "7", "0", None);
+    assert_eq!(
+        (refused.decision, refused.reason),
+        (0, 5),
+        "keyless registration must be refused as not permitted"
+    );
+    // A robot bringing its own key is unaffected.
+    assert_eq!(flat_register(&closed, "7", "1234", None).decision, 1);
+}
+
+#[test]
 fn key_is_optional_defaults_to_shared_password() {
-    let s = build_state();
+    let s = build_state().with_default_key_allowed(true);
     // register with NO key -> uses the default password
     let r = flat_register(&s, "7", "0", None);
     assert_eq!((r.decision, r.reason), (1, 0));
@@ -378,13 +374,13 @@ fn heartbeat_zone_minus_one_is_unknown_location() {
     let s = build_state();
     flat_register(&s, "7", "1234", None);
     // -1 = robot hasn't claimed any zone / location unknown -> still a valid ack
-    let r = flat_heartbeat(&s, "7", "1234", Some(-1), None, None);
+    let r = flat_heartbeat(&s, "7", "1234", Some(-1), None, None, None, None);
     assert_eq!((r.decision, r.reason), (1, 0));
     // a real zone also acks
-    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None);
+    let r = flat_heartbeat(&s, "7", "1234", Some(42), None, None, None, None);
     assert_eq!((r.decision, r.reason), (1, 0));
     // no position at all acks too
-    let r = flat_heartbeat(&s, "7", "1234", None, None, None);
+    let r = flat_heartbeat(&s, "7", "1234", None, None, None, None, None);
     assert_eq!((r.decision, r.reason), (1, 0));
 }
 
@@ -450,75 +446,6 @@ fn inactive_robot_claims_auto_released() {
 }
 
 // ---------------------------------------------------------------------------
-// Opt-in admin auth on the mutation endpoints (unregister / remove_claim /
-// add_lease / release_lease). Default (flag OFF) is byte-identically open.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn admin_auth_off_is_open_no_key_required() {
-    // Default ServeState: admin_auth = false -> endpoints stay OPEN.
-    let s = build_state();
-    flat_register(&s, "7", "1234", None); // robot bound to a REAL key
-
-    // A claim owned by robot 7 (to exercise remove_claim's owner lookup).
-    assert_eq!(
-        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
-        1
-    );
-    let claim_id = s.coordinator().read().unwrap().claim_manager().requests()[0].id;
-
-    // add_lease with NO key succeeds even though robot 7 has a real key.
-    let lease = Lease {
-        id: LeaseId::new(1),
-        robot_id: RobotId::new(7),
-        ..Lease::default()
-    };
-    add_lease(&s, lease, None).expect("add_lease open");
-
-    // remove_claim with NO key -> actually removes it.
-    assert!(remove_claim(&s, claim_id, None).expect("remove_claim open"));
-
-    // release_lease with NO key -> actually releases it.
-    assert!(
-        release_lease(
-            &s,
-            ReleaseLeaseRequest {
-                lease_id: LeaseId::new(1),
-                released_at_tick: None,
-                key: None,
-            },
-        )
-        .expect("release_lease open")
-    );
-
-    // unregister_robot with NO key -> succeeds.
-    assert!(unregister_robot(&s, RobotId::new(7), None).expect("unregister open"));
-}
-
-#[test]
-fn admin_auth_on_protects_keyed_but_not_keyless_robot() {
-    let s = build_state().with_admin_auth(true);
-
-    // Robot 7 registered WITH a real key -> protected.
-    flat_register(&s, "7", "1234", None);
-    // Omitted key -> denied (defaults to "0", which is not robot 7's key).
-    assert!(unregister_robot(&s, RobotId::new(7), None).is_err());
-    // Wrong key -> denied.
-    assert!(unregister_robot(&s, RobotId::new(7), Some("9999".into())).is_err());
-    // Correct key -> succeeds (returns true, proving it was still registered).
-    assert!(
-        unregister_robot(&s, RobotId::new(7), Some("1234".into()))
-            .expect("unregister with correct key")
-    );
-
-    // Robot 8 registered bound to the DEFAULT key "0" (keyless) -> stays open.
-    flat_register(&s, "8", "0", None);
-    assert!(
-        unregister_robot(&s, RobotId::new(8), None).expect("keyless unregister stays open")
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Shared claims via access_mode=2 and reason 3 (CAPACITY) on the shared path.
 // ---------------------------------------------------------------------------
 
@@ -545,6 +472,7 @@ fn build_shared_state() -> ServeState {
 
     let idx = Arc::new(WorkspaceIndex::new(Arc::new(Workspace::new(root))));
     ServeState::new(Coordinator::with_index(idx))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
 }
 
 #[test]
@@ -595,4 +523,429 @@ fn access_mode_2_accepted_3_still_bad_request() {
     // access_mode 3 remains reserved -> reason 5 (BAD_REQUEST).
     let r = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[60], Some(3), None);
     assert_eq!((r.decision, r.reason), (0, 5));
+}
+
+/// Root + one numeric zone, with a datum bound and `coord_mode` left at its
+/// default of Global — the shape roboviz actually pushes.
+fn build_state_with_datum() -> ServeState {
+    let mut root = ZoneBuilder::new()
+        .with_name("root")
+        .with_kind("workspace")
+        .with_boundary(rectangle(0.0, 0.0, 100.0, 100.0))
+        .with_datum(Geo::new(52.0, 5.0, 0.0))
+        .build()
+        .expect("root zone");
+    let zone = ZoneBuilder::new()
+        .with_name("a")
+        .with_kind("zone")
+        .with_boundary(rectangle(10.0, 10.0, 50.0, 50.0))
+        .with_datum(Geo::new(52.0, 5.0, 0.0))
+        .with_property(NUMERIC_ID_PROPERTY, "42")
+        .build()
+        .expect("zone");
+    root.add_child(zone).expect("add zone");
+    let mut ws = Workspace::new(root);
+    ws.set_datum(Geo::new(52.0, 5.0, 0.0));
+    let idx = Arc::new(WorkspaceIndex::new(Arc::new(ws)));
+    ServeState::new(Coordinator::with_index(idx))
+        .with_kdf_params(syncbot::core::key::insecure_test_cost())
+}
+
+fn robot_position(state: &ServeState) -> syncbot::RobotPosition {
+    let coord = state.coordinator();
+    let coord = coord.read().expect("coordinator");
+    coord
+        .robot_states()
+        .first()
+        .expect("one robot")
+        .position
+        .expect("a position was reported")
+}
+
+/// The whole point of relaxing the coord_mode gate: roboviz pushes global-mode
+/// workspaces, and a robot reporting metres in one must still be placeable.
+#[test]
+fn a_global_mode_workspace_still_converts_robot_positions() {
+    let s = build_state_with_datum();
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+
+    // 100 m east, 50 m north of the datum.
+    let r = flat_heartbeat(
+        &s,
+        "7",
+        "1234",
+        None,
+        None,
+        None,
+        Some(ReportedPosition::Local {
+            x: 100.0,
+            y: 50.0,
+            z: 0.0,
+        }),
+        None,
+    );
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    let position = robot_position(&s);
+    assert!(position.converted, "a datum is bound, so it must convert");
+    assert_eq!(position.reported, syncbot::PositionFrame::Local);
+    assert_eq!((position.x, position.y), (100.0, 50.0), "kept as sent");
+    // East of the datum means a larger longitude, north means a larger
+    // latitude. Rough bounds: this pins the direction, not the ellipsoid.
+    assert!(position.lon > 5.0, "100 m east must raise longitude");
+    assert!(position.lat > 52.0, "50 m north must raise latitude");
+    assert!((position.lat - 52.0).abs() < 0.01 && (position.lon - 5.0).abs() < 0.01);
+}
+
+#[test]
+fn a_global_position_round_trips_back_to_where_it_started() {
+    let s = build_state_with_datum();
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+
+    let r = flat_heartbeat(
+        &s,
+        "7",
+        "1234",
+        None,
+        None,
+        None,
+        Some(ReportedPosition::Global {
+            lat: 52.001,
+            lon: 5.001,
+            alt: 12.0,
+        }),
+        None,
+    );
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    let position = robot_position(&s);
+    assert!(position.converted);
+    assert_eq!(position.reported, syncbot::PositionFrame::Global);
+    assert_eq!(
+        (position.lat, position.lon),
+        (52.001, 5.001),
+        "kept as sent"
+    );
+    // ~111 m north and ~68 m east at this latitude; the point is that the
+    // derived metres are sane, not that they hit a specific ellipsoid value.
+    assert!(
+        position.y > 50.0 && position.y < 200.0,
+        "y was {}",
+        position.y
+    );
+    assert!(
+        position.x > 30.0 && position.x < 150.0,
+        "x was {}",
+        position.x
+    );
+}
+
+/// With no datum there is nothing to convert against. The reported frame is
+/// kept and `converted` says the rest is unknown — rather than a zeroed
+/// lat/lon reading as "somewhere off west Africa".
+#[test]
+fn without_a_datum_a_position_is_kept_but_not_converted() {
+    let s = build_state(); // Workspace::new leaves datum None
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+
+    let r = flat_heartbeat(
+        &s,
+        "7",
+        "1234",
+        None,
+        None,
+        None,
+        Some(ReportedPosition::Local {
+            x: 10.0,
+            y: 20.0,
+            z: 1.0,
+        }),
+        None,
+    );
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    let position = robot_position(&s);
+    assert!(
+        !position.converted,
+        "no datum, so nothing to convert against"
+    );
+    assert_eq!((position.x, position.y, position.z), (10.0, 20.0, 1.0));
+    assert_eq!(
+        (position.lat, position.lon),
+        (0.0, 0.0),
+        "unknown, not measured"
+    );
+}
+
+/// NaN would spread through every later conversion and comparison in silence.
+#[test]
+fn a_position_that_is_not_a_number_is_refused() {
+    let s = build_state_with_datum();
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+
+    for bad in [
+        ReportedPosition::Local {
+            x: f64::NAN,
+            y: 0.0,
+            z: 0.0,
+        },
+        ReportedPosition::Global {
+            lat: 91.0, // off the globe
+            lon: 5.0,
+            alt: 0.0,
+        },
+    ] {
+        let r = flat_heartbeat(&s, "7", "1234", None, None, None, Some(bad), None);
+        assert_eq!((r.decision, r.reason), (0, 3), "refused: {bad:?}");
+    }
+    let r = flat_heartbeat(&s, "7", "1234", None, None, None, None, Some(f64::INFINITY));
+    assert_eq!(
+        (r.decision, r.reason),
+        (0, 3),
+        "a non-finite yaw is refused"
+    );
+}
+
+/// Position and heading are independent, and `None` means "not reported now",
+/// never "moved to nowhere".
+#[test]
+fn a_heading_only_heartbeat_keeps_the_last_position() {
+    let s = build_state_with_datum();
+    assert_eq!(flat_register(&s, "7", "1234", None).decision, 1);
+    flat_heartbeat(
+        &s,
+        "7",
+        "1234",
+        None,
+        None,
+        None,
+        Some(ReportedPosition::Local {
+            x: 7.0,
+            y: 8.0,
+            z: 0.0,
+        }),
+        None,
+    );
+
+    let r = flat_heartbeat(&s, "7", "1234", None, None, None, None, Some(0.0));
+    assert_eq!((r.decision, r.reason), (1, 0));
+
+    let position = robot_position(&s);
+    assert_eq!((position.x, position.y), (7.0, 8.0), "position survived");
+}
+
+// ---------------------------------------------------------------------------
+// lease_time actually expires the claim.
+// ---------------------------------------------------------------------------
+
+/// `lease_time` used to be inert: it wrote a bound into the claim window in a
+/// tick space nothing advanced, so the claim was held until the robot stopped
+/// heartbeating. It now expires on its own.
+#[test]
+fn a_leased_claim_frees_itself_when_the_lease_runs_out() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+
+    // Robot 7 takes zone 42 for one second.
+    let taken = flat_claim(
+        &s,
+        ClaimTargetKind::Zone,
+        "1234",
+        "7",
+        &[42],
+        Some(1),
+        Some(1),
+    );
+    assert_eq!((taken.decision, taken.reason), (1, 0));
+
+    // Robot 8 is refused while that lease stands.
+    let blocked = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], Some(1), None);
+    assert_eq!(
+        (blocked.decision, blocked.reason),
+        (0, 2),
+        "the zone is held for another second"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(1_200));
+
+    // The next claim expires the lapsed one before evaluating, so it is free
+    // without waiting for the periodic sweep.
+    let after = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], Some(1), None);
+    assert_eq!(
+        (after.decision, after.reason),
+        (1, 0),
+        "the lease ran out, so the zone is free"
+    );
+}
+
+/// An unleased claim is still held until it is released or the robot goes
+/// quiet — expiry must not collect it.
+#[test]
+fn an_unleased_claim_is_not_expired() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
+        1
+    );
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let blocked = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], None, None);
+    assert_eq!(
+        (blocked.decision, blocked.reason),
+        (0, 2),
+        "an open-ended claim stays held"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A robot does not compete with itself (PLAN Milestone 1.1).
+// ---------------------------------------------------------------------------
+
+/// Re-asserting a claim you already hold used to be denied with reason 2 by
+/// your own ledger entry, which broke rolling-horizon claiming outright.
+#[test]
+fn a_robot_can_reclaim_what_it_already_holds() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    let first = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None);
+    assert_eq!((first.decision, first.reason), (1, 0));
+
+    let again = flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None);
+    assert_eq!(
+        (again.decision, again.reason),
+        (1, 0),
+        "a holder re-acquiring is a re-acquisition, not a conflict"
+    );
+}
+
+/// Re-claiming must refresh the existing entry, not stack another one — the
+/// wire mints a fresh claim id on every call.
+#[test]
+fn reclaiming_does_not_grow_the_ledger() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    for _ in 0..5 {
+        assert_eq!(
+            flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
+            1
+        );
+    }
+
+    let held = s
+        .coordinator()
+        .read()
+        .unwrap()
+        .claim_manager()
+        .request_count();
+    assert_eq!(held, 1, "five identical claims left {held} ledger entries");
+}
+
+/// Not competing with yourself must not become "not counting yourself".
+/// Another robot still sees the claim.
+#[test]
+fn self_reclaim_does_not_release_the_ground() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+
+    flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None);
+    flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None);
+
+    let other = flat_claim(&s, ClaimTargetKind::Zone, "5678", "8", &[42], None, None);
+    assert_eq!(
+        (other.decision, other.reason),
+        (0, 2),
+        "robot 7 still holds zone 42 after re-claiming it"
+    );
+}
+
+/// A robot advancing its rolling horizon claims new ground while still
+/// holding the old — the case that motivated 1.1.
+#[test]
+fn a_robot_can_claim_ahead_while_holding_behind() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[42], None, None).decision,
+        1
+    );
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Zone, "1234", "7", &[43], None, None).decision,
+        1,
+        "claiming the next slice must not be refused by the previous one"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Atomic route claims (PLAN Milestone 1.4).
+// ---------------------------------------------------------------------------
+
+/// A route spans nodes and edges. Claiming them through the single-kind
+/// endpoints is two independent requests; this is one.
+#[test]
+fn a_route_claim_is_all_or_nothing() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+    flat_register(&s, "8", "5678", None);
+
+    // Robot 8 takes node 139 first.
+    assert_eq!(
+        flat_claim(&s, ClaimTargetKind::Node, "5678", "8", &[139], None, None).decision,
+        1
+    );
+
+    // Robot 7 asks for a route that includes node 139. It must be refused
+    // whole — no part of it may be left held.
+    let denied = syncbot::wire::flat_claim_route(&s, "1234", "7", &[139], &[], None, None);
+    assert_eq!((denied.decision, denied.reason), (0, 2));
+
+    let held_by_7 = s
+        .coordinator()
+        .read()
+        .unwrap()
+        .claim_manager()
+        .requests()
+        .iter()
+        .filter(|r| r.robot_id == RobotId::new(7))
+        .count();
+    assert_eq!(held_by_7, 0, "a denied route must leave nothing behind");
+}
+
+/// An unknown id in either section refuses the whole route and names the id.
+#[test]
+fn a_route_claim_with_an_unknown_id_is_refused_whole() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    let reply = syncbot::wire::flat_claim_route(&s, "1234", "7", &[139], &[9999], None, None);
+    assert_eq!(
+        (reply.decision, reply.reason, reply.blocked),
+        (0, 4, Some(9999)),
+        "unknown edge 9999 refuses the route and is named"
+    );
+    assert_eq!(
+        s.coordinator()
+            .read()
+            .unwrap()
+            .claim_manager()
+            .request_count(),
+        0
+    );
+}
+
+/// An empty route is a bad request, not an empty grant.
+#[test]
+fn an_empty_route_claim_is_refused() {
+    let s = build_state();
+    flat_register(&s, "7", "1234", None);
+
+    let reply = syncbot::wire::flat_claim_route(&s, "1234", "7", &[], &[], None, None);
+    assert_eq!((reply.decision, reply.reason), (0, 5));
 }

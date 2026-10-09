@@ -5,6 +5,18 @@
 //! it (the servers only do so when `SYNCBOT_STATE` is set). With the feature
 //! unused the server stays fully in-memory and no file is ever touched.
 //!
+//! # The snapshot holds verifiers, not keys
+//!
+//! Robot keys round-trip as Argon2id verifiers — salt and digest, never the
+//! secret — so a leaked snapshot cannot be replayed as a fleet takeover; it
+//! costs an offline Argon2 attack per guess. The file is still created `0600`
+//! and still deserves care, but it is no longer a list of passwords.
+//!
+//! A snapshot written before this change stores plaintext keys and will fail
+//! to load. That is deliberate and safe: callers treat a load failure as
+//! "start fresh" (see `examples/serve_workspace.rs`), so robots simply
+//! re-register rather than the core booting with keys it cannot check.
+//!
 //! The [`WorkspaceIndex`] is deliberately NOT part of a snapshot — the
 //! workspace is loaded separately at startup and re-attached on
 //! [`Coordinator::restore`]. `ClaimManager`'s monotonic `next_id`
@@ -13,6 +25,8 @@
 
 use std::fs;
 use std::io;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -22,7 +36,7 @@ use std::collections::BTreeMap;
 use crate::claim::{ClaimRequest, Lease};
 use crate::coordinator::{AliveInfo, Coordinator};
 use crate::core::ids::RobotId;
-use crate::core::key::Key;
+use crate::core::key::KeyVerifier;
 
 /// Serializable image of a [`ClaimManager`](crate::claim::ClaimManager).
 ///
@@ -47,7 +61,7 @@ pub struct ClaimManagerSnapshot {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CoordinatorSnapshot {
     pub robot_states: Vec<crate::robot::RobotState>,
-    pub robot_keys: BTreeMap<RobotId, Key>,
+    pub robot_keys: BTreeMap<RobotId, KeyVerifier>,
     pub robot_id_by_uuid: BTreeMap<String, RobotId>,
     pub next_synthetic_robot_id: u64,
     pub robot_alive: BTreeMap<RobotId, AliveInfo>,
@@ -92,6 +106,9 @@ pub fn write_atomic(path: &Path, snapshot: &CoordinatorSnapshot) -> io::Result<(
     let tmp = dir.join(tmp_name);
 
     fs::write(&tmp, &json)?;
+    // The snapshot carries every robot's key in plaintext, so narrow the
+    // permissions before it is visible under its final name.
+    restrict_permissions(&tmp)?;
     match fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -100,6 +117,18 @@ pub fn write_atomic(path: &Path, snapshot: &CoordinatorSnapshot) -> io::Result<(
             Err(e)
         }
     }
+}
+
+/// Restrict a state file to its owner. A no-op on platforms without Unix
+/// permission bits, where the caller owns the directory's access control.
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Snapshot the coordinator behind a shared lock and atomically write it to

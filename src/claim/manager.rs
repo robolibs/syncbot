@@ -1,6 +1,7 @@
 //! `ClaimManager` — request and lease lifecycle plus conflict / capacity
 //! evaluation. Port of `include/syncbot/claim_manager.hpp`.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -8,7 +9,7 @@ use uuid::Uuid;
 
 use crate::core::ids::{ClaimId, LeaseId, RobotId};
 use crate::index::WorkspaceIndex;
-use crate::policy::{ZonePolicyKind, parse_edge_traffic_semantics, parse_zone_policy};
+use crate::policy::{ZonePolicy, ZonePolicyKind};
 
 use super::{
     ClaimAccessMode, ClaimDecision, ClaimEvaluation, ClaimRequest, ClaimTarget, ClaimTargetKind,
@@ -136,6 +137,25 @@ impl ClaimManager {
         self.active_requests.push(request);
     }
 
+    /// Insert `request`, replacing the same robot's existing claim over the
+    /// same targets rather than appending a second ledger entry.
+    ///
+    /// The flat wire mints a fresh claim id per call, so a robot re-claiming
+    /// on a timer would otherwise grow `active_requests` without bound — and
+    /// every later evaluation pays for those duplicates. Returns whether an
+    /// existing claim was replaced rather than a new one added.
+    pub fn upsert_request_for_robot(&mut self, request: ClaimRequest) -> bool {
+        if let Some(slot) = self.active_requests.iter_mut().find(|active| {
+            active.robot_id == request.robot_id
+                && same_target_set(&active.targets, &request.targets)
+        }) {
+            *slot = request;
+            return true;
+        }
+        self.active_requests.push(request);
+        false
+    }
+
     pub fn remove_request(&mut self, id: ClaimId) -> bool {
         if let Some(pos) = self.active_requests.iter().position(|r| r.id == id) {
             self.active_requests.remove(pos);
@@ -168,11 +188,17 @@ impl ClaimManager {
             .max(max_lease)
             .map_or(1, |m| m.saturating_add(1))
             .max(1);
-        // Advance the monotonic counter to at least `floor`, then take that
-        // value and bump by one. Never decreases.
-        let candidate = self.next_id.load(Ordering::Relaxed).max(floor);
-        self.next_id
-            .store(candidate.saturating_add(1), Ordering::Relaxed);
+        // Advance the monotonic counter to at least `floor` and take that value,
+        // in one compare-exchange so two concurrent callers cannot mint the same
+        // id. (Callers hold the coordinator write lock today, but the `&self`
+        // signature promises more than that arrangement does.)
+        let candidate = self
+            .next_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.max(floor).saturating_add(1))
+            })
+            .map(|previous| previous.max(floor))
+            .unwrap_or(floor);
         ClaimId::new(candidate)
     }
 
@@ -247,6 +273,19 @@ impl ClaimManager {
             return true;
         }
         false
+    }
+
+    /// Drop active requests whose claim window has closed at `current_tick`.
+    ///
+    /// The flat protocol's `lease_time` produces a bounded window on a
+    /// *request* (it never mints a `Lease`), so without this the window only
+    /// narrowed conflict detection and the claim itself lived forever. A
+    /// request with an open-ended window is untouched.
+    pub fn expire_requests(&mut self, current_tick: u64) -> u64 {
+        let before = self.active_requests.len();
+        self.active_requests
+            .retain(|request| !matches!(request.window.end_tick, Some(end) if end <= current_tick));
+        (before - self.active_requests.len()) as u64
     }
 
     pub fn expire_leases(&mut self, current_tick: u64) -> u64 {
@@ -376,7 +415,11 @@ impl ClaimManager {
         }
 
         for active in &self.active_requests {
-            if active.id == request.id {
+            // A robot does not compete with itself. Its own earlier claim is
+            // ground it already holds, so re-asserting it is a re-acquisition,
+            // not a conflict — without this a rolling-horizon robot is refused
+            // by its own previous slice.
+            if active.id == request.id || active.robot_id == request.robot_id {
                 continue;
             }
             if !self.claims_compatible_for_index(request, active) {
@@ -395,7 +438,7 @@ impl ClaimManager {
         }
 
         for lease in &self.active_leases {
-            if !lease.active {
+            if !lease.active || lease.robot_id == request.robot_id {
                 continue;
             }
             if !self.claims_compatible_for_index_with_lease(request, lease) {
@@ -413,16 +456,10 @@ impl ClaimManager {
             }
         }
 
-        if let Some(v) = self.first_capacity_violation(request) {
-            return capacity_eval(v);
-        }
-        if let Some(v) = self.first_membership_capacity_violation(request, ClaimTargetKind::Node) {
-            return capacity_eval(v);
-        }
         if let Some(v) = self.first_edge_capacity_violation(request) {
             return capacity_eval(v);
         }
-        if let Some(v) = self.first_membership_capacity_violation(request, ClaimTargetKind::Edge) {
+        if let Some(v) = self.first_occupancy_violation(request) {
             return capacity_eval(v);
         }
 
@@ -436,71 +473,6 @@ impl ClaimManager {
 
     // -- capacity checks --------------------------------------------------
 
-    fn first_capacity_violation(&self, request: &ClaimRequest) -> Option<CapacityViolation> {
-        let index = self.index.as_deref()?;
-        if request.access_mode != ClaimAccessMode::Shared {
-            return None;
-        }
-
-        for target in &request.targets {
-            if target.kind != ClaimTargetKind::Zone {
-                continue;
-            }
-            let zone = index.zone(target.resource_id)?;
-            let policy = parse_zone_policy(zone.properties());
-            if !policy.capacity_is_explicit || policy.capacity <= 1 {
-                continue;
-            }
-
-            let mut occupant_count: u32 = 1;
-            let mut blocking_claim_id: Option<ClaimId> = None;
-            let mut blocking_lease_id: Option<LeaseId> = None;
-
-            for active in &self.active_requests {
-                if active.id == request.id
-                    || active.access_mode != ClaimAccessMode::Shared
-                    || !claim_windows_overlap(request.window, active.window)
-                    || !self.request_overlaps_zone(active, target.resource_id)
-                {
-                    continue;
-                }
-                occupant_count += 1;
-                if blocking_claim_id.is_none() {
-                    blocking_claim_id = Some(active.id);
-                }
-            }
-
-            for lease in &self.active_leases {
-                if !lease.active
-                    || lease.access_mode != ClaimAccessMode::Shared
-                    || !claim_windows_overlap(request.window, lease_window(lease))
-                    || !self.lease_overlaps_zone(lease, target.resource_id)
-                {
-                    continue;
-                }
-                occupant_count += 1;
-                if blocking_lease_id.is_none() {
-                    blocking_lease_id = Some(lease.id);
-                }
-            }
-
-            if occupant_count as u64 > policy.capacity {
-                let mut diagnostics = vec!["zone capacity limit reached".into()];
-                self.append_target_diagnostics(&mut diagnostics, *target);
-                diagnostics.push(format!("configured capacity={}", policy.capacity));
-                diagnostics.push(format!("observed occupancy={}", occupant_count));
-                return Some(CapacityViolation {
-                    target: *target,
-                    reason: "shared zone capacity exceeded".into(),
-                    conflicting_claim_id: blocking_claim_id,
-                    conflicting_lease_id: blocking_lease_id,
-                    diagnostics,
-                });
-            }
-        }
-        None
-    }
-
     fn first_edge_capacity_violation(&self, request: &ClaimRequest) -> Option<CapacityViolation> {
         let index = self.index.as_deref()?;
         if request.access_mode != ClaimAccessMode::Shared {
@@ -511,144 +483,180 @@ impl ClaimManager {
             if target.kind != ClaimTargetKind::Edge {
                 continue;
             }
-            let edge = index.edge(target.resource_id)?;
-            let semantics = parse_edge_traffic_semantics(&edge.properties, false);
+            let semantics = index.edge_semantics(target.resource_id)?;
             if !semantics.capacity_is_explicit || semantics.capacity.unwrap_or(0) <= 1 {
                 continue;
             }
             let cap = semantics.capacity.unwrap();
 
-            let mut occupant_count: u32 = 1;
+            let mut occupants: BTreeSet<RobotId> = BTreeSet::new();
+            occupants.insert(request.robot_id);
             let mut blocking_claim_id: Option<ClaimId> = None;
             let mut blocking_lease_id: Option<LeaseId> = None;
 
             for active in &self.active_requests {
                 if active.id == request.id
+                    || active.robot_id == request.robot_id
                     || active.access_mode != ClaimAccessMode::Shared
                     || !claim_windows_overlap(request.window, active.window)
                     || !request_contains_target(active, *target)
                 {
                     continue;
                 }
-                occupant_count += 1;
-                if blocking_claim_id.is_none() {
+                if occupants.insert(active.robot_id) && blocking_claim_id.is_none() {
                     blocking_claim_id = Some(active.id);
                 }
             }
             for lease in &self.active_leases {
                 if !lease.active
+                    || lease.robot_id == request.robot_id
                     || lease.access_mode != ClaimAccessMode::Shared
                     || !claim_windows_overlap(request.window, lease_window(lease))
                     || !lease_contains_target(lease, *target)
                 {
                     continue;
                 }
-                occupant_count += 1;
-                if blocking_lease_id.is_none() {
+                if occupants.insert(lease.robot_id) && blocking_lease_id.is_none() {
                     blocking_lease_id = Some(lease.id);
                 }
             }
 
-            if occupant_count as u64 > cap {
+            if occupants.len() as u64 > cap {
                 let mut diagnostics = vec!["edge capacity limit reached".into()];
                 self.append_target_diagnostics(&mut diagnostics, *target);
                 diagnostics.push(format!("configured capacity={}", cap));
-                diagnostics.push(format!("observed occupancy={}", occupant_count));
+                diagnostics.push(format!("observed occupancy={}", occupants.len()));
                 return Some(CapacityViolation {
                     target: *target,
                     reason: "shared edge capacity exceeded".into(),
                     conflicting_claim_id: blocking_claim_id,
                     conflicting_lease_id: blocking_lease_id,
                     diagnostics,
+                    denied_by_capacity: true,
                 });
             }
         }
         None
     }
 
-    fn first_membership_capacity_violation(
-        &self,
-        request: &ClaimRequest,
-        kind: ClaimTargetKind,
-    ) -> Option<CapacityViolation> {
-        let index = self.index.as_deref()?;
-        if request.access_mode != ClaimAccessMode::Shared {
-            return None;
-        }
-
-        for target in &request.targets {
-            if target.kind != kind {
-                continue;
+    /// Every zone this request puts the robot inside, with ancestors.
+    ///
+    /// A node or edge target contributes the zones containing it — driving
+    /// through a zone is presence, not ownership, which is what lets a second
+    /// non-interfering path through the same zone proceed while still blocking
+    /// anyone who wants the zone itself. A zone target contributes that zone
+    /// directly. Both forms are occupancy and are counted the same way, so a
+    /// robot claiming a zone and a robot merely crossing it compete for the
+    /// same slots. See PLAN Milestone 1.2.
+    fn occupied_zones(&self, request: &ClaimRequest) -> Vec<Uuid> {
+        let Some(index) = self.index.as_deref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut seen: BTreeSet<Uuid> = BTreeSet::new();
+        let add = |zone_id: Uuid, out: &mut Vec<Uuid>, seen: &mut BTreeSet<Uuid>| {
+            if seen.insert(zone_id) {
+                out.push(zone_id);
             }
-            let target_zones = match kind {
-                ClaimTargetKind::Node => index.zones_of_node(target.resource_id),
-                ClaimTargetKind::Edge => index.zones_of_edge(target.resource_id),
-                _ => continue,
+            for ancestor in index.ancestor_zones(zone_id) {
+                if seen.insert(ancestor.id()) {
+                    out.push(ancestor.id());
+                }
+            }
+        };
+        for target in &request.targets {
+            match target.kind {
+                ClaimTargetKind::Zone => add(target.resource_id, &mut out, &mut seen),
+                ClaimTargetKind::Node => {
+                    for zone in index.zones_of_node(target.resource_id) {
+                        add(zone.id(), &mut out, &mut seen);
+                    }
+                }
+                ClaimTargetKind::Edge => {
+                    for zone in index.zones_of_edge(target.resource_id) {
+                        add(zone.id(), &mut out, &mut seen);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Deny when a zone already holds as many distinct robots as it admits.
+    ///
+    /// Occupancy counts *robots*, not claims, so a robot re-claiming or holding
+    /// several targets in one zone still fills one slot. This is the single
+    /// place zone occupancy is decided: whether a robot is present by claiming
+    /// the zone, a node in it, or an edge through it makes no difference to the
+    /// count.
+    fn first_occupancy_violation(&self, request: &ClaimRequest) -> Option<CapacityViolation> {
+        let index = self.index.as_deref()?;
+        for zone_id in self.occupied_zones(request) {
+            let Some(policy) = index.zone_policy(zone_id) else {
+                continue;
             };
-            for zone in target_zones {
-                let policy = parse_zone_policy(zone.properties());
-                if !policy.capacity_is_explicit || policy.capacity <= 1 {
+            let Some(limit) = zone_occupancy_limit(policy) else {
+                continue;
+            };
+
+            let mut occupants: BTreeSet<RobotId> = BTreeSet::new();
+            occupants.insert(request.robot_id);
+            let mut blocking_claim_id: Option<ClaimId> = None;
+            let mut blocking_lease_id: Option<LeaseId> = None;
+
+            for active in &self.active_requests {
+                if active.id == request.id
+                    || active.robot_id == request.robot_id
+                    || !claim_windows_overlap(request.window, active.window)
+                    || !targets_occupy_zone(index, &active.targets, zone_id)
+                {
                     continue;
                 }
-
-                let mut occupant_count: u32 = 1;
-                let mut blocking_claim_id: Option<ClaimId> = None;
-                let mut blocking_lease_id: Option<LeaseId> = None;
-
-                for active in &self.active_requests {
-                    if active.id == request.id
-                        || active.access_mode != ClaimAccessMode::Shared
-                        || !claim_windows_overlap(request.window, active.window)
-                        || !self.request_contains_resource_in_zone(active, kind, zone.id())
-                    {
-                        continue;
-                    }
-                    occupant_count += 1;
-                    if blocking_claim_id.is_none() {
-                        blocking_claim_id = Some(active.id);
-                    }
+                if occupants.insert(active.robot_id) && blocking_claim_id.is_none() {
+                    blocking_claim_id = Some(active.id);
                 }
-                for lease in &self.active_leases {
-                    if !lease.active
-                        || lease.access_mode != ClaimAccessMode::Shared
-                        || !claim_windows_overlap(request.window, lease_window(lease))
-                        || !self.lease_contains_resource_in_zone(lease, kind, zone.id())
-                    {
-                        continue;
-                    }
-                    occupant_count += 1;
-                    if blocking_lease_id.is_none() {
-                        blocking_lease_id = Some(lease.id);
-                    }
+            }
+            for lease in &self.active_leases {
+                if !lease.active
+                    || lease.robot_id == request.robot_id
+                    || !claim_windows_overlap(request.window, lease_window(lease))
+                    || !targets_occupy_zone(index, &lease.targets, zone_id)
+                {
+                    continue;
                 }
+                if occupants.insert(lease.robot_id) && blocking_lease_id.is_none() {
+                    blocking_lease_id = Some(lease.id);
+                }
+            }
 
-                if occupant_count as u64 > policy.capacity {
-                    let zone_target = ClaimTarget {
-                        kind: ClaimTargetKind::Zone,
-                        resource_id: zone.id(),
-                    };
-                    let reason = match kind {
-                        ClaimTargetKind::Node => "shared node-zone capacity exceeded",
-                        ClaimTargetKind::Edge => "shared edge-zone capacity exceeded",
-                        _ => "shared capacity exceeded",
-                    };
-                    let head_diag = match kind {
-                        ClaimTargetKind::Node => "node claims exceed containing zone capacity",
-                        ClaimTargetKind::Edge => "edge claims exceed containing zone capacity",
-                        _ => "claims exceed containing zone capacity",
-                    };
-                    let mut diagnostics = vec![head_diag.into()];
-                    self.append_target_diagnostics(&mut diagnostics, zone_target);
-                    diagnostics.push(format!("configured capacity={}", policy.capacity));
-                    diagnostics.push(format!("observed occupancy={}", occupant_count));
-                    return Some(CapacityViolation {
-                        target: zone_target,
-                        reason: reason.into(),
-                        conflicting_claim_id: blocking_claim_id,
-                        conflicting_lease_id: blocking_lease_id,
-                        diagnostics,
-                    });
-                }
+            if occupants.len() as u64 > limit {
+                let zone_target = ClaimTarget {
+                    kind: ClaimTargetKind::Zone,
+                    resource_id: zone_id,
+                };
+                // A single-occupant zone is a conflict, not a capacity
+                // overflow — that is how it has always been reported.
+                let single = limit <= 1;
+                let mut diagnostics = vec![if single {
+                    "zone admits one occupant at a time".to_string()
+                } else {
+                    "zone occupancy limit reached".to_string()
+                }];
+                self.append_target_diagnostics(&mut diagnostics, zone_target);
+                diagnostics.push(format!("configured capacity={limit}"));
+                diagnostics.push(format!("observed occupancy={}", occupants.len()));
+                return Some(CapacityViolation {
+                    target: zone_target,
+                    reason: if single {
+                        "conflicts with an occupant of an exclusive zone".into()
+                    } else {
+                        "zone capacity exceeded".into()
+                    },
+                    conflicting_claim_id: blocking_claim_id,
+                    conflicting_lease_id: blocking_lease_id,
+                    diagnostics,
+                    denied_by_capacity: !single,
+                });
             }
         }
         None
@@ -674,10 +682,9 @@ impl ClaimManager {
             return;
         };
         if target.kind == ClaimTargetKind::Zone {
-            let Some(zone) = index.zone(target.resource_id) else {
+            let Some(policy) = index.zone_policy(target.resource_id) else {
                 return;
             };
-            let policy = parse_zone_policy(zone.properties());
             if policy.blocks_entry_without_grant
                 || policy.blocks_traversal_without_grant
                 || policy.blocked.unwrap_or(false)
@@ -706,9 +713,9 @@ impl ClaimManager {
                 return;
             };
             let zone_policies: Vec<_> = index
-                .zones_of_edge(target.resource_id)
+                .edge_zone_policies(target.resource_id)
                 .into_iter()
-                .map(|z| parse_zone_policy(z.properties()))
+                .cloned()
                 .collect();
             let semantics = crate::policy::derive_effective_edge_semantics(
                 &edge.properties,
@@ -832,13 +839,9 @@ impl ClaimManager {
                 };
                 // node/edge is inside the zone if one of its containing zones
                 // IS the zone or has the zone as an ancestor.
-                let inside = res_zones.iter().any(|z| {
-                    z.id() == zone_t.resource_id
-                        || index
-                            .ancestor_zones(z.id())
-                            .iter()
-                            .any(|a| a.id() == zone_t.resource_id)
-                });
+                let inside = res_zones
+                    .iter()
+                    .any(|z| index.zone_contains(zone_t.resource_id, z.id()));
                 if !inside {
                     continue;
                 }
@@ -847,8 +850,8 @@ impl ClaimManager {
                 }
                 // Both shared on a zone with explicit capacity > 1 may coexist.
                 let policy = index
-                    .zone(zone_t.resource_id)
-                    .map(|z| parse_zone_policy(z.properties()))
+                    .zone_policy(zone_t.resource_id)
+                    .cloned()
                     .unwrap_or_default();
                 let both_shared = zside.access_mode == ClaimAccessMode::Shared
                     && sside.access_mode == ClaimAccessMode::Shared;
@@ -937,84 +940,6 @@ impl ClaimManager {
         }
         true
     }
-
-    fn request_contains_resource_in_zone(
-        &self,
-        request: &ClaimRequest,
-        kind: ClaimTargetKind,
-        zone_id: Uuid,
-    ) -> bool {
-        let Some(index) = self.index.as_deref() else {
-            return false;
-        };
-        for candidate in &request.targets {
-            if candidate.kind != kind {
-                continue;
-            }
-            let zones = match kind {
-                ClaimTargetKind::Node => index.zones_of_node(candidate.resource_id),
-                ClaimTargetKind::Edge => index.zones_of_edge(candidate.resource_id),
-                _ => continue,
-            };
-            if zones.iter().any(|z| z.id() == zone_id) {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn lease_contains_resource_in_zone(
-        &self,
-        lease: &Lease,
-        kind: ClaimTargetKind,
-        zone_id: Uuid,
-    ) -> bool {
-        let Some(index) = self.index.as_deref() else {
-            return false;
-        };
-        for candidate in &lease.targets {
-            if candidate.kind != kind {
-                continue;
-            }
-            let zones = match kind {
-                ClaimTargetKind::Node => index.zones_of_node(candidate.resource_id),
-                ClaimTargetKind::Edge => index.zones_of_edge(candidate.resource_id),
-                _ => continue,
-            };
-            if zones.iter().any(|z| z.id() == zone_id) {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn request_overlaps_zone(&self, request: &ClaimRequest, zone_id: Uuid) -> bool {
-        let Some(index) = self.index.as_deref() else {
-            return false;
-        };
-        for target in &request.targets {
-            if target.kind == ClaimTargetKind::Zone
-                && zones_overlap(index, target.resource_id, zone_id)
-            {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn lease_overlaps_zone(&self, lease: &Lease, zone_id: Uuid) -> bool {
-        let Some(index) = self.index.as_deref() else {
-            return false;
-        };
-        for target in &lease.targets {
-            if target.kind == ClaimTargetKind::Zone
-                && zones_overlap(index, target.resource_id, zone_id)
-            {
-                return true;
-            }
-        }
-        false
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,6 +952,10 @@ struct CapacityViolation {
     conflicting_claim_id: Option<ClaimId>,
     conflicting_lease_id: Option<LeaseId>,
     diagnostics: Vec<String>,
+    /// Report this as reason 3 (CAPACITY) rather than 2 (CONFLICT). A zone
+    /// admitting a single occupant is a plain conflict on the wire — it has
+    /// always been reported that way, and callers key off the code.
+    denied_by_capacity: bool,
 }
 
 fn capacity_eval(v: CapacityViolation) -> ClaimEvaluation {
@@ -1038,8 +967,40 @@ fn capacity_eval(v: CapacityViolation) -> ClaimEvaluation {
         conflicting_targets: vec![v.target],
         blocking_target: Some(v.target),
         diagnostics: v.diagnostics,
-        denied_by_capacity: true,
+        denied_by_capacity: v.denied_by_capacity,
     }
+}
+
+/// How many distinct robots a zone admits at once. `None` is unlimited.
+///
+/// This is the capacity dimension of the intent model: an `exclusive` zone
+/// admits one occupant, a zone with an explicit capacity admits that many, and
+/// an unconstrained zone admits any number — arbitration then happens purely
+/// on the nodes and edges they actually use.
+fn zone_occupancy_limit(policy: &ZonePolicy) -> Option<u64> {
+    if policy.kind == ZonePolicyKind::ExclusiveAccess {
+        return Some(1);
+    }
+    if policy.capacity_is_explicit {
+        return Some(policy.capacity);
+    }
+    None
+}
+
+/// Whether `targets` put a robot anywhere inside `zone_id` — a node or edge
+/// within it, or a zone target overlapping it.
+fn targets_occupy_zone(index: &WorkspaceIndex, targets: &[ClaimTarget], zone_id: Uuid) -> bool {
+    targets.iter().any(|target| match target.kind {
+        ClaimTargetKind::Zone => zones_overlap(index, target.resource_id, zone_id),
+        ClaimTargetKind::Node => index
+            .zones_of_node(target.resource_id)
+            .iter()
+            .any(|zone| index.zone_contains(zone_id, zone.id())),
+        ClaimTargetKind::Edge => index
+            .zones_of_edge(target.resource_id)
+            .iter()
+            .any(|zone| index.zone_contains(zone_id, zone.id())),
+    })
 }
 
 fn target_kind_compatible(lhs: &ClaimRequest, rhs: &ClaimRequest, kind: ClaimTargetKind) -> bool {
@@ -1098,13 +1059,9 @@ fn targets_conflict_cross_level(index: &WorkspaceIndex, a: &ClaimTarget, b: &Cla
         ClaimTargetKind::Edge => index.zones_of_edge(res_t.resource_id),
         ClaimTargetKind::Zone => return false,
     };
-    res_zones.iter().any(|z| {
-        z.id() == zone_t.resource_id
-            || index
-                .ancestor_zones(z.id())
-                .iter()
-                .any(|anc| anc.id() == zone_t.resource_id)
-    })
+    res_zones
+        .iter()
+        .any(|z| index.zone_contains(zone_t.resource_id, z.id()))
 }
 
 fn target_kind_name(kind: ClaimTargetKind) -> &'static str {
@@ -1123,6 +1080,12 @@ fn describe_conflict_reason(source: &str, conflicts: &[ClaimTarget]) -> String {
         "conflicts with {source} on {} target",
         target_kind_name(conflicts[0].kind)
     )
+}
+
+/// Whether two target lists name the same set of resources, order and
+/// duplicates aside.
+fn same_target_set(lhs: &[ClaimTarget], rhs: &[ClaimTarget]) -> bool {
+    lhs.iter().all(|t| rhs.contains(t)) && rhs.iter().all(|t| lhs.contains(t))
 }
 
 fn request_contains_target(request: &ClaimRequest, target: ClaimTarget) -> bool {
@@ -1155,16 +1118,7 @@ fn claim_windows_overlap(lhs: ClaimWindow, rhs: ClaimWindow) -> bool {
 }
 
 fn zones_overlap(index: &WorkspaceIndex, lhs: Uuid, rhs: Uuid) -> bool {
-    if lhs == rhs {
-        return true;
-    }
-    if index.ancestor_zones(lhs).iter().any(|a| a.id() == rhs) {
-        return true;
-    }
-    if index.ancestor_zones(rhs).iter().any(|a| a.id() == lhs) {
-        return true;
-    }
-    false
+    index.zone_contains(rhs, lhs) || index.zone_contains(lhs, rhs)
 }
 
 fn overlapping_zone_policy(
@@ -1172,20 +1126,20 @@ fn overlapping_zone_policy(
     lhs: Uuid,
     rhs: Uuid,
 ) -> crate::policy::ZonePolicy {
-    if let Some(lhs_zone) = index.zone(lhs) {
+    if index.zone(lhs).is_some() {
         if lhs == rhs {
-            return parse_zone_policy(lhs_zone.properties());
+            return index.zone_policy(lhs).cloned().unwrap_or_default();
         }
         if let Some(parent) = index.parent_zone(lhs) {
             if parent.id() == rhs {
-                return parse_zone_policy(lhs_zone.properties());
+                return index.zone_policy(lhs).cloned().unwrap_or_default();
             }
         }
     }
-    if let Some(rhs_zone) = index.zone(rhs) {
+    if index.zone(rhs).is_some() {
         if let Some(parent) = index.parent_zone(rhs) {
             if parent.id() == lhs {
-                return parse_zone_policy(rhs_zone.properties());
+                return index.zone_policy(rhs).cloned().unwrap_or_default();
             }
         }
     }
@@ -1210,12 +1164,16 @@ fn shared_constrained_zone(
     };
 
     for lhs_zone in &lhs_zones {
-        let lhs_policy = parse_zone_policy(lhs_zone.properties());
+        let Some(lhs_policy) = index.zone_policy(lhs_zone.id()) else {
+            continue;
+        };
         for rhs_zone in &rhs_zones {
             if lhs_zone.id() != rhs_zone.id() {
                 continue;
             }
-            let rhs_policy = parse_zone_policy(rhs_zone.properties());
+            let Some(rhs_policy) = index.zone_policy(rhs_zone.id()) else {
+                continue;
+            };
             let effective_capacity = lhs_policy.capacity.min(rhs_policy.capacity);
             let explicitly_constrained =
                 lhs_policy.capacity_is_explicit || rhs_policy.capacity_is_explicit;
